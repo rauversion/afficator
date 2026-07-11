@@ -96,15 +96,16 @@ Opciones:
 Ejemplo:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 Los builds actuales son unsigned. En macOS y Windows puede aparecer una advertencia del sistema hasta configurar certificados de firma/notarizacion.
 
 Artefactos esperados:
 
-- macOS: `.app.tar.gz`
+- macOS Apple Silicon: `_arm64.app.tar.gz`
+- macOS Intel: `_x86_64.app.tar.gz`
 - Windows: `.exe` / `.msi`
 - Linux: `.AppImage` / `.deb`
 
