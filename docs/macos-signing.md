@@ -11,7 +11,7 @@ Rau Studio puede compilar bundles para macOS sin certificado, pero esos builds n
 
 ```sh
 cd ~/Downloads
-tar -xzf RauStudio_0.1.6_arm64.app.tar.gz
+tar -xzf RauStudio_0.1.7_arm64.app.tar.gz
 xattr -dr com.apple.quarantine "Rau Studio.app"
 open "Rau Studio.app"
 ```

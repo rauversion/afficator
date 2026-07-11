@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
+import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
 
 type LocalConversionState =
@@ -102,6 +103,7 @@ type PlayerState = {
 const maxConcurrencyLimit = 4;
 
 export function FileConversionPage() {
+  const { locale, t } = useI18n();
   const [allItems, setAllItems] = useState<LocalConversionItem[]>([]);
   const [currentItems, setCurrentItems] = useState<LocalConversionItem[]>([]);
   const [groups, setGroups] = useState<LocalConversionGroup[]>([]);
@@ -166,16 +168,16 @@ export function FileConversionPage() {
   }, [visibleItems]);
   const activeScopeLabel =
     activeTab === "all"
-      ? "Todos los archivos"
+      ? t("Todos los archivos")
       : activeTab === "groups"
-        ? "Grupos de importación"
-      : activeGroup?.name ?? "Importación actual";
+        ? t("Grupos de importación")
+      : activeGroup?.name ?? t("Importación actual");
   const activeScopeDetail =
     activeTab === "all"
-      ? `${allItems.length} referencia(s) guardadas`
+      ? t("{count} referencia(s) guardadas", { count: allItems.length })
       : activeTab === "groups"
-        ? `${groups.length} grupo(s) guardados`
-      : `${currentItems.length} archivo(s) en la importación actual`;
+        ? t("{count} grupo(s) guardados", { count: groups.length })
+      : t("{count} archivo(s) en la importación actual", { count: currentItems.length });
 
   async function loadItems() {
     setErrorMessage("");
@@ -417,7 +419,7 @@ export function FileConversionPage() {
       level: log.level,
       track_id: log.item_id ?? undefined,
       name: log.name ?? undefined,
-      message: log.message
+      message: translateBackendMessage(locale, log.message)
     };
 
     nextTerminalLogId.current += 1;
@@ -441,7 +443,7 @@ export function FileConversionPage() {
           <div className="min-w-0">
             <h1 className="m-0 text-2xl font-semibold tracking-normal">File Conversion</h1>
             <p className="mt-1 truncate text-xs text-muted-foreground">
-              {folderPath || "Convierte archivos locales a AIFF en carpetas converted."}
+              {folderPath || t("Convierte archivos locales a AIFF en carpetas converted.")}
             </p>
           </div>
         </div>
@@ -449,15 +451,15 @@ export function FileConversionPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="secondary" onClick={() => void loadItems()} disabled={busy}>
             <RefreshCw className="h-4 w-4" />
-            Refrescar
+            {t("Refrescar")}
           </Button>
           <Button variant="secondary" onClick={() => void chooseFolder()} disabled={busy}>
             <FolderOpen className="h-4 w-4" />
-            Carpeta
+            {t("Carpeta")}
           </Button>
           <Button onClick={() => void chooseFiles()} disabled={busy}>
             <Upload className="h-4 w-4" />
-            Archivos
+            {t("Archivos")}
           </Button>
         </div>
       </header>
@@ -477,13 +479,13 @@ export function FileConversionPage() {
         <div className="grid gap-3">
           <Card>
             <CardHeader>
-              <CardTitle>Entrada</CardTitle>
-              <span className="text-xs text-muted-foreground">{selectedItems.length} seleccionados</span>
+              <CardTitle>{t("Entrada")}</CardTitle>
+              <span className="text-xs text-muted-foreground">{t("{count} seleccionados", { count: selectedItems.length })}</span>
             </CardHeader>
             <CardContent className="grid gap-3 p-3">
               <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
                 <div className="truncate rounded-md border border-border bg-secondary px-3 py-2 text-sm" title={folderPath}>
-                  {folderPath || "Sin carpeta activa"}
+                  {folderPath || t("Sin carpeta activa")}
                 </div>
                 <label className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium">
                   <input
@@ -491,16 +493,16 @@ export function FileConversionPage() {
                     checked={folderRecursive}
                     onChange={(event) => setFolderRecursive(event.currentTarget.checked)}
                   />
-                  Recursivo
+                  {t("Recursivo")}
                 </label>
                 <Button variant="secondary" disabled={busy || !folderPath} onClick={() => void scanFolder()}>
-                  Escanear
+                  {t("Escanear")}
                 </Button>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
                 <label className="grid gap-1 text-xs font-semibold text-muted-foreground">
-                  Concurrencia
+                  {t("Concurrencia")}
                   <select
                     className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground"
                     value={maxConcurrency}
@@ -515,7 +517,7 @@ export function FileConversionPage() {
                 </label>
                 <Button disabled={busy || selectedConvertibleIds.length === 0} onClick={() => void convertIds(selectedConvertibleIds)}>
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileAudio2 className="h-4 w-4" />}
-                  Convertir seleccionados
+                  {t("Convertir seleccionados")}
                 </Button>
               </div>
             </CardContent>
@@ -524,13 +526,13 @@ export function FileConversionPage() {
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-card p-2">
             <div className="flex flex-wrap items-center gap-1">
               <TabButton active={activeTab === "current"} onClick={() => setActiveTab("current")}>
-                Importación actual
+                {t("Importación actual")}
               </TabButton>
               <TabButton active={activeTab === "all"} onClick={() => setActiveTab("all")}>
-                Todos
+                {t("Todos")}
               </TabButton>
               <TabButton active={activeTab === "groups"} onClick={() => setActiveTab("groups")}>
-                Grupos
+                {t("Grupos")}
               </TabButton>
             </div>
             <span className="min-w-0 truncate px-2 text-xs text-muted-foreground" title={activeScopeLabel}>
@@ -541,13 +543,13 @@ export function FileConversionPage() {
           {activeTab === "groups" ? (
             <Card className="overflow-hidden">
               <CardHeader>
-                <CardTitle>Grupos de importación</CardTitle>
-                <span className="text-xs text-muted-foreground">{groups.length} grupo(s) guardados</span>
+                <CardTitle>{t("Grupos de importación")}</CardTitle>
+                <span className="text-xs text-muted-foreground">{t("{count} grupo(s) guardados", { count: groups.length })}</span>
               </CardHeader>
               <CardContent className="p-0">
                 {groups.length === 0 ? (
                   <div className="px-3 py-6 text-sm text-muted-foreground">
-                    Todavía no hay grupos. Abre una carpeta o selecciona archivos para crear uno.
+                    {t("Todavía no hay grupos. Abre una carpeta o selecciona archivos para crear uno.")}
                   </div>
                 ) : null}
                 <div className="divide-y divide-border">
@@ -564,10 +566,10 @@ export function FileConversionPage() {
                       <span className="min-w-0">
                         <span className="block truncate font-semibold" title={group.name}>{group.name}</span>
                         <span className="mt-1 block truncate text-xs text-muted-foreground" title={group.root_path ?? undefined}>
-                          {group.root_path ?? groupKindLabel(group)}
+                          {group.root_path ?? t(groupKindLabel(group))}
                         </span>
                       </span>
-                      <span className="text-xs text-muted-foreground">{group.item_count} archivo(s)</span>
+                      <span className="text-xs text-muted-foreground">{t("{count} archivo(s)", { count: group.item_count })}</span>
                       <span className="text-right text-xs text-muted-foreground">{formatShortDate(group.updated_at)}</span>
                     </button>
                   ))}
@@ -581,24 +583,24 @@ export function FileConversionPage() {
                 <input type="checkbox" checked={allSelected} onChange={toggleAllSelected} />
                 <CardTitle>{activeScopeLabel}</CardTitle>
               </div>
-              <span className="text-xs text-muted-foreground">{visibleItems.length} referencias</span>
+              <span className="text-xs text-muted-foreground">{t("{count} referencias", { count: visibleItems.length })}</span>
             </CardHeader>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
                 <div className="min-w-[760px]">
                   <div className="grid grid-cols-[32px_minmax(0,1.4fr)_112px_76px_minmax(0,0.9fr)_174px] gap-2 border-b border-border bg-secondary px-3 py-2 text-xs font-semibold text-muted-foreground">
                     <span />
-                    <span>Archivo</span>
-                    <span>Estado</span>
-                    <span>Tamano</span>
-                    <span>Destino</span>
-                    <span className="text-right">Acciones</span>
+                    <span>{t("Archivo")}</span>
+                    <span>{t("Estado")}</span>
+                    <span>{t("Tamano")}</span>
+                    <span>{t("Destino")}</span>
+                    <span className="text-right">{t("Acciones")}</span>
                   </div>
                   {visibleItems.length === 0 ? (
                     <div className="px-3 py-6 text-sm text-muted-foreground">
                       {activeTab === "current"
-                        ? "Abre una carpeta o un grupo para ver la importación actual."
-                        : "Agrega archivos o escanea una carpeta para empezar."}
+                        ? t("Abre una carpeta o un grupo para ver la importación actual.")
+                        : t("Agrega archivos o escanea una carpeta para empezar.")}
                     </div>
                   ) : null}
                   {visibleItems.map((item) => {
@@ -635,19 +637,19 @@ export function FileConversionPage() {
                           {item.target_path}
                         </span>
                         <div className="flex justify-end gap-1">
-                          <Button variant="secondary" size="icon" title="Escuchar original" disabled={!item.source_exists} onClick={() => playPath(item.source_path, item.source_name)}>
+                          <Button variant="secondary" size="icon" title={t("Escuchar original")} disabled={!item.source_exists} onClick={() => playPath(item.source_path, item.source_name)}>
                             <Play className="h-3.5 w-3.5" />
                           </Button>
-                          <Button variant="secondary" size="icon" title="Escuchar AIFF" disabled={!canPlayTarget} onClick={() => playPath(item.target_path, `${item.source_name} AIFF`)}>
+                          <Button variant="secondary" size="icon" title={t("Escuchar AIFF")} disabled={!canPlayTarget} onClick={() => playPath(item.target_path, `${item.source_name} AIFF`)}>
                             <CheckCircle2 className="h-3.5 w-3.5" />
                           </Button>
-                          <Button variant="secondary" size="icon" title="Convertir" disabled={!canConvert(item, progress)} onClick={() => void convertIds([item.id])}>
+                          <Button variant="secondary" size="icon" title={t("Convertir")} disabled={!canConvert(item, progress)} onClick={() => void convertIds([item.id])}>
                             {processing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileAudio2 className="h-3.5 w-3.5" />}
                           </Button>
-                          <Button variant="secondary" size="icon" title="Abrir carpeta" onClick={() => void openFolderFor(item.target_exists ? item.target_path : item.source_path)}>
+                          <Button variant="secondary" size="icon" title={t("Abrir carpeta")} onClick={() => void openFolderFor(item.target_exists ? item.target_path : item.source_path)}>
                             <FolderOpen className="h-3.5 w-3.5" />
                           </Button>
-                          <Button variant="ghost" size="icon" title="Olvidar" disabled={processing} onClick={() => void deleteItem(item)}>
+                          <Button variant="ghost" size="icon" title={t("Olvidar")} disabled={processing} onClick={() => void deleteItem(item)}>
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
@@ -663,9 +665,9 @@ export function FileConversionPage() {
 
         <aside className="grid gap-3 content-start">
           <section className="grid grid-cols-2 gap-2">
-            <Metric label="Total" value={stats.total} />
-            <Metric label="Convertidos" value={stats.converted} />
-            <Metric label="Errores" value={stats.failed} danger={stats.failed > 0} />
+            <Metric label={t("Total")} value={stats.total} />
+            <Metric label={t("Convertidos")} value={stats.converted} />
+            <Metric label={t("Errores")} value={stats.failed} danger={stats.failed > 0} />
             <Metric label="Missing" value={stats.missing} danger={stats.missing > 0} />
           </section>
 
@@ -681,26 +683,26 @@ export function FileConversionPage() {
                   <div className="break-words font-mono text-[11px] text-muted-foreground">{player.path}</div>
                   <Button variant="secondary" onClick={() => void openFolderFor(player.path)}>
                     <FolderOpen className="h-4 w-4" />
-                    Abrir carpeta
+                    {t("Abrir carpeta")}
                   </Button>
                 </>
               ) : (
-                <div className="text-sm text-muted-foreground">Selecciona play en una fila.</div>
+                <div className="text-sm text-muted-foreground">{t("Selecciona play en una fila.")}</div>
               )}
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Destino</CardTitle>
+              <CardTitle>{t("Destino")}</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-2 p-3 text-sm text-muted-foreground">
-              <p>Los AIFF se guardan al lado del original, dentro de una carpeta llamada converted.</p>
-              <p>No se reemplazan archivos fuente.</p>
+              <p>{t("Los AIFF se guardan al lado del original, dentro de una carpeta llamada converted.")}</p>
+              <p>{t("No se reemplazan archivos fuente.")}</p>
               <Button asChild variant="secondary" disabled={!player?.path}>
                 <a href={player ? convertFileSrc(player.path) : "#"} download>
                   <Download className="h-4 w-4" />
-                  Descargar actual
+                  {t("Descargar actual")}
                 </a>
               </Button>
             </CardContent>
@@ -712,7 +714,7 @@ export function FileConversionPage() {
         logs={terminalLogs}
         expanded={terminalExpanded}
         terminalRef={terminalElement}
-        subtitle="ffmpeg / file conversion"
+        subtitle={t("ffmpeg / file conversion")}
         onToggle={() => setTerminalExpanded((current) => !current)}
         onClear={clearTerminal}
       />
@@ -753,6 +755,7 @@ function Metric({ label, value, danger = false }: { label: string; value: number
 }
 
 function StatusBadge({ state }: { state: LocalConversionState }) {
+  const { t } = useI18n();
   return (
     <span
       className={cn(
@@ -765,7 +768,7 @@ function StatusBadge({ state }: { state: LocalConversionState }) {
       )}
     >
       {state === "running" || state === "queued" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-      {stateLabel(state)}
+      {t(stateLabel(state))}
     </span>
   );
 }

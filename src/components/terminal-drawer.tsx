@@ -2,6 +2,7 @@ import type * as React from "react";
 import { Button } from "./ui/button";
 import { Card, CardHeader, CardTitle } from "./ui/card";
 import { cn } from "../lib/utils";
+import { useI18n } from "../i18n";
 
 export type TerminalLogEntry = {
   id: number;
@@ -29,6 +30,8 @@ export function TerminalDrawer({
   onToggle: () => void;
   onClear: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <Card
       className={cn(
@@ -38,22 +41,24 @@ export function TerminalDrawer({
     >
       <CardHeader className="min-h-12">
         <div className="min-w-0">
-          <CardTitle>Terminal</CardTitle>
-          <span className="block text-xs text-muted-foreground">{logs.length} eventos</span>
+          <CardTitle>{t("Terminal")}</CardTitle>
+          <span className="block text-xs text-muted-foreground">
+            {logs.length} {t("eventos")}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <span className="hidden text-xs text-muted-foreground sm:inline">{subtitle}</span>
           <Button variant="secondary" size="sm" onClick={onToggle}>
-            {expanded ? "Contraer" : "Expandir"}
+            {expanded ? t("Contraer") : t("Expandir")}
           </Button>
           <Button variant="secondary" size="sm" onClick={onClear}>
-            Limpiar
+            {t("Limpiar")}
           </Button>
         </div>
       </CardHeader>
       {expanded ? (
         <div ref={terminalRef} className="h-[calc(250px-48px)] overflow-auto bg-slate-950 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-200">
-          {logs.length === 0 ? <div className="text-slate-500">{emptyMessage}</div> : null}
+          {logs.length === 0 ? <div className="text-slate-500">{t(emptyMessage)}</div> : null}
           {logs.map((log) => (
             <div key={log.id} className={cn("terminal-line", terminalLogClass(log.level))}>
               <span className="truncate text-slate-500">{log.time}</span>

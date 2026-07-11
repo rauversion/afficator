@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
+import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
 
 type MasteringProfile = {
@@ -100,6 +101,7 @@ type TimelineEvent = MasteringProgressEvent & {
 type MasteringTerminalLog = TerminalLogEntry;
 
 export function MasteringPage() {
+  const { locale, t } = useI18n();
   const [profiles, setProfiles] = useState<MasteringProfile[]>([]);
   const [jobs, setJobs] = useState<MasteringJob[]>([]);
   const [sourcePath, setSourcePath] = useState("");
@@ -345,6 +347,7 @@ export function MasteringPage() {
 
   function appendTerminalLog(event: MasteringProgressEvent) {
     const log = eventToTerminalLog(event, nextTerminalLogId.current);
+    log.message = translateBackendMessage(locale, log.message);
 
     nextTerminalLogId.current += 1;
     setTerminalLogs((current) => [...current, log].slice(-1000));
@@ -369,18 +372,18 @@ export function MasteringPage() {
           <div className="min-w-0">
             <h1 className="m-0 text-2xl font-semibold tracking-normal">Mastering</h1>
             <p className="mt-1 truncate text-xs text-muted-foreground">
-              {sourcePath || "Sin archivo seleccionado"}
+              {sourcePath || t("Sin archivo seleccionado")}
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="secondary" onClick={() => void loadMastering()} disabled={busy}>
             <RefreshCw className="h-4 w-4" />
-            Refrescar
+            {t("Refrescar")}
           </Button>
           <Button onClick={() => void chooseSourceFile()} disabled={busy}>
             <AudioLines className="h-4 w-4" />
-            Elegir audio
+            {t("Elegir audio")}
           </Button>
         </div>
       </header>
@@ -397,27 +400,27 @@ export function MasteringPage() {
             <CardHeader>
               <div className="flex items-center gap-2">
                 <SlidersHorizontal className="h-4 w-4" />
-                <CardTitle>Nuevo master</CardTitle>
+                <CardTitle>{t("Nuevo master")}</CardTitle>
               </div>
               <span className="text-xs text-muted-foreground">
-                {apiKeyStatus?.configured ? `AI ${apiKeyStatus.preview}` : "AI sin key"}
+                {apiKeyStatus?.configured ? `AI ${apiKeyStatus.preview}` : t("AI sin key")}
               </span>
             </CardHeader>
             <CardContent className="grid gap-4 p-3">
               <div className="grid gap-2">
-                <span className="text-xs font-semibold text-muted-foreground">Archivo</span>
+                <span className="text-xs font-semibold text-muted-foreground">{t("Archivo")}</span>
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                   <div className="truncate rounded-md border border-border bg-secondary px-3 py-2 text-sm" title={sourcePath}>
-                    {sourcePath || "Elige un archivo de audio"}
+                    {sourcePath || t("Elige un archivo de audio")}
                   </div>
                   <Button variant="secondary" onClick={() => void chooseSourceFile()} disabled={busy}>
-                    Elegir
+                    {t("Elegir")}
                   </Button>
                 </div>
               </div>
 
               <div className="grid gap-2">
-                <span className="text-xs font-semibold text-muted-foreground">Presets</span>
+                <span className="text-xs font-semibold text-muted-foreground">{t("Presets")}</span>
                 <div className="grid gap-2 md:grid-cols-2">
                   {profiles.map((profile) => (
                     <button
@@ -447,7 +450,7 @@ export function MasteringPage() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     <Tags className="h-4 w-4" />
-                    <span className="text-sm font-semibold">Formato y metadata</span>
+                    <span className="text-sm font-semibold">{t("Formato y metadata")}</span>
                   </div>
                   <select
                     className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground"
@@ -460,11 +463,11 @@ export function MasteringPage() {
                 </div>
 
                 <div className="grid gap-2 md:grid-cols-3">
-                  <MetadataInput label="Titulo" value={metadata.title} onChange={(value) => updateMetadataField("title", value)} />
-                  <MetadataInput label="Artista" value={metadata.artist} onChange={(value) => updateMetadataField("artist", value)} />
+                  <MetadataInput label={t("Titulo")} value={metadata.title} onChange={(value) => updateMetadataField("title", value)} />
+                  <MetadataInput label={t("Artista")} value={metadata.artist} onChange={(value) => updateMetadataField("artist", value)} />
                   <MetadataInput label="Album" value={metadata.album} onChange={(value) => updateMetadataField("album", value)} />
-                  <MetadataInput label="Genero" value={metadata.genre} onChange={(value) => updateMetadataField("genre", value)} />
-                  <MetadataInput label="Ano" value={metadata.year} onChange={(value) => updateMetadataField("year", value)} />
+                  <MetadataInput label={t("Genero")} value={metadata.genre} onChange={(value) => updateMetadataField("genre", value)} />
+                  <MetadataInput label={t("Ano")} value={metadata.year} onChange={(value) => updateMetadataField("year", value)} />
                   <MetadataInput label="Track" value={metadata.track_number} onChange={(value) => updateMetadataField("track_number", value)} />
                   <MetadataInput label="BPM" value={metadata.bpm} onChange={(value) => updateMetadataField("bpm", value)} />
                   <MetadataInput label="Key" value={metadata.musical_key} onChange={(value) => updateMetadataField("musical_key", value)} />
@@ -476,12 +479,12 @@ export function MasteringPage() {
 
                 <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_220px]">
                   <label className="grid gap-1 text-sm font-medium">
-                    Comentario
+                    {t("Comentario")}
                     <textarea
                       className="min-h-20 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       value={metadata.comment ?? ""}
                       onChange={(event) => updateMetadataField("comment", event.currentTarget.value)}
-                      placeholder="Notas que quedaran embebidas en el AIFF..."
+                      placeholder={t("Notas que quedaran embebidas en el AIFF...")}
                     />
                   </label>
                   <div className="grid gap-2">
@@ -489,10 +492,10 @@ export function MasteringPage() {
                     <div className="flex gap-2">
                       <Button type="button" variant="secondary" onClick={() => void chooseCoverArt()} disabled={busy}>
                         <ImagePlus className="h-4 w-4" />
-                        Elegir
+                        {t("Elegir")}
                       </Button>
                       <Button type="button" variant="secondary" onClick={() => setCoverArtPath("")} disabled={!coverArtPath || busy}>
-                        Limpiar
+                        {t("Limpiar")}
                       </Button>
                     </div>
                     {coverArtPath ? (
@@ -502,7 +505,7 @@ export function MasteringPage() {
                       </div>
                     ) : (
                       <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                        JPG o PNG opcional.
+                        {t("JPG o PNG opcional.")}
                       </div>
                     )}
                   </div>
@@ -511,21 +514,21 @@ export function MasteringPage() {
 
               <div className="grid gap-3 md:grid-cols-2">
                 <label className="grid gap-1 text-sm font-medium">
-                  Feedback
+                  {t("Feedback")}
                   <textarea
                     className="min-h-28 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     value={feedback}
                     onChange={(event) => setFeedback(event.currentTarget.value)}
-                    placeholder="Mantener pegada, limpiar subgrave, suavizar hats..."
+                    placeholder={t("Mantener pegada, limpiar subgrave, suavizar hats...")}
                   />
                 </label>
                 <label className="grid gap-1 text-sm font-medium">
-                  Referencia
+                  {t("Referencia")}
                   <textarea
                     className="min-h-28 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     value={referenceNotes}
                     onChange={(event) => setReferenceNotes(event.currentTarget.value)}
-                    placeholder="Club, streaming, demo, vinilo, referencia sonora..."
+                    placeholder={t("Club, streaming, demo, vinilo, referencia sonora...")}
                   />
                 </label>
               </div>
@@ -543,7 +546,7 @@ export function MasteringPage() {
                 </label>
                 <Button disabled={busy || !sourcePath} onClick={() => void startMastering()}>
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-                  Generar master
+                  {t("Generar master")}
                 </Button>
               </div>
             </CardContent>
@@ -563,9 +566,9 @@ export function MasteringPage() {
             />
           ) : (
             <Card className="p-6">
-              <CardTitle>Sin masters todavia</CardTitle>
+              <CardTitle>{t("Sin masters todavia")}</CardTitle>
               <p className="mt-2 text-sm text-muted-foreground">
-                El historial aparece cuando generes el primer master.
+                {t("El historial aparece cuando generes el primer master.")}
               </p>
             </Card>
           )}
@@ -573,12 +576,12 @@ export function MasteringPage() {
 
         <Card className="h-[calc(100vh-112px)] min-h-[520px] overflow-hidden max-xl:h-[420px]">
           <CardHeader>
-            <CardTitle>Historial</CardTitle>
-            <span className="text-xs text-muted-foreground">{jobs.length} masters</span>
+            <CardTitle>{t("Historial")}</CardTitle>
+            <span className="text-xs text-muted-foreground">{t("{count} masters", { count: jobs.length })}</span>
           </CardHeader>
           <CardContent>
             {jobs.length === 0 ? (
-              <div className="px-3 py-4 text-sm text-muted-foreground">Sin jobs.</div>
+              <div className="px-3 py-4 text-sm text-muted-foreground">{t("Sin jobs.")}</div>
             ) : null}
             {jobs.map((job) => (
               <button
@@ -602,14 +605,14 @@ export function MasteringPage() {
                 </div>
                 <div className="flex min-w-0 items-center justify-between gap-2 text-xs">
                   <span className="truncate text-muted-foreground" title={job.output_path ?? job.source_path}>
-                    {job.output_path ? "Master disponible" : job.source_path}
+                    {job.output_path ? t("Master disponible") : job.source_path}
                   </span>
                   <span className="font-semibold text-foreground">
                     {activeJob?.id === job.id
                       ? eventsLoadingJobId === job.id
-                        ? "Cargando"
-                        : "Abierto"
-                      : "Ver detalle"}
+                        ? t("Cargando")
+                        : t("Abierto")
+                      : t("Ver detalle")}
                   </span>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
@@ -627,7 +630,7 @@ export function MasteringPage() {
         logs={terminalLogs}
         expanded={terminalExpanded}
         terminalRef={terminalElement}
-        subtitle="ffmpeg / ai / mastering"
+        subtitle={t("ffmpeg / ai / mastering")}
         onToggle={() => setTerminalExpanded((current) => !current)}
         onClear={clearTerminal}
       />
@@ -997,7 +1000,13 @@ function HistoryChip({ active, children }: { active: boolean; children: ReactNod
 }
 
 function StatusPill({ state }: { state: MasteringJob["state"] }) {
-  const label = state;
+  const { t } = useI18n();
+  const labels: Record<MasteringJob["state"], string> = {
+    pending: "Pendiente",
+    running: "Procesando",
+    completed: "Listo",
+    failed: "Error"
+  };
   return (
     <span
       className={cn(
@@ -1010,7 +1019,7 @@ function StatusPill({ state }: { state: MasteringJob["state"] }) {
       {state === "completed" ? <CheckCircle2 className="h-3 w-3" /> : null}
       {state === "running" || state === "pending" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
       {state === "failed" ? <AlertTriangle className="h-3 w-3" /> : null}
-      {label}
+      {t(labels[state])}
     </span>
   );
 }

@@ -24,6 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
+import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
 
 type TurnJob = {
@@ -71,6 +72,7 @@ type TurnTerminalLog = TerminalLogEntry;
 type TurnTab = "editor" | "history";
 
 export function TurnPage() {
+  const { locale, t } = useI18n();
   const [activeTab, setActiveTab] = useState<TurnTab>("editor");
   const [jobs, setJobs] = useState<TurnJob[]>([]);
   const [activeJobId, setActiveJobId] = useState("");
@@ -395,6 +397,7 @@ export function TurnPage() {
 
   function appendTerminalLog(event: TurnProgressEvent) {
     const log = eventToTerminalLog(event, nextTerminalLogId.current);
+    log.message = translateBackendMessage(locale, log.message);
 
     nextTerminalLogId.current += 1;
     setTerminalLogs((current) => [...current, log].slice(-1200));
@@ -419,18 +422,18 @@ export function TurnPage() {
           <div className="min-w-0">
             <h1 className="m-0 text-2xl font-semibold tracking-normal">Turn</h1>
             <p className="mt-1 truncate text-xs text-muted-foreground">
-              {activeJob?.output_path ?? (coverImagePath || "Mockups de discos girando en MP4")}
+              {activeJob?.output_path ?? (coverImagePath || t("Mockups de discos girando en MP4"))}
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="secondary" onClick={() => void loadTurnJobs()} disabled={busy}>
             <RefreshCw className="h-4 w-4" />
-            Refrescar
+            {t("Refrescar")}
           </Button>
           <Button onClick={() => void startTurn()} disabled={busy || !coverImagePath || !audioFilePath}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
-            Generar video
+            {t("Generar video")}
           </Button>
         </div>
       </header>
@@ -443,10 +446,10 @@ export function TurnPage() {
 
       <div className="mb-3 inline-flex rounded-md border border-border bg-secondary p-1">
         <TurnTabButton active={activeTab === "editor"} onClick={() => setActiveTab("editor")}>
-          Editor
+          {t("Editor")}
         </TurnTabButton>
         <TurnTabButton active={activeTab === "history"} onClick={() => setActiveTab("history")}>
-          Historial {jobs.length > 0 ? `(${jobs.length})` : ""}
+          {t("Historial")} {jobs.length > 0 ? `(${jobs.length})` : ""}
         </TurnTabButton>
       </div>
 
@@ -456,7 +459,7 @@ export function TurnPage() {
             <CardHeader>
               <div className="flex items-center gap-2">
                 <RotateCw className="h-4 w-4" />
-                <CardTitle>Nuevo turn</CardTitle>
+                <CardTitle>{t("Nuevo turn")}</CardTitle>
               </div>
               <span className="text-xs text-muted-foreground">MP4 1080x1080</span>
             </CardHeader>
@@ -479,14 +482,14 @@ export function TurnPage() {
                     </div>
                     {!coverPreviewUrl ? (
                       <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
-                        Elige una portada
+                        {t("Elige una portada")}
                       </div>
                     ) : null}
                   </div>
                   <div className="flex items-center gap-2">
                     <Button type="button" variant="secondary" onClick={() => setPreviewPlaying((current) => !current)}>
                       {previewPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                      {previewPlaying ? "Pausar preview" : "Play preview"}
+                      {previewPlaying ? t("Pausar preview") : t("Play preview")}
                     </Button>
                     <span className="text-xs text-muted-foreground">
                       {loopSpeed} RPM / disco {discSize}%
@@ -530,11 +533,11 @@ export function TurnPage() {
                   <div className="grid gap-3 rounded-md border border-border bg-background/60 p-3">
                     <div className="flex items-center gap-2 text-sm font-semibold">
                       <Palette className="h-4 w-4" />
-                      Visual
+                      {t("Visual")}
                     </div>
                     <div className="grid gap-3 md:grid-cols-3">
                       <label className="grid gap-1 text-sm font-medium">
-                        Fondo
+                        {t("Fondo")}
                         <input
                           className="h-10 rounded-md border border-input bg-background px-2"
                           type="color"
@@ -543,7 +546,7 @@ export function TurnPage() {
                         />
                       </label>
                       <RangeInput
-                        label="Disco"
+                        label={t("Disco")}
                         value={discSize}
                         min={20}
                         max={100}
@@ -552,7 +555,7 @@ export function TurnPage() {
                         onChange={setDiscSize}
                       />
                       <RangeInput
-                        label="Velocidad"
+                        label={t("Velocidad")}
                         value={loopSpeed}
                         min={1}
                         max={78}
@@ -566,7 +569,7 @@ export function TurnPage() {
                   <div className="grid gap-3 rounded-md border border-border bg-background/60 p-3">
                     <div className="flex items-center gap-2 text-sm font-semibold">
                       <Timer className="h-4 w-4" />
-                      Audio y duracion
+                      {t("Audio y duracion")}
                     </div>
                     <AudioTrimSlider
                       totalDuration={audioDuration ?? Math.max(audioEnd, durationSeconds, 1)}
@@ -578,19 +581,22 @@ export function TurnPage() {
                     />
                     <span className="text-xs text-muted-foreground">
                       {audioDuration
-                        ? `Audio: ${formatSeconds(audioDuration)}. Video: ${formatSeconds(durationSeconds)}.`
-                        : "La duracion del audio se detecta al cargar el archivo."}
+                        ? t("Audio: {audio}. Video: {video}.", {
+                          audio: formatSeconds(audioDuration),
+                          video: formatSeconds(durationSeconds)
+                        })
+                        : t("La duracion del audio se detecta al cargar el archivo.")}
                     </span>
                   </div>
 
                   <div className="flex flex-wrap items-center justify-end gap-2">
                     <Button variant="secondary" onClick={() => void openFolder(audioFilePath)} disabled={!audioFilePath}>
                       <FolderOpen className="h-4 w-4" />
-                      Abrir audio
+                      {t("Abrir audio")}
                     </Button>
                     <Button onClick={() => void startTurn()} disabled={busy || !coverImagePath || !audioFilePath}>
                       {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
-                      Generar video
+                      {t("Generar video")}
                     </Button>
                   </div>
                 </div>
@@ -612,9 +618,9 @@ export function TurnPage() {
             />
           ) : (
             <Card className="p-6">
-              <CardTitle>Sin videos todavia</CardTitle>
+              <CardTitle>{t("Sin videos todavia")}</CardTitle>
               <p className="mt-2 text-sm text-muted-foreground">
-                Genera un turn para ver el MP4, sus eventos y el historial.
+                {t("Genera un turn para ver el MP4, sus eventos y el historial.")}
               </p>
             </Card>
           )}
@@ -633,7 +639,7 @@ export function TurnPage() {
         logs={terminalLogs}
         expanded={terminalExpanded}
         terminalRef={terminalElement}
-        subtitle="ffmpeg / turn"
+        subtitle={t("ffmpeg / turn")}
         onToggle={() => setTerminalExpanded((current) => !current)}
         onClear={clearTerminal}
       />
@@ -650,6 +656,8 @@ function TurnTabButton({
   onClick: () => void;
   children: React.ReactNode;
 }) {
+  const { t } = useI18n();
+
   return (
     <button
       type="button"
@@ -893,6 +901,8 @@ function PathPicker({
   onChoose: () => Promise<void>;
   onClear: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className="grid gap-2">
       <span className="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
@@ -904,10 +914,10 @@ function PathPicker({
           {value || placeholder}
         </div>
         <Button type="button" variant="secondary" onClick={() => void onChoose()} disabled={disabled}>
-          Elegir
+          {t("Elegir")}
         </Button>
         <Button type="button" variant="secondary" onClick={onClear} disabled={disabled || !value}>
-          Limpiar
+          {t("Limpiar")}
         </Button>
       </div>
     </div>
@@ -1173,6 +1183,7 @@ function formatTrimInput(value: number) {
 }
 
 function TurnStatusPill({ state }: { state: TurnJob["state"] }) {
+  const { t } = useI18n();
   const labels = {
     pending: "Pendiente",
     running: "Procesando",
@@ -1190,7 +1201,7 @@ function TurnStatusPill({ state }: { state: TurnJob["state"] }) {
       {state === "completed" ? <CheckCircle2 className="h-3 w-3" /> : null}
       {state === "failed" ? <AlertTriangle className="h-3 w-3" /> : null}
       {state === "running" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-      {labels[state]}
+      {t(labels[state])}
     </span>
   );
 }

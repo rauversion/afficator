@@ -96,8 +96,8 @@ Opciones:
 Ejemplo:
 
 ```sh
-git tag v0.1.6
-git push origin v0.1.6
+git tag v0.1.7
+git push origin v0.1.7
 ```
 
 ### macOS no firmado
@@ -108,7 +108,7 @@ Para probarla localmente, descomprime el `.app.tar.gz` y quita la marca de quara
 
 ```sh
 cd ~/Downloads
-tar -xzf RauStudio_0.1.6_arm64.app.tar.gz
+tar -xzf RauStudio_0.1.7_arm64.app.tar.gz
 xattr -dr com.apple.quarantine "Rau Studio.app"
 open "Rau Studio.app"
 ```
