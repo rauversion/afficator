@@ -129,6 +129,8 @@ struct PlaylistIndexProgressEvent {
     library_id: Option<String>,
     playlist_path: Option<String>,
     playlist_status: Option<String>,
+    track_id: Option<String>,
+    track_status: Option<String>,
     processed: Option<usize>,
     total: Option<usize>,
     timestamp: String,
@@ -656,6 +658,99 @@ pub fn playlist_index_delete_playlists(
         Some(library_id.clone()),
         Some(paths.len()),
         Some(paths.len()),
+    );
+
+    let library = get_library(&conn, &library_id)?
+        .ok_or_else(|| "No se pudo leer libreria indexada.".to_string())?;
+    let playlists = list_playlists(&conn, &library_id)?;
+    Ok(PlaylistIndexImportResponse { library, playlists })
+}
+
+#[tauri::command]
+pub fn playlist_index_delete_tracks(
+    app: AppHandle,
+    library_id: String,
+    track_ids: Vec<String>,
+) -> Result<PlaylistIndexImportResponse, String> {
+    let mut conn = open_db(&app)?;
+    if get_library(&conn, &library_id)?.is_none() {
+        return Err(format!("Libreria indexada no encontrada: {library_id}"));
+    }
+
+    let ids = track_ids
+        .into_iter()
+        .map(|track_id| track_id.trim().to_string())
+        .filter(|track_id| !track_id.is_empty())
+        .collect::<BTreeSet<_>>();
+    if ids.is_empty() {
+        return Err("Selecciona al menos un track indexado para eliminar.".to_string());
+    }
+
+    let now = timestamp();
+    {
+        let tx = conn
+            .transaction()
+            .map_err(|error| format!("No se pudo iniciar transaccion SQLite: {error}"))?;
+        for track_id in &ids {
+            tx.execute(
+                "DELETE FROM playlist_index_tracks WHERE library_id = ?1 AND track_id = ?2",
+                params![&library_id, track_id],
+            )
+            .map_err(|error| format!("No se pudo eliminar track indexado {track_id}: {error}"))?;
+        }
+
+        tx.execute(
+            "DELETE FROM playlist_draft_tracks
+             WHERE draft_id IN (SELECT id FROM playlist_drafts WHERE library_id = ?1)
+               AND NOT EXISTS (
+                 SELECT 1 FROM playlist_index_tracks t
+                 WHERE t.library_id = ?1 AND t.track_id = playlist_draft_tracks.track_id
+               )",
+            params![&library_id],
+        )
+        .map_err(|error| format!("No se pudieron limpiar drafts huerfanos: {error}"))?;
+
+        tx.execute(
+            "UPDATE playlist_index_playlists
+             SET track_count = (
+                   SELECT COUNT(DISTINCT track_id)
+                   FROM playlist_index_memberships
+                   WHERE library_id = playlist_index_playlists.library_id
+                     AND playlist_path = playlist_index_playlists.path
+                 ),
+                 updated_at = ?2
+             WHERE library_id = ?1",
+            params![&library_id, &now],
+        )
+        .map_err(|error| format!("No se pudieron actualizar contadores de playlists: {error}"))?;
+
+        tx.execute(
+            "UPDATE playlist_index_libraries
+             SET track_count = (
+                   SELECT COUNT(*) FROM playlist_index_tracks WHERE library_id = ?1
+                 ),
+                 playlist_count = (
+                   SELECT COUNT(*) FROM playlist_index_playlists WHERE library_id = ?1 AND node_type = '1'
+                 ),
+                 updated_at = ?2
+             WHERE id = ?1",
+            params![&library_id, &now],
+        )
+        .map_err(|error| format!("No se pudieron actualizar contadores de libreria: {error}"))?;
+
+        tx.commit()
+            .map_err(|error| format!("No se pudo confirmar eliminacion de tracks: {error}"))?;
+    }
+
+    rebuild_fts(&conn)?;
+    emit_progress(
+        &app,
+        "info",
+        &format!("Tracks indexados eliminados: {}", ids.len()),
+        Some(100.0),
+        Some(library_id.clone()),
+        Some(ids.len()),
+        Some(ids.len()),
     );
 
     let library = get_library(&conn, &library_id)?
@@ -1483,6 +1578,18 @@ fn generate_embeddings_blocking(
 
     let mut generated_total = 0;
     for chunk in pending.chunks(EMBEDDING_BATCH_SIZE) {
+        for candidate in chunk {
+            emit_track_embedding_progress(
+                &app,
+                &library_id,
+                &candidate.track_id,
+                "embedding",
+                &format!("Generando embedding: {}", candidate.track_id),
+                generated_total,
+                total,
+            );
+        }
+
         let inputs = chunk
             .iter()
             .map(|candidate| candidate.search_text.clone())
@@ -1512,6 +1619,15 @@ fn generate_embeddings_blocking(
             )
             .map_err(|error| format!("No se pudo guardar embedding: {error}"))?;
             generated_total += 1;
+            emit_track_embedding_progress(
+                &app,
+                &library_id,
+                &candidate.track_id,
+                "embedded",
+                &format!("Embedding listo: {}", candidate.track_id),
+                generated_total,
+                total,
+            );
         }
 
         emit_progress(
@@ -1862,6 +1978,8 @@ fn emit_progress(
             library_id,
             playlist_path: None,
             playlist_status: None,
+            track_id: None,
+            track_status: None,
             processed,
             total,
             timestamp: timestamp(),
@@ -1906,6 +2024,41 @@ fn emit_playlist_index_progress(
             library_id: Some(library_id.to_string()),
             playlist_path: Some(playlist_path.to_string()),
             playlist_status: Some(playlist_status.to_string()),
+            track_id: None,
+            track_status: None,
+            processed: Some(processed),
+            total: Some(total),
+            timestamp: timestamp(),
+        },
+    );
+}
+
+fn emit_track_embedding_progress(
+    app: &AppHandle,
+    library_id: &str,
+    track_id: &str,
+    track_status: &str,
+    message: &str,
+    processed: usize,
+    total: usize,
+) {
+    let progress = if total == 0 {
+        100.0
+    } else {
+        (processed as f64 / total as f64) * 100.0
+    };
+    let _ = app.emit(
+        "playlist-index-progress",
+        PlaylistIndexProgressEvent {
+            event_type: "playlist_index_progress".to_string(),
+            level: "info".to_string(),
+            message: message.to_string(),
+            progress: Some(progress),
+            library_id: Some(library_id.to_string()),
+            playlist_path: None,
+            playlist_status: None,
+            track_id: Some(track_id.to_string()),
+            track_status: Some(track_status.to_string()),
             processed: Some(processed),
             total: Some(total),
             timestamp: timestamp(),

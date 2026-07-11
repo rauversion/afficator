@@ -47,7 +47,7 @@ import { FileConversionPage } from "./FileConversionPage";
 import { MasteringPage } from "./MasteringPage";
 import { PlaylistIndexPage } from "./PlaylistIndexPage";
 import { TurnPage } from "./TurnPage";
-import { I18nProvider, languageLabel, translate, translateBackendMessage, useI18n, type Locale } from "./i18n";
+import { languageLabel, translate, translateBackendMessage, useI18n, type Locale } from "./i18n";
 import packageMetadata from "../package.json";
 import type * as React from "react";
 
@@ -286,27 +286,25 @@ function detectInitialDarkMode() {
 
 export default function App() {
   return (
-    <I18nProvider>
-      <HashRouter>
-        <Routes>
-          <Route element={<AppShell />}>
-            <Route path="/" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-            <Route path="/rekordbox-convert" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-            <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-            <Route path="/file-conversion/local" element={<FileConversionPage />} />
-            <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
-            <Route path="/playlists" element={<PlaylistIndexPage />} />
-            <Route path="/turn" element={<TurnPage />} />
-            <Route path="/mastering" element={<MasteringPage />} />
-            <Route
-              path="/settings"
-              element={<SettingsPage />}
-            />
-            <Route path="*" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-          </Route>
-        </Routes>
-      </HashRouter>
-    </I18nProvider>
+    <HashRouter>
+      <Routes>
+        <Route element={<AppShell />}>
+          <Route path="/" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+          <Route path="/rekordbox-convert" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+          <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+          <Route path="/file-conversion/local" element={<FileConversionPage />} />
+          <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
+          <Route path="/playlists" element={<PlaylistIndexPage />} />
+          <Route path="/turn" element={<TurnPage />} />
+          <Route path="/mastering" element={<MasteringPage />} />
+          <Route
+            path="/settings"
+            element={<SettingsPage />}
+          />
+          <Route path="*" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+        </Route>
+      </Routes>
+    </HashRouter>
   );
 }
 

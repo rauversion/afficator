@@ -112,7 +112,7 @@
   .playlist-index-track-grid {
     grid-template-columns:
       24px 32px minmax(0, 1.25fr) minmax(0, 0.75fr) minmax(0, 0.75fr)
-      88px 70px 74px;
+      88px 70px 108px;
   }
 
   .plan-grid {

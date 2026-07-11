@@ -1410,6 +1410,7 @@ pub fn run() {
             playlist_index::playlist_index_library_playlists,
             playlist_index::playlist_index_delete_library,
             playlist_index::playlist_index_delete_playlists,
+            playlist_index::playlist_index_delete_tracks,
             playlist_index::playlist_index_playlist_tracks,
             playlist_index::playlist_index_search_tracks,
             playlist_index::playlist_index_generate_embeddings,

@@ -229,6 +229,8 @@ const translations: Record<Locale, Record<string, string>> = {
     "Elige un XML para revisar sus playlists antes de indexar.": "Choose an XML to review its playlists before indexing.",
     "Eliminar indice": "Delete index",
     "Eliminar libreria indexada": "Delete indexed library",
+    "Eliminar track": "Delete track",
+    "Eliminar {count} tracks": "Delete {count} tracks",
     "Eliminar {count} indices": "Delete {count} indexes",
     "Eliminando": "Deleting",
     "Embeddings listos: {count} generados con {model}.": "Embeddings ready: {count} generated with {model}.",
@@ -237,6 +239,8 @@ const translations: Record<Locale, Record<string, string>> = {
       "This deletes this library's SQLite index, playlists, vectors, and drafts. It does not delete audio files or modify the original XML.",
     "Esto elimina el indice SQLite de las playlists seleccionadas. No elimina archivos de audio ni modifica el XML original.":
       "This deletes the SQLite index for the selected playlists. It does not delete audio files or modify the original XML.",
+    "Esto elimina los tracks seleccionados del indice SQLite, sus vectores y referencias en playlists/drafts locales. No elimina archivos de audio ni modifica el XML original.":
+      "This deletes the selected tracks from the SQLite index, their vectors, and local playlist/draft references. It does not delete audio files or modify the original XML.",
     "Exportando XML": "Exporting XML",
     "Exportar": "Export",
     "Generando embeddings de tracks.": "Generating track embeddings.",
@@ -266,6 +270,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Nombre": "Name",
     "Playlist": "Playlist",
     "Playlist creada: {name}": "Playlist created: {name}",
+    "Playlist creada: {name} con {count} tracks.": "Playlist created: {name} with {count} tracks.",
     "Playlists del XML": "XML playlists",
     "Playlist sin tracks.": "Playlist has no tracks.",
     "Preparando indice SQLite.": "Preparing SQLite index.",
@@ -278,10 +283,14 @@ const translations: Record<Locale, Record<string, string>> = {
     "Sin vector": "No vector",
     "Sin XML indexado": "No indexed XML",
     "Stop": "Stop",
+    "Se agregaran {count} tracks seleccionados.": "{count} selected tracks will be added.",
     "Track indexado en SQLite": "Track indexed in SQLite",
+    "Tracks eliminados del indice: {count}": "Tracks deleted from index: {count}",
     "Usar embeddings si estan disponibles.": "Use embeddings when available.",
     "Vector": "Vector",
     "Vector %": "Vector %",
+    "Vector en cola": "Vector queued",
+    "Vector generandose": "Vector generating",
     "Vector indexado": "Vector indexed",
     "Vector listo": "Vector ready",
     "Vector pendiente": "Vector pending",
@@ -440,9 +449,12 @@ export function translateBackendMessage(locale: Locale, message: string) {
     [/^ffmpeg iniciado: (.+) -> (.+)$/, (match) => `ffmpeg started: ${match[1]} -> ${match[2]}`],
     [/^Archivo local no encontrado en SQLite: (.+)$/, (match) => `Local file not found in SQLite: ${match[1]}`],
     [/^Indices de playlists eliminados: (\d+)$/, (match) => `Playlist indexes deleted: ${match[1]}`],
+    [/^Tracks indexados eliminados: (\d+)$/, (match) => `Indexed tracks deleted: ${match[1]}`],
     [/^Indexando playlist: (.+)$/, (match) => `Indexing playlist: ${match[1]}`],
     [/^Indice de libreria eliminado\.$/, () => "Library index deleted."],
     [/^Playlist indexada: (.+)$/, (match) => `Playlist indexed: ${match[1]}`],
+    [/^Generando embedding: (.+)$/, (match) => `Generating embedding: ${match[1]}`],
+    [/^Embedding listo: (.+)$/, (match) => `Embedding ready: ${match[1]}`],
     [/^TrackID no existe en COLLECTION: (.+)$/, (match) => `TrackID does not exist in COLLECTION: ${match[1]}`]
   ];
 

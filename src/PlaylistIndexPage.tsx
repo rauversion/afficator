@@ -123,6 +123,8 @@ type PlaylistIndexProgressEvent = {
   library_id?: string | null;
   playlist_path?: string | null;
   playlist_status?: "indexing" | "indexed" | string | null;
+  track_id?: string | null;
+  track_status?: "embedding" | "embedded" | string | null;
   processed?: number | null;
   total?: number | null;
   timestamp: string;
@@ -136,9 +138,11 @@ type PlayerState = {
 
 type PlaylistIndexTab = "index" | "search" | "playlist";
 type PlaylistIndexPlaylistStatus = "pending" | "queued" | "indexing" | "indexed";
+type TrackEmbeddingStatus = "pending" | "queued" | "embedding" | "embedded";
 type DeleteIndexDialogState =
   | { kind: "library"; library: PlaylistIndexLibrary }
-  | { kind: "playlists"; libraryId: string; playlistPaths: string[] };
+  | { kind: "playlists"; libraryId: string; playlistPaths: string[] }
+  | { kind: "tracks"; libraryId: string; tracks: PlaylistIndexTrack[] };
 
 export function PlaylistIndexPage() {
   const { locale, t } = useI18n();
@@ -166,12 +170,14 @@ export function PlaylistIndexPage() {
   const [terminalExpanded, setTerminalExpanded] = useState(false);
   const [indexProgress, setIndexProgress] = useState<PlaylistIndexProgressEvent | null>(null);
   const [playlistIndexStatuses, setPlaylistIndexStatuses] = useState<Record<string, PlaylistIndexPlaylistStatus>>({});
+  const [trackEmbeddingStatuses, setTrackEmbeddingStatuses] = useState<Record<string, TrackEmbeddingStatus>>({});
   const [player, setPlayer] = useState<PlayerState | null>(null);
   const [playerPlaying, setPlayerPlaying] = useState(false);
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
   const [playerDuration, setPlayerDuration] = useState(0);
   const [activeTab, setActiveTab] = useState<PlaylistIndexTab>("index");
   const [createDraftSheetOpen, setCreateDraftSheetOpen] = useState(false);
+  const [createDraftSeedTrackIds, setCreateDraftSeedTrackIds] = useState<string[]>([]);
   const [detailTrack, setDetailTrack] = useState<PlaylistIndexTrack | null>(null);
   const [detailSheetOpen, setDetailSheetOpen] = useState(false);
   const [deleteIndexDialog, setDeleteIndexDialog] = useState<DeleteIndexDialogState | null>(null);
@@ -213,6 +219,12 @@ export function PlaylistIndexPage() {
       ),
     [indexedPlaylistPaths, selectedPreviewPlaylistPaths]
   );
+  const selectedSearchTracks = useMemo(() => {
+    const selectedIds = selectedTrackIds;
+    return searchResults
+      .map((result) => result.track)
+      .filter((track) => selectedIds.has(track.track_id));
+  }, [searchResults, selectedTrackIds]);
   const embeddedPercent = activeLibrary && activeLibrary.track_count > 0
     ? Math.round((activeLibrary.embedded_track_count / activeLibrary.track_count) * 100)
     : 0;
@@ -230,6 +242,13 @@ export function PlaylistIndexPage() {
         setPlaylistIndexStatuses((current) => ({
           ...current,
           [event.payload.playlist_path as string]: status
+        }));
+      }
+      if (event.payload.track_id && event.payload.track_status) {
+        const status = event.payload.track_status === "embedded" ? "embedded" : "embedding";
+        setTrackEmbeddingStatuses((current) => ({
+          ...current,
+          [event.payload.track_id as string]: status
         }));
       }
       appendTerminalLog({
@@ -489,6 +508,15 @@ export function PlaylistIndexPage() {
     setBusy(true);
     setErrorMessage("");
     setMessage("");
+    setTrackEmbeddingStatuses((current) => {
+      const next = { ...current };
+      for (const result of searchResults) {
+        if (!result.track.embedding_ready) {
+          next[result.track.track_id] = "queued";
+        }
+      }
+      return next;
+    });
     appendTerminalLog({ level: "info", message: t("Generando embeddings de tracks.") });
 
     try {
@@ -519,6 +547,7 @@ export function PlaylistIndexPage() {
 
     setBusy(true);
     setErrorMessage("");
+    const seedTrackIds = createDraftSeedTrackIds;
 
     try {
       const draft = await invoke<PlaylistDraft>("playlist_index_create_draft", {
@@ -526,17 +555,40 @@ export function PlaylistIndexPage() {
         name: draftName,
         description: draftDescription || null
       });
+      if (seedTrackIds.length > 0) {
+        const tracks = await invoke<PlaylistIndexTrack[]>("playlist_index_add_tracks_to_draft", {
+          draftId: draft.id,
+          trackIds: seedTrackIds
+        });
+        setDraftTracks(tracks);
+        setSelectedTrackIds(new Set());
+      }
       setDraftName("");
       setDraftDescription("");
+      setCreateDraftSeedTrackIds([]);
       setCreateDraftSheetOpen(false);
       setActiveDraftId(draft.id);
       await loadDrafts(activeLibraryId, draft.id);
-      setMessage(t("Playlist creada: {name}", { name: draft.name }));
+      setMessage(
+        seedTrackIds.length > 0
+          ? t("Playlist creada: {name} con {count} tracks.", { name: draft.name, count: seedTrackIds.length })
+          : t("Playlist creada: {name}", { name: draft.name })
+      );
     } catch (error) {
       setErrorMessage(translateBackendMessage(locale, String(error)));
     } finally {
       setBusy(false);
     }
+  }
+
+  function openCreateDraft(seedTrackIds: string[] = []) {
+    setCreateDraftSeedTrackIds(Array.from(new Set(seedTrackIds)));
+    setCreateDraftSheetOpen(true);
+  }
+
+  function closeCreateDraftSheet() {
+    setCreateDraftSheetOpen(false);
+    setCreateDraftSeedTrackIds([]);
   }
 
   async function loadDrafts(libraryId = activeLibraryId, selectDraftId = activeDraftId) {
@@ -648,6 +700,12 @@ export function PlaylistIndexPage() {
     setDeleteIndexDialog({ kind: "library", library });
   }
 
+  function requestDeleteIndexedTracks(tracks: PlaylistIndexTrack[]) {
+    if (!activeLibraryId || tracks.length === 0) return;
+    const uniqueTracks = Array.from(new Map(tracks.map((track) => [track.track_id, track])).values());
+    setDeleteIndexDialog({ kind: "tracks", libraryId: activeLibraryId, tracks: uniqueTracks });
+  }
+
   async function confirmDeleteIndex() {
     if (!deleteIndexDialog) return;
 
@@ -670,7 +728,7 @@ export function PlaylistIndexPage() {
         }
         setMessage(t("Indice eliminado: {name}", { name: deleteIndexDialog.library.source_name }));
         await loadLibraries("");
-      } else {
+      } else if (deleteIndexDialog.kind === "playlists") {
         const response = await invoke<PlaylistIndexImportResponse>("playlist_index_delete_playlists", {
           libraryId: deleteIndexDialog.libraryId,
           playlistPaths: deleteIndexDialog.playlistPaths
@@ -692,6 +750,28 @@ export function PlaylistIndexPage() {
           setPlaylistTracks([]);
         }
         setMessage(t("Indices eliminados: {count}", { count: deleteIndexDialog.playlistPaths.length }));
+        await loadLibraries(response.library.id);
+      } else {
+        const deletedIds = new Set(deleteIndexDialog.tracks.map((track) => track.track_id));
+        const response = await invoke<PlaylistIndexImportResponse>("playlist_index_delete_tracks", {
+          libraryId: deleteIndexDialog.libraryId,
+          trackIds: Array.from(deletedIds)
+        });
+        setPlaylists(response.playlists);
+        setSearchResults((current) => current.filter((result) => !deletedIds.has(result.track.track_id)));
+        setSelectedTrackIds((current) => {
+          const next = new Set(current);
+          for (const trackId of deletedIds) next.delete(trackId);
+          return next;
+        });
+        setTrackEmbeddingStatuses((current) => {
+          const next = { ...current };
+          for (const trackId of deletedIds) delete next[trackId];
+          return next;
+        });
+        setDraftTracks((current) => current.filter((track) => !deletedIds.has(track.track_id)));
+        setPlaylistTracks((current) => current.filter((track) => !deletedIds.has(track.track_id)));
+        setMessage(t("Tracks eliminados del indice: {count}", { count: deletedIds.size }));
         await loadLibraries(response.library.id);
       }
       setDeleteIndexDialog(null);
@@ -759,6 +839,10 @@ export function PlaylistIndexPage() {
 
   function playlistIndexStatus(path: string): PlaylistIndexPlaylistStatus {
     return playlistIndexStatuses[path] ?? (indexedPlaylistPaths.has(path) ? "indexed" : "pending");
+  }
+
+  function trackEmbeddingStatus(track: PlaylistIndexTrack): TrackEmbeddingStatus {
+    return trackEmbeddingStatuses[track.track_id] ?? (track.embedding_ready ? "embedded" : "pending");
   }
 
   async function togglePathPlayback(path: string, label: string) {
@@ -1174,13 +1258,33 @@ export function PlaylistIndexPage() {
                       {searchResults.length} {t("resultados")} · {selectedTrackIds.size} {t("seleccionados")}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
                     <Button variant="secondary" size="sm" disabled={searchResults.length === 0} onClick={selectAllSearchResults}>
                       {selectedTrackIds.size === searchResults.length ? t("Deseleccionar") : t("Todos")}
                     </Button>
                     <Button size="sm" disabled={!activeDraftId || selectedTrackIds.size === 0 || busy} onClick={() => void addSelectedToDraft()}>
                       <Plus className="h-3.5 w-3.5" />
                       {t("Agregar")}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={!activeLibraryId || selectedTrackIds.size === 0 || busy}
+                      onClick={() => openCreateDraft(Array.from(selectedTrackIds))}
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      {t("Nueva playlist")}
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      disabled={selectedSearchTracks.length === 0 || busy}
+                      onClick={() => requestDeleteIndexedTracks(selectedSearchTracks)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      {selectedSearchTracks.length > 1
+                        ? t("Eliminar {count} tracks", { count: selectedSearchTracks.length })
+                        : t("Eliminar track")}
                     </Button>
                   </div>
                 </CardHeader>
@@ -1207,6 +1311,8 @@ export function PlaylistIndexPage() {
                       onDetails={() => openTrackDetail(result.track)}
                       onReveal={() => void reveal(result.track.source_path)}
                       onOpenFolder={() => void openFolder(result.track.source_path)}
+                      onDelete={() => requestDeleteIndexedTracks([result.track])}
+                      embeddingStatus={trackEmbeddingStatus(result.track)}
                       playing={Boolean(result.track.source_path && player?.path === result.track.source_path && playerPlaying)}
                     />
                   ))}
@@ -1222,7 +1328,7 @@ export function PlaylistIndexPage() {
                   <CardTitle>{t("Drafts")}</CardTitle>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground">{drafts.length}</span>
-                    <Button size="sm" disabled={!activeLibraryId} onClick={() => setCreateDraftSheetOpen(true)}>
+                    <Button size="sm" disabled={!activeLibraryId} onClick={() => openCreateDraft()}>
                       <Plus className="h-3.5 w-3.5" />
                       {t("Nueva")}
                     </Button>
@@ -1319,14 +1425,14 @@ export function PlaylistIndexPage() {
 
       {createDraftSheetOpen ? (
         <div className="fixed inset-0 z-[65]">
-          <div className="absolute inset-0 bg-black/25 backdrop-blur-[1px]" onClick={() => setCreateDraftSheetOpen(false)} />
+          <div className="absolute inset-0 bg-black/25 backdrop-blur-[1px]" onClick={closeCreateDraftSheet} />
           <aside className="absolute right-0 top-0 z-[70] flex h-full w-[420px] max-w-[calc(100vw-16px)] flex-col border-l border-border bg-background shadow-2xl">
             <header className="flex min-h-14 items-center justify-between gap-3 border-b border-border bg-card px-4">
               <div className="min-w-0">
                 <h2 className="truncate text-base font-semibold">{t("Crear playlist")}</h2>
                 <p className="truncate text-xs text-muted-foreground">{activeLibrary?.source_name ?? t("Sin libreria activa")}</p>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => setCreateDraftSheetOpen(false)}>
+              <Button variant="ghost" size="sm" onClick={closeCreateDraftSheet}>
                 {t("Cerrar")}
               </Button>
             </header>
@@ -1340,6 +1446,11 @@ export function PlaylistIndexPage() {
                   onChange={(event) => setDraftName(event.currentTarget.value)}
                 />
               </label>
+              {createDraftSeedTrackIds.length > 0 ? (
+                <div className="rounded-md border border-border bg-secondary/60 px-3 py-2 text-sm">
+                  {t("Se agregaran {count} tracks seleccionados.", { count: createDraftSeedTrackIds.length })}
+                </div>
+              ) : null}
               <label className="grid gap-1 text-sm font-medium">
                 {t("Descripcion")}
                 <textarea
@@ -1394,31 +1505,42 @@ function TrackRow({
   selected,
   score,
   playing,
+  embeddingStatus,
   onToggle,
   onPlay,
   onDetails,
   onReveal,
-  onOpenFolder
+  onOpenFolder,
+  onDelete
 }: {
   track: PlaylistIndexTrack;
   selected: boolean;
   score: string;
   playing: boolean;
+  embeddingStatus: TrackEmbeddingStatus;
   onToggle: () => void;
   onPlay: () => void;
   onDetails: () => void;
   onReveal: () => void;
   onOpenFolder: () => void;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
 
   return (
-    <div className={cn("playlist-index-track-grid border-b border-border text-xs", !track.source_exists && "bg-red-50 dark:bg-red-950/30")}>
+    <div
+      className={cn(
+        "playlist-index-track-grid relative overflow-hidden border-b border-border text-xs",
+        !track.source_exists && "bg-red-50 dark:bg-red-950/30",
+        (embeddingStatus === "queued" || embeddingStatus === "embedding") && "bg-amber-50/60 dark:bg-amber-950/20"
+      )}
+    >
       <input type="checkbox" checked={selected} onChange={onToggle} />
       <Button variant={playing ? "default" : "secondary"} size="icon" disabled={!track.source_exists || !track.source_path} onClick={onPlay}>
         {playing ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
       </Button>
       <span className="flex min-w-0 items-center gap-2" title={track.name ?? track.track_id}>
+        <TrackEmbeddingStatusDot status={embeddingStatus} />
         <button
           type="button"
           className="min-w-0 truncate text-left font-medium underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -1426,7 +1548,7 @@ function TrackRow({
         >
           {track.name ?? track.track_id}
         </button>
-        <TrackIndexBadges track={track} />
+        <TrackIndexBadges track={track} embeddingStatus={embeddingStatus} />
       </span>
       <span className="truncate" title={track.artist ?? ""}>{track.artist ?? ""}</span>
       <span className="truncate" title={track.album ?? ""}>{track.album ?? ""}</span>
@@ -1439,7 +1561,15 @@ function TrackRow({
         <Button variant="secondary" size="icon" disabled={!track.source_path} title={t("Abrir carpeta")} onClick={onOpenFolder}>
           <FolderOpen className="h-3.5 w-3.5" />
         </Button>
+        <Button variant="destructive" size="icon" title={t("Eliminar track")} onClick={onDelete}>
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
       </div>
+      {embeddingStatus === "embedding" ? (
+        <span className="absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-amber-300/20">
+          <span className="block h-full w-1/3 animate-[playlist-index-row_1s_ease-in-out_infinite] rounded-full bg-amber-400" />
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -1464,8 +1594,15 @@ function InfoPopover({
   );
 }
 
-function TrackIndexBadges({ track }: { track: PlaylistIndexTrack }) {
+function TrackIndexBadges({
+  track,
+  embeddingStatus
+}: {
+  track: PlaylistIndexTrack;
+  embeddingStatus?: TrackEmbeddingStatus;
+}) {
   const { t } = useI18n();
+  const status = embeddingStatus ?? (track.embedding_ready ? "embedded" : "pending");
 
   return (
     <span className="inline-flex shrink-0 items-center gap-1">
@@ -1478,15 +1615,39 @@ function TrackIndexBadges({ track }: { track: PlaylistIndexTrack }) {
       <span
         className={cn(
           "rounded-sm border px-1 py-0.5 text-[10px] font-semibold leading-none",
-          track.embedding_ready
+          status === "embedded"
             ? "border-primary bg-primary text-primary-foreground"
+            : status === "queued" || status === "embedding"
+              ? "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200"
             : "border-border bg-secondary text-muted-foreground"
         )}
-        title={track.embedding_ready ? t("Vector indexado") : t("Vector pendiente")}
+        title={
+          status === "embedded"
+            ? t("Vector indexado")
+            : status === "embedding"
+              ? t("Vector generandose")
+              : status === "queued"
+                ? t("Vector en cola")
+                : t("Vector pendiente")
+        }
       >
         VEC
       </span>
     </span>
+  );
+}
+
+function TrackEmbeddingStatusDot({ status }: { status: TrackEmbeddingStatus }) {
+  return (
+    <span
+      className={cn(
+        "inline-block h-2.5 w-2.5 shrink-0 rounded-full border",
+        status === "pending" && "border-border bg-muted",
+        status === "queued" && "border-amber-400 bg-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.16)]",
+        status === "embedding" && "animate-pulse border-amber-400 bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.22)]",
+        status === "embedded" && "border-primary bg-primary"
+      )}
+    />
   );
 }
 
@@ -1648,16 +1809,31 @@ function IndexDeleteDialog({
 
   const isLibrary = request.kind === "library";
   const playlistCount = request.kind === "playlists" ? request.playlistPaths.length : 0;
+  const trackCount = request.kind === "tracks" ? request.tracks.length : 0;
   const title = isLibrary
     ? t("Eliminar libreria indexada")
-    : playlistCount > 1
-      ? t("Eliminar {count} indices", { count: playlistCount })
-      : t("Eliminar indice");
+    : request.kind === "tracks"
+      ? trackCount > 1
+        ? t("Eliminar {count} tracks", { count: trackCount })
+        : t("Eliminar track")
+      : playlistCount > 1
+        ? t("Eliminar {count} indices", { count: playlistCount })
+        : t("Eliminar indice");
   const description = isLibrary
     ? t("Esto elimina el indice SQLite de esta libreria, sus playlists, vectores y drafts. No elimina archivos de audio ni modifica el XML original.")
+    : request.kind === "tracks"
+      ? t("Esto elimina los tracks seleccionados del indice SQLite, sus vectores y referencias en playlists/drafts locales. No elimina archivos de audio ni modifica el XML original.")
     : t("Esto elimina el indice SQLite de las playlists seleccionadas. No elimina archivos de audio ni modifica el XML original.");
-  const items = request.kind === "playlists" ? request.playlistPaths.slice(0, 6) : [];
-  const remaining = request.kind === "playlists" ? Math.max(0, request.playlistPaths.length - items.length) : 0;
+  const items = request.kind === "playlists"
+    ? request.playlistPaths.slice(0, 6)
+    : request.kind === "tracks"
+      ? request.tracks.slice(0, 6).map((track) => track.name || track.track_id)
+      : [];
+  const remaining = request.kind === "playlists"
+    ? Math.max(0, request.playlistPaths.length - items.length)
+    : request.kind === "tracks"
+      ? Math.max(0, request.tracks.length - items.length)
+      : 0;
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" role="alertdialog" aria-modal="true">
