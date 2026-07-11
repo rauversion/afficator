@@ -45,6 +45,7 @@ import { cn } from "./lib/utils";
 import { FileConversionPage } from "./FileConversionPage";
 import { MasteringPage } from "./MasteringPage";
 import { TurnPage } from "./TurnPage";
+import { I18nProvider, languageLabel, translate, translateBackendMessage, useI18n, type Locale } from "./i18n";
 import packageMetadata from "../package.json";
 import type * as React from "react";
 
@@ -283,24 +284,26 @@ function detectInitialDarkMode() {
 
 export default function App() {
   return (
-    <HashRouter>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route path="/" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-          <Route path="/rekordbox-convert" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-          <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-          <Route path="/file-conversion/local" element={<FileConversionPage />} />
-          <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
-          <Route path="/turn" element={<TurnPage />} />
-          <Route path="/mastering" element={<MasteringPage />} />
-          <Route
-            path="/settings"
-            element={<SettingsPage />}
-          />
-          <Route path="*" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-        </Route>
-      </Routes>
-    </HashRouter>
+    <I18nProvider>
+      <HashRouter>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="/" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+            <Route path="/rekordbox-convert" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+            <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+            <Route path="/file-conversion/local" element={<FileConversionPage />} />
+            <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
+            <Route path="/turn" element={<TurnPage />} />
+            <Route path="/mastering" element={<MasteringPage />} />
+            <Route
+              path="/settings"
+              element={<SettingsPage />}
+            />
+            <Route path="*" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+          </Route>
+        </Routes>
+      </HashRouter>
+    </I18nProvider>
   );
 }
 
@@ -410,6 +413,7 @@ function PlaceholderPage({
   title: string;
   description: string;
 }) {
+  const { t } = useI18n();
   return (
     <main className="min-w-0 p-4 pb-20">
       <header className="mb-3 flex items-center gap-3 border-b border-border pb-3">
@@ -425,7 +429,7 @@ function PlaceholderPage({
       <Card className="p-6">
         <CardTitle>{title}</CardTitle>
         <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-          Esta seccion ya esta registrada en el router y lista para recibir su flujo.
+          {t("Esta seccion ya esta registrada en el router y lista para recibir su flujo.")}
         </p>
       </Card>
     </main>
@@ -434,6 +438,7 @@ function PlaceholderPage({
 
 function SettingsPage() {
   const { darkMode, setDarkMode, refreshSystemStatus } = useOutletContext<AppShellContext>();
+  const { locale, setLocale, t } = useI18n();
   const [apiKey, setApiKey] = useState("");
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState<OpenAiApiKeyStatus | null>(null);
@@ -460,7 +465,7 @@ function SettingsPage() {
       const status = await invoke<OpenAiApiKeyStatus>("get_openai_api_key_status");
       setApiKeyStatus(status);
     } catch (error) {
-      setSettingsError(String(error));
+      setSettingsError(translateBackendMessage(locale, String(error)));
     } finally {
       setLoadingApiKey(false);
     }
@@ -477,9 +482,9 @@ function SettingsPage() {
       setApiKeyStatus(status);
       setApiKey("");
       setApiKeyVisible(false);
-      setSettingsMessage("OpenAI API key guardada.");
+      setSettingsMessage(t("OpenAI API key guardada."));
     } catch (error) {
-      setSettingsError(String(error));
+      setSettingsError(translateBackendMessage(locale, String(error)));
     } finally {
       setSavingApiKey(false);
     }
@@ -494,9 +499,9 @@ function SettingsPage() {
       const status = await invoke<OpenAiApiKeyStatus>("clear_openai_api_key");
       setApiKeyStatus(status);
       setApiKey("");
-      setSettingsMessage("OpenAI API key eliminada.");
+      setSettingsMessage(t("OpenAI API key eliminada."));
     } catch (error) {
-      setSettingsError(String(error));
+      setSettingsError(translateBackendMessage(locale, String(error)));
     } finally {
       setSavingApiKey(false);
     }
@@ -512,7 +517,7 @@ function SettingsPage() {
       setFfmpegPath(settings.ffmpeg_path ?? "");
       setFfprobePath(settings.ffprobe_path ?? "");
     } catch (error) {
-      setSettingsError(String(error));
+      setSettingsError(translateBackendMessage(locale, String(error)));
     } finally {
       setLoadingAudioTools(false);
     }
@@ -532,10 +537,10 @@ function SettingsPage() {
       setAudioToolSettings(settings);
       setFfmpegPath(settings.ffmpeg_path ?? "");
       setFfprobePath(settings.ffprobe_path ?? "");
-      setSettingsMessage("Rutas de herramientas guardadas.");
+      setSettingsMessage(t("Rutas de herramientas guardadas."));
       void refreshSystemStatus();
     } catch (error) {
-      setSettingsError(String(error));
+      setSettingsError(translateBackendMessage(locale, String(error)));
     } finally {
       setSavingAudioTools(false);
     }
@@ -554,12 +559,24 @@ function SettingsPage() {
       setAudioToolSettings(settings);
       setFfmpegPath("");
       setFfprobePath("");
-      setSettingsMessage("Rutas de herramientas restauradas a autodeteccion.");
+      setSettingsMessage(t("Rutas de herramientas restauradas a autodeteccion."));
       void refreshSystemStatus();
     } catch (error) {
-      setSettingsError(String(error));
+      setSettingsError(translateBackendMessage(locale, String(error)));
     } finally {
       setSavingAudioTools(false);
+    }
+  }
+
+  async function changeLocale(nextLocale: Locale) {
+    setSettingsMessage("");
+    setSettingsError("");
+
+    try {
+      await setLocale(nextLocale);
+      setSettingsMessage(translate(nextLocale, "Idioma guardado: {language}", { language: languageLabel(nextLocale) }));
+    } catch (error) {
+      setSettingsError(translateBackendMessage(locale, String(error)));
     }
   }
 
@@ -568,7 +585,7 @@ function SettingsPage() {
     try {
       await invoke("open_parent_folder", { path: audioToolSettings.database_path });
     } catch (error) {
-      setSettingsError(String(error));
+      setSettingsError(translateBackendMessage(locale, String(error)));
     }
   }
 
@@ -579,8 +596,8 @@ function SettingsPage() {
           <Settings className="h-5 w-5" />
         </span>
         <div className="min-w-0">
-          <h1 className="m-0 text-2xl font-semibold tracking-normal">Settings</h1>
-          <p className="mt-1 text-xs text-muted-foreground">Preferencias generales de Rau Studio.</p>
+          <h1 className="m-0 text-2xl font-semibold tracking-normal">{t("Settings")}</h1>
+          <p className="mt-1 text-xs text-muted-foreground">{t("Preferencias generales de Rau Studio.")}</p>
         </div>
       </header>
 
@@ -600,10 +617,10 @@ function SettingsPage() {
           <CardHeader>
             <div className="flex items-center gap-2">
               <Monitor className="h-4 w-4" />
-              <CardTitle>Apariencia</CardTitle>
+              <CardTitle>{t("Apariencia")}</CardTitle>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="grid gap-4">
             <div className="inline-flex rounded-md border border-border bg-secondary p-1">
               <Button
                 type="button"
@@ -612,7 +629,7 @@ function SettingsPage() {
                 onClick={() => setDarkMode(false)}
               >
                 <Sun className="h-4 w-4" />
-                Claro
+                {t("Claro")}
               </Button>
               <Button
                 type="button"
@@ -621,9 +638,21 @@ function SettingsPage() {
                 onClick={() => setDarkMode(true)}
               >
                 <Moon className="h-4 w-4" />
-                Oscuro
+                {t("Oscuro")}
               </Button>
             </div>
+
+            <label className="grid max-w-xs gap-1 text-sm font-medium">
+              {t("Idioma")}
+              <select
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
+                value={locale}
+                onChange={(event) => void changeLocale(event.currentTarget.value as Locale)}
+              >
+                <option value="es">{t("Español")}</option>
+                <option value="en">{t("Inglés")}</option>
+              </select>
+            </label>
           </CardContent>
         </Card>
 
@@ -631,16 +660,16 @@ function SettingsPage() {
           <CardHeader>
             <div className="flex items-center gap-2">
               <HardDrive className="h-4 w-4" />
-              <CardTitle>Audio tools</CardTitle>
+              <CardTitle>{t("Audio tools")}</CardTitle>
             </div>
             <span className="text-xs text-muted-foreground">
-              {loadingAudioTools ? "Cargando rutas..." : "Configura ffmpeg/ffprobe o deja autodeteccion."}
+              {loadingAudioTools ? t("Cargando rutas...") : t("Configura ffmpeg/ffprobe o deja autodeteccion.")}
             </span>
           </CardHeader>
           <CardContent>
             <form className="grid gap-3" onSubmit={saveAudioToolSettings}>
               <label className="grid gap-1 text-sm font-medium">
-                Ruta ffmpeg
+                {t("Ruta ffmpeg")}
                 <input
                   className="h-10 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-sm outline-none ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
                   value={ffmpegPath}
@@ -650,7 +679,7 @@ function SettingsPage() {
               </label>
 
               <label className="grid gap-1 text-sm font-medium">
-                Ruta ffprobe
+                {t("Ruta ffprobe")}
                 <input
                   className="h-10 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-sm outline-none ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
                   value={ffprobePath}
@@ -660,7 +689,7 @@ function SettingsPage() {
               </label>
 
               <div className="grid gap-1 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
-                <strong className="text-foreground">Defaults del sistema</strong>
+                <strong className="text-foreground">{t("Defaults del sistema")}</strong>
                 <span className="break-all">
                   ffmpeg: {audioToolSettings?.default_ffmpeg_paths.join(" | ") ?? "n/d"}
                 </span>
@@ -671,7 +700,7 @@ function SettingsPage() {
 
               <div className="grid gap-1 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <strong className="text-foreground">Base de datos local</strong>
+                  <strong className="text-foreground">{t("Base de datos local")}</strong>
                   <Button
                     type="button"
                     variant="secondary"
@@ -680,7 +709,7 @@ function SettingsPage() {
                     onClick={() => void openDatabaseFolder()}
                   >
                     <FolderOpen className="h-4 w-4" />
-                    Abrir carpeta
+                    {t("Abrir carpeta")}
                   </Button>
                 </div>
                 <span className="break-all font-mono">
@@ -690,7 +719,7 @@ function SettingsPage() {
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button type="submit" disabled={savingAudioTools || loadingAudioTools}>
-                  Guardar rutas
+                  {t("Guardar rutas")}
                 </Button>
                 <Button
                   type="button"
@@ -698,7 +727,7 @@ function SettingsPage() {
                   disabled={savingAudioTools || loadingAudioTools}
                   onClick={() => void clearAudioToolSettings()}
                 >
-                  Usar defaults
+                  {t("Usar defaults")}
                 </Button>
                 <Button
                   type="button"
@@ -706,7 +735,7 @@ function SettingsPage() {
                   disabled={savingAudioTools || loadingAudioTools}
                   onClick={() => void loadAudioToolSettings()}
                 >
-                  Refrescar
+                  {t("Refrescar")}
                 </Button>
               </div>
             </form>
@@ -717,20 +746,20 @@ function SettingsPage() {
           <CardHeader>
             <div className="flex items-center gap-2">
               <KeyRound className="h-4 w-4" />
-              <CardTitle>OpenAI API key</CardTitle>
+              <CardTitle>{t("OpenAI API key")}</CardTitle>
             </div>
             <span className="text-xs text-muted-foreground">
               {loadingApiKey
-                ? "Revisando estado..."
+                ? t("Revisando estado...")
                 : apiKeyStatus?.configured
-                  ? `Guardada: ${apiKeyStatus.preview}`
-                  : "No configurada"}
+                  ? t("Guardada: {preview}", { preview: apiKeyStatus.preview })
+                  : t("No configurada")}
             </span>
           </CardHeader>
           <CardContent>
             <form className="grid gap-3" onSubmit={saveApiKey}>
               <label className="grid gap-1 text-sm font-medium">
-                API key
+                {t("API key")}
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                   <input
                     className="h-10 min-w-0 rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
@@ -745,14 +774,14 @@ function SettingsPage() {
                     variant="secondary"
                     onClick={() => setApiKeyVisible((current) => !current)}
                   >
-                    {apiKeyVisible ? "Ocultar" : "Mostrar"}
+                    {apiKeyVisible ? t("Ocultar") : t("Mostrar")}
                   </Button>
                 </div>
               </label>
 
               <div className="flex flex-wrap items-center gap-2">
                 <Button type="submit" disabled={savingApiKey || apiKey.trim().length === 0}>
-                  Guardar key
+                  {t("Guardar key")}
                 </Button>
                 <Button
                   type="button"
@@ -760,7 +789,7 @@ function SettingsPage() {
                   disabled={savingApiKey || loadingApiKey || !apiKeyStatus?.configured}
                   onClick={() => void clearApiKey()}
                 >
-                  Eliminar key
+                  {t("Eliminar key")}
                 </Button>
                 <Button
                   type="button"
@@ -768,7 +797,7 @@ function SettingsPage() {
                   disabled={savingApiKey || loadingApiKey}
                   onClick={() => void loadApiKeyStatus()}
                 >
-                  Refrescar
+                  {t("Refrescar")}
                 </Button>
               </div>
             </form>
@@ -781,6 +810,7 @@ function SettingsPage() {
 
 function RekordboxConvertPage() {
   const { darkMode, setDarkMode } = useOutletContext<AppShellContext>();
+  const { locale, t } = useI18n();
   const [detectedLogicalCores] = useState(() => detectLogicalCores());
   const [xmlPath, setXmlPath] = useState("");
   const [recentXmlPaths, setRecentXmlPaths] = useState<string[]>([]);
@@ -1365,6 +1395,7 @@ function RekordboxConvertPage() {
   function appendTerminalLog(log: ConversionLogEvent) {
     const nextLog: TerminalLog = {
       ...log,
+      message: translateBackendMessage(locale, log.message),
       id: nextTerminalLogId.current,
       time: new Date().toLocaleTimeString()
     };
@@ -1392,7 +1423,7 @@ function RekordboxConvertPage() {
       level: "info",
       track_id: progress.track_id,
       name: progress.name,
-      message: `Progreso ${bucket}%${progress.speed ? ` (${progress.speed})` : ""}`
+      message: `${t("Progreso")} ${bucket}%${progress.speed ? ` (${progress.speed})` : ""}`
     });
   }
 
@@ -1409,7 +1440,7 @@ function RekordboxConvertPage() {
   }
 
   function selectedPlaylistsConvertLabel() {
-    return `Convertir ${selectedPlaylists.size} ${selectedPlaylists.size === 1 ? "playlist" : "playlists"}`;
+    return t("Convertir {count} playlists", { count: selectedPlaylists.size });
   }
 
   function changeConcurrency(value: number) {
@@ -1629,16 +1660,16 @@ function RekordboxConvertPage() {
       <header className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
           <h1 className="m-0 text-2xl font-semibold tracking-normal">Rekordbox Convert</h1>
-          <p className="mt-1 max-w-[72vw] truncate text-xs text-muted-foreground lg:max-w-[56vw]">{xmlPath || "Sin XML cargado"}</p>
+          <p className="mt-1 max-w-[72vw] truncate text-xs text-muted-foreground lg:max-w-[56vw]">{xmlPath || t("Sin XML cargado")}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button onClick={chooseXml} disabled={busy}>
             <Upload className="h-4 w-4" />
-            Importar XML
+            {t("Importar XML")}
           </Button>
           <Button variant="secondary" onClick={chooseFolder} disabled={busy}>
             <FolderOpen className="h-4 w-4" />
-            Explorar carpeta
+            {t("Explorar carpeta")}
           </Button>
           <CreatePlanButton
             disabled={busy || !importResult}
@@ -1647,15 +1678,15 @@ function RekordboxConvertPage() {
           />
           <Button onClick={exportXml} disabled={busy || conversionBusy || !importResult}>
             <FileOutput className="h-4 w-4" />
-            Exportar XML
+            {t("Exportar XML")}
           </Button>
           <Button
             variant="secondary"
             onClick={() => setDarkMode((current) => !current)}
-            title={darkMode ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+            title={darkMode ? t("Cambiar a modo claro") : t("Cambiar a modo oscuro")}
           >
             {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-            {darkMode ? "Claro" : "Oscuro"}
+            {darkMode ? t("Claro") : t("Oscuro")}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1663,15 +1694,21 @@ function RekordboxConvertPage() {
                 variant="secondary"
                 disabled={conversionBusy}
                 className="min-w-[168px] justify-between"
-                title={`${detectedLogicalCores} core(s) logico(s) detectado(s). Default recomendado: ${recommendedConcurrency}.`}
+                title={t("{cores} core(s) logico(s) detectado(s). Default recomendado: {recommended}.", {
+                  cores: detectedLogicalCores,
+                  recommended: recommendedConcurrency
+                })}
               >
-                <span className="text-muted-foreground">Concurrencia</span>
+                <span className="text-muted-foreground">{t("Concurrencia")}</span>
                 <span>{maxConcurrency}</span>
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-[190px]">
               <div className="px-2 py-1.5 text-xs leading-relaxed text-muted-foreground">
-                {detectedLogicalCores} core(s) detectado(s). Default: {recommendedConcurrency}.
+                {t("{cores} core(s) detectado(s). Default: {recommended}.", {
+                  cores: detectedLogicalCores,
+                  recommended: recommendedConcurrency
+                })}
               </div>
               {concurrencyOptions.map((value) => (
                 <DropdownMenuItem
@@ -1679,7 +1716,7 @@ function RekordboxConvertPage() {
                   onSelect={() => changeConcurrency(value)}
                   className={cn(value === maxConcurrency && "bg-secondary font-semibold")}
                 >
-                  {value} {value === 1 ? "archivo" : "archivos"}
+                  {value} {value === 1 ? t("archivo") : t("archivos")}
                 </DropdownMenuItem>
               ))}
             </DropdownMenuContent>
@@ -1687,7 +1724,7 @@ function RekordboxConvertPage() {
           {xmlPath ? (
             <Button variant="secondary" onClick={forgetSavedXml} disabled={busy}>
               <Trash2 className="h-4 w-4" />
-              Olvidar XML
+              {t("Olvidar XML")}
             </Button>
           ) : null}
         </div>
@@ -1695,7 +1732,7 @@ function RekordboxConvertPage() {
 
       {recentXmlPaths.length > 0 ? (
         <Card className="mb-3 flex items-center gap-2 overflow-x-auto p-2">
-          <span className="shrink-0 text-xs font-semibold text-muted-foreground">XML recientes</span>
+          <span className="shrink-0 text-xs font-semibold text-muted-foreground">{t("XML recientes")}</span>
           {recentXmlPaths.map((recentPath) => (
             <Button
               key={recentPath}
@@ -1726,37 +1763,37 @@ function RekordboxConvertPage() {
 
       {validation && dynamicStats ? (
         <section className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-8">
-          <Metric label="Tracks" value={validation.tracks_total} />
-          <Metric label="Convertibles" value={validation.convert_candidates} />
-          <Metric label="Convertidos" value={dynamicStats.converted} />
-          <Metric label="Pendientes" value={dynamicStats.pending} />
-          <Metric label="AIFF origen" value={validation.already_aiff} />
-          <Metric label="No encontrados" value={validation.missing_files} danger={validation.missing_files > 0} />
-          <Metric label="No soportados" value={validation.unsupported_tracks} danger={validation.unsupported_tracks > 0} />
-          <Metric label="Refs rotas" value={validation.playlist_reference_errors} danger={validation.playlist_reference_errors > 0} />
+          <Metric label={t("Tracks")} value={validation.tracks_total} />
+          <Metric label={t("Convertibles")} value={validation.convert_candidates} />
+          <Metric label={t("Convertidos")} value={dynamicStats.converted} />
+          <Metric label={t("Pendientes")} value={dynamicStats.pending} />
+          <Metric label={t("AIFF origen")} value={validation.already_aiff} />
+          <Metric label={t("No encontrados")} value={validation.missing_files} danger={validation.missing_files > 0} />
+          <Metric label={t("No soportados")} value={validation.unsupported_tracks} danger={validation.unsupported_tracks > 0} />
+          <Metric label={t("Refs rotas")} value={validation.playlist_reference_errors} danger={validation.playlist_reference_errors > 0} />
         </section>
       ) : null}
 
       {plan ? (
         <section className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-6">
-          <PlanMetric>{plan.playlists_total} playlists</PlanMetric>
-          <PlanMetric>{plan.unique_tracks_total} tracks unicos</PlanMetric>
-          <PlanMetric>{plan.convert_total} conversiones</PlanMetric>
-          <PlanMetric>{plan.reuse_existing_total} reutilizados</PlanMetric>
-          <PlanMetric>{plan.skipped_total} omitidos</PlanMetric>
-          <PlanMetric danger={plan.blocked_total > 0}>{plan.blocked_total} bloqueados</PlanMetric>
+          <PlanMetric>{t("{count} playlists", { count: plan.playlists_total })}</PlanMetric>
+          <PlanMetric>{t("{count} tracks unicos", { count: plan.unique_tracks_total })}</PlanMetric>
+          <PlanMetric>{t("{count} conversiones", { count: plan.convert_total })}</PlanMetric>
+          <PlanMetric>{t("{count} reutilizados", { count: plan.reuse_existing_total })}</PlanMetric>
+          <PlanMetric>{t("{count} omitidos", { count: plan.skipped_total })}</PlanMetric>
+          <PlanMetric danger={plan.blocked_total > 0}>{t("{count} bloqueados", { count: plan.blocked_total })}</PlanMetric>
         </section>
       ) : null}
 
       <Card className="mb-3 grid grid-cols-[74px_minmax(180px,320px)_minmax(220px,1fr)_84px] items-center gap-3 p-3 max-lg:grid-cols-1">
         <Button disabled={!player} onClick={() => void togglePlayer()} className="w-[74px] px-0">
           {playerPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-          {playerPlaying ? "Pause" : "Play"}
+            {playerPlaying ? t("Pause") : t("Play")}
         </Button>
         <div className="min-w-0">
           <span className="block text-xs text-muted-foreground">Player</span>
           <strong className="block truncate text-sm" title={player?.path ?? ""}>
-            {player?.label ?? "Sin archivo cargado"}
+            {player?.label ?? t("Sin archivo cargado")}
           </strong>
         </div>
         <div className="min-w-0">
@@ -1786,9 +1823,9 @@ function RekordboxConvertPage() {
       <Card className="mb-3 max-h-[38vh] min-h-[220px]">
         <CardHeader>
           <div className="min-w-0">
-            <CardTitle>Originales</CardTitle>
+            <CardTitle>{t("Originales")}</CardTitle>
             <span className="block truncate text-xs text-muted-foreground" title={folderPath}>
-              {folderPath || "Sin carpeta seleccionada"}
+              {folderPath || t("Sin carpeta seleccionada")}
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -1802,32 +1839,32 @@ function RekordboxConvertPage() {
                   void refreshAudioFiles(folderPath, recursive);
                 }}
               />
-              Recursivo
+              {t("Recursivo")}
             </label>
-            <span className="text-xs text-muted-foreground">{audioFiles.length} archivos</span>
+            <span className="text-xs text-muted-foreground">{t("{count} archivos", { count: audioFiles.length })}</span>
             <Button variant="secondary" size="sm" disabled={busy || !folderPath} onClick={() => void refreshAudioFiles()}>
               <RefreshCcw className="h-3.5 w-3.5" />
-              Refrescar
+              {t("Refrescar")}
             </Button>
             <Button variant="secondary" size="sm" disabled={busy || !folderPath} onClick={clearFolderExplorer}>
               <X className="h-3.5 w-3.5" />
-              Cerrar
+              {t("Cerrar")}
             </Button>
             <Button size="sm" disabled={busy} onClick={chooseFolder}>
-              Elegir
+              {t("Elegir")}
             </Button>
           </div>
         </CardHeader>
         <CardContent>
           <div className="file-grid file-grid-browser sticky top-0 z-10 bg-secondary text-xs font-semibold text-muted-foreground">
-            <span>Archivo</span>
-            <span>Formato</span>
-            <span>Tamano</span>
-            <span>Carpeta</span>
-            <span>Acciones</span>
+            <span>{t("Archivo")}</span>
+            <span>{t("Formato")}</span>
+            <span>{t("Tamano")}</span>
+            <span>{t("Carpeta")}</span>
+            <span>{t("Acciones")}</span>
           </div>
-          {!folderPath ? <EmptyRow>Elige una carpeta para navegar archivos de audio originales.</EmptyRow> : null}
-          {folderPath && audioFiles.length === 0 ? <EmptyRow>No se encontraron archivos de audio originales.</EmptyRow> : null}
+          {!folderPath ? <EmptyRow>{t("Elige una carpeta para navegar archivos de audio originales.")}</EmptyRow> : null}
+          {folderPath && audioFiles.length === 0 ? <EmptyRow>{t("No se encontraron archivos de audio originales.")}</EmptyRow> : null}
           {audioFiles.map((file) => (
             <div key={file.path} className="file-grid file-grid-browser border-b border-border text-xs">
               <span className="truncate" title={file.path}>
@@ -1842,15 +1879,15 @@ function RekordboxConvertPage() {
                 <Button
                   variant="secondary"
                   size="icon"
-                  title="Escuchar archivo"
+                  title={t("Escuchar archivo")}
                   onClick={() => void togglePathPlayback(file.path, file.name)}
                 >
                   {playbackIcon(file.path) === "stop" ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                 </Button>
-                <Button variant="secondary" size="icon" title="Mostrar en Finder" onClick={() => void reveal(file.path)}>
+                <Button variant="secondary" size="icon" title={t("Mostrar en Finder")} onClick={() => void reveal(file.path)}>
                   <ChevronRight className="h-3.5 w-3.5" />
                 </Button>
-                <Button variant="secondary" size="icon" title="Abrir carpeta" onClick={() => void openFolder(file.path)}>
+                <Button variant="secondary" size="icon" title={t("Abrir carpeta")} onClick={() => void openFolder(file.path)}>
                   <FolderOpen className="h-3.5 w-3.5" />
                 </Button>
               </div>
@@ -1859,7 +1896,7 @@ function RekordboxConvertPage() {
         </CardContent>
         {folderSkippedErrors.length > 0 ? (
           <div className="border-t border-border px-3 py-2 text-xs text-red-700 dark:text-red-300">
-            {folderSkippedErrors.length} carpetas o archivos no se pudieron leer.
+            {t("{count} carpetas o archivos no se pudieron leer.", { count: folderSkippedErrors.length })}
           </div>
         ) : null}
       </Card>
@@ -1875,17 +1912,20 @@ function RekordboxConvertPage() {
                   disabled={playlistRows.length === 0}
                   onChange={toggleAllPlaylists}
                 />
-                <CardTitle>Playlists</CardTitle>
+                <CardTitle>{t("Playlists")}</CardTitle>
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
-                <span className="text-xs text-muted-foreground">{selectedPlaylists.size} seleccionadas</span>
+                <span className="text-xs text-muted-foreground">{t("{count} seleccionadas", { count: selectedPlaylists.size })}</span>
                 {selectedPlaylists.size > 0 ? (
                   <Button
                     size="sm"
                     className="bg-emerald-600 text-white hover:bg-emerald-700"
                     disabled={selectedPlaylistPendingTrackIds.length === 0}
                     onClick={convertSelectedPlaylists}
-                    title={`${selectedPlaylistPendingTrackIds.length} track(s) unico(s) pendientes en ${selectedPlaylists.size} playlist(s)`}
+                    title={t("{tracks} track(s) unico(s) pendientes en {playlists} playlist(s)", {
+                      tracks: selectedPlaylistPendingTrackIds.length,
+                      playlists: selectedPlaylists.size
+                    })}
                   >
                     <Download className="h-3.5 w-3.5" />
                     {selectedPlaylistsConvertLabel()}
@@ -1924,7 +1964,7 @@ function RekordboxConvertPage() {
                       {processingCount > 0 ? (
                         <span
                           className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-200"
-                          title={`${processingCount} archivo(s) procesandose en esta playlist`}
+                          title={t("{count} archivo(s) procesandose en esta playlist", { count: processingCount })}
                         >
                           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
                           {processingCount}
@@ -1936,7 +1976,10 @@ function RekordboxConvertPage() {
                         "text-right text-[11px] not-italic tabular-nums",
                         convertedCount > 0 ? "font-semibold text-foreground" : "text-muted-foreground"
                       )}
-                      title={`${convertedCount} convertido(s) de ${playlist.track_count} track(s)`}
+                      title={t("{converted} convertido(s) de {total} track(s)", {
+                        converted: convertedCount,
+                        total: playlist.track_count
+                      })}
                     >
                       {convertedCount}/{playlist.track_count}
                     </em>
@@ -1949,43 +1992,46 @@ function RekordboxConvertPage() {
           <section className="grid min-h-[520px] min-w-0 grid-rows-[auto_minmax(0,1fr)] gap-3">
             <div className="flex min-w-0 flex-wrap items-center gap-1 rounded-md border border-border bg-card p-1">
               <DetailTabButton active={activeDetailTab === "playlist"} onClick={() => setActiveDetailTab("playlist")}>
-                Playlist
+                {t("Playlist")}
               </DetailTabButton>
               <DetailTabButton active={activeDetailTab === "converted"} onClick={() => setActiveDetailTab("converted")}>
-                Convertidos ({convertedFiles.length})
+                {t("Convertidos")} ({convertedFiles.length})
               </DetailTabButton>
               <DetailTabButton active={activeDetailTab === "plan"} onClick={() => setActiveDetailTab("plan")}>
-                Plan{plan ? ` (${plannedRows.length})` : ""}
+                {t("Plan")}{plan ? ` (${plannedRows.length})` : ""}
               </DetailTabButton>
               <DetailTabButton active={activeDetailTab === "report"} onClick={() => setActiveDetailTab("report")}>
-                Reporte ({sortedIssues.length})
+                {t("Reporte")} ({sortedIssues.length})
               </DetailTabButton>
             </div>
 
             <Card className={cn("flex h-[520px] min-h-0 flex-col overflow-hidden", activeDetailTab !== "playlist" && "hidden")}>
               <CardHeader>
                 <div className="min-w-0">
-                  <CardTitle>Playlist</CardTitle>
+                  <CardTitle>{t("Playlist")}</CardTitle>
                   <span className="block truncate text-xs text-muted-foreground" title={activePlaylistPath}>
-                    {activePlaylistPath || "Sin playlist seleccionada"}
+                    {activePlaylistPath || t("Sin playlist seleccionada")}
                   </span>
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-2">
-                  <span className="text-xs text-muted-foreground">{playlistFiles.length} archivos</span>
+                  <span className="text-xs text-muted-foreground">{t("{count} archivos", { count: playlistFiles.length })}</span>
                   {selectedPlaylists.size > 0 ? (
                     <Button
                       size="sm"
                       className="bg-emerald-600 text-white hover:bg-emerald-700"
                       disabled={selectedPlaylistPendingTrackIds.length === 0}
                       onClick={convertSelectedPlaylists}
-                      title={`${selectedPlaylistPendingTrackIds.length} track(s) unico(s) pendientes en ${selectedPlaylists.size} playlist(s)`}
+                      title={t("{tracks} track(s) unico(s) pendientes en {playlists} playlist(s)", {
+                        tracks: selectedPlaylistPendingTrackIds.length,
+                        playlists: selectedPlaylists.size
+                      })}
                     >
                       <Download className="h-3.5 w-3.5" />
                       {selectedPlaylistsConvertLabel()}
                     </Button>
                   ) : null}
                   <Button size="sm" disabled={playlistLoading || activeConvertibleTrackIds.length === 0} onClick={convertActivePlaylist}>
-                    Convertir playlist
+                    {t("Convertir playlist")}
                   </Button>
                   <Button
                     variant="secondary"
@@ -1994,7 +2040,7 @@ function RekordboxConvertPage() {
                     onClick={() => void selectPlaylist(activePlaylistPath)}
                   >
                     <RefreshCcw className="h-3.5 w-3.5" />
-                    Refrescar
+                    {t("Refrescar")}
                   </Button>
                   {activePlaylist && !selectedPlaylists.has(activePlaylist.path) ? (
                     <Button size="sm" onClick={() => togglePlaylist(activePlaylist.path)}>
@@ -2079,7 +2125,7 @@ function RekordboxConvertPage() {
                   <span>AIFF</span>
                   <span>Acciones</span>
                 </div>
-                {convertedFiles.length === 0 ? <EmptyRow>No hay AIFF convertidos detectados para este XML.</EmptyRow> : null}
+                {convertedFiles.length === 0 ? <EmptyRow>{t("No hay AIFF convertidos detectados para este XML.")}</EmptyRow> : null}
                 {convertedFiles.map((file) => (
                   <div key={file.target_path} className="file-grid file-grid-converted border-b border-border text-xs">
                     <span className="flex min-w-0 items-center gap-2 truncate" title={file.name ?? file.track_id}>
@@ -2090,13 +2136,13 @@ function RekordboxConvertPage() {
                     <span className="truncate" title={file.source_path}>{file.kind ?? ""}</span>
                     <span className="truncate" title={file.target_path}>{file.target_path}</span>
                     <div className="flex justify-end gap-1">
-                      <Button variant="secondary" size="icon" title="Escuchar AIFF" onClick={() => void togglePathPlayback(file.target_path, file.name ?? file.target_path)}>
+                      <Button variant="secondary" size="icon" title={t("Escuchar AIFF")} onClick={() => void togglePathPlayback(file.target_path, file.name ?? file.target_path)}>
                         {playbackIcon(file.target_path) === "stop" ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                       </Button>
-                      <Button variant="secondary" size="icon" title="Mostrar en Finder" onClick={() => void reveal(file.target_path)}>
+                      <Button variant="secondary" size="icon" title={t("Mostrar en Finder")} onClick={() => void reveal(file.target_path)}>
                         <ChevronRight className="h-3.5 w-3.5" />
                       </Button>
-                      <Button variant="secondary" size="icon" title="Abrir carpeta" onClick={() => void openFolder(file.target_path)}>
+                      <Button variant="secondary" size="icon" title={t("Abrir carpeta")} onClick={() => void openFolder(file.target_path)}>
                         <FolderOpen className="h-3.5 w-3.5" />
                       </Button>
                     </div>
@@ -2107,18 +2153,18 @@ function RekordboxConvertPage() {
 
             <Card className={cn("flex h-[520px] min-h-0 flex-col overflow-hidden", activeDetailTab !== "plan" && "hidden")}>
               <CardHeader>
-                <CardTitle>Plan seleccionado</CardTitle>
-                <span className="text-xs text-muted-foreground">{plannedRows.length} tracks</span>
+                <CardTitle>{t("Plan seleccionado")}</CardTitle>
+                <span className="text-xs text-muted-foreground">{t("{count} tracks", { count: plannedRows.length })}</span>
               </CardHeader>
               <CardContent className="overflow-x-hidden overflow-y-auto">
-                {!plan ? <EmptyRow>Crea un plan para ver los tracks seleccionados.</EmptyRow> : null}
+                {!plan ? <EmptyRow>{t("Crea un plan para ver los tracks seleccionados.")}</EmptyRow> : null}
                 {plan ? (
                   <>
                   <div className="plan-grid sticky top-0 z-10 bg-secondary text-xs font-semibold text-muted-foreground">
-                    <span>Tema</span>
-                    <span>Estado</span>
-                    <span>Destino</span>
-                    <span>Acciones</span>
+                    <span>{t("Tema")}</span>
+                    <span>{t("Estado")}</span>
+                    <span>{t("Destino")}</span>
+                    <span>{t("Acciones")}</span>
                   </div>
                   {plannedRows.map((item) => (
                     <div key={item.track_id} className={cn("plan-grid border-b border-border text-xs", planRowClass(item.action))}>
@@ -2126,10 +2172,10 @@ function RekordboxConvertPage() {
                       <span>{item.action}</span>
                       <span className="truncate" title={item.target_path ?? item.source_path ?? ""}>{item.target_path ?? item.source_path ?? ""}</span>
                       <div className="flex justify-end gap-1">
-                        <Button variant="secondary" size="icon" title="Escuchar original" disabled={!item.source_path} onClick={() => item.source_path && void togglePathPlayback(item.source_path, item.name ?? item.source_path)}>
+                        <Button variant="secondary" size="icon" title={t("Escuchar original")} disabled={!item.source_path} onClick={() => item.source_path && void togglePathPlayback(item.source_path, item.name ?? item.source_path)}>
                           <Play className="h-3.5 w-3.5" />
                         </Button>
-                        <Button variant="secondary" size="icon" title="Abrir destino" disabled={!item.target_path} onClick={() => item.target_path && void openFolder(item.target_path)}>
+                        <Button variant="secondary" size="icon" title={t("Abrir destino")} disabled={!item.target_path} onClick={() => item.target_path && void openFolder(item.target_path)}>
                           <FolderOpen className="h-3.5 w-3.5" />
                         </Button>
                       </div>
@@ -2142,15 +2188,15 @@ function RekordboxConvertPage() {
 
             <Card className={cn("flex h-[520px] min-h-0 flex-col overflow-hidden", activeDetailTab !== "report" && "hidden")}>
               <CardHeader>
-                <CardTitle>Reporte</CardTitle>
-                <span className="text-xs text-muted-foreground">{sortedIssues.length} hallazgos</span>
+                <CardTitle>{t("Reporte")}</CardTitle>
+                <span className="text-xs text-muted-foreground">{t("{count} hallazgos", { count: sortedIssues.length })}</span>
               </CardHeader>
               <CardContent className="overflow-x-hidden overflow-y-auto">
                 <div className="issue-grid sticky top-0 z-10 bg-secondary text-xs font-semibold text-muted-foreground">
-                  <span>Severidad</span>
-                  <span>Codigo</span>
+                  <span>{t("Severidad")}</span>
+                  <span>{t("Codigo")}</span>
                   <span>Track</span>
-                  <span>Mensaje</span>
+                  <span>{t("Mensaje")}</span>
                 </div>
                 {sortedIssues.map((issue, index) => (
                   <div key={`${issue.code}-${issue.track_id ?? index}`} className={cn("issue-grid border-b border-border text-xs", issueRowClass(issue.severity))}>
@@ -2170,7 +2216,7 @@ function RekordboxConvertPage() {
         logs={terminalLogs}
         expanded={terminalExpanded}
         terminalRef={terminalElement}
-        subtitle="ffmpeg / conversion / export"
+        subtitle={t("ffmpeg / conversion / export")}
         onToggle={() => setTerminalExpanded((current) => !current)}
         onClear={clearTerminal}
       />
@@ -2198,24 +2244,25 @@ function AppSidebar({
   systemStatusLoading: boolean;
   onRefreshSystemStatus: () => void;
 }) {
+  const { t } = useI18n();
   const [creatorOpen, setCreatorOpen] = useState(false);
   const creatorRef = useRef<HTMLDivElement | null>(null);
   const ffmpegInstalled = systemStatus?.ffmpeg.installed ?? false;
   const ffprobeInstalled = systemStatus?.ffprobe.installed ?? false;
   const ffmpegLabel = systemStatusLoading && !systemStatus
-    ? "Chequeando"
+    ? t("Chequeando")
     : systemStatusError
-      ? "Error"
+      ? t("Error")
       : ffmpegInstalled
-        ? "Disponible"
-        : "No instalado";
+        ? t("Disponible")
+        : t("No instalado");
   const ffprobeLabel = systemStatusLoading && !systemStatus
-    ? "Chequeando"
+    ? t("Chequeando")
     : systemStatusError
-      ? "Error"
+      ? t("Error")
       : ffprobeInstalled
-        ? "Disponible"
-        : "No instalado";
+        ? t("Disponible")
+        : t("No instalado");
 
   useEffect(() => {
     if (!creatorOpen) return;
@@ -2238,35 +2285,37 @@ function AppSidebar({
         </span>
         <div className="min-w-0">
           <strong className="block truncate text-sm font-semibold">Rau Studio</strong>
-          <span className="block truncate text-xs text-muted-foreground">v{appVersion} · Desktop</span>
+          <span className="block truncate text-xs text-muted-foreground">
+            {t("v{version} · Desktop", { version: appVersion })}
+          </span>
         </div>
       </div>
 
       <nav className="grid gap-5 max-lg:flex max-lg:gap-3 max-lg:overflow-x-auto">
-        <SidebarSection title="File Conversion">
+        <SidebarSection title={t("File Conversion")}>
           <SidebarLink to="/file-conversion/local" icon={<Upload className="h-4 w-4" />}>
-            File Conversion
+            {t("File Conversion")}
           </SidebarLink>
           <SidebarLink to="/file-conversion/rekordbox-convert" icon={<FileAudio2 className="h-4 w-4" />}>
-            Rekordbox Convert
+            {t("Rekordbox Convert")}
           </SidebarLink>
         </SidebarSection>
 
-        <SidebarSection title="Turn">
+        <SidebarSection title={t("Turn")}>
           <SidebarLink to="/turn" icon={<Disc3 className="h-4 w-4" />}>
-            Turn
+            {t("Turn")}
           </SidebarLink>
         </SidebarSection>
 
-        <SidebarSection title="Mastering">
+        <SidebarSection title={t("Mastering")}>
           <SidebarLink to="/mastering" icon={<Gauge className="h-4 w-4" />}>
-            Mastering
+            {t("Mastering")}
           </SidebarLink>
         </SidebarSection>
 
-        <SidebarSection title="Settings">
+        <SidebarSection title={t("Settings")}>
           <SidebarLink to="/settings" icon={<Settings className="h-4 w-4" />}>
-            Settings
+            {t("Settings")}
           </SidebarLink>
         </SidebarSection>
       </nav>
@@ -2276,14 +2325,14 @@ function AppSidebar({
           <div className="mb-2 flex items-center justify-between gap-2">
             <span className="flex min-w-0 items-center gap-2 text-xs font-semibold">
               <Monitor className="h-3.5 w-3.5 text-muted-foreground" />
-              Status
+              {t("Status")}
             </span>
             <Button
               type="button"
               variant="ghost"
               size="icon"
               className="h-6 w-6"
-              title="Actualizar status"
+              title={t("Actualizar status")}
               onClick={onRefreshSystemStatus}
               disabled={systemStatusLoading}
             >
@@ -2293,21 +2342,21 @@ function AppSidebar({
 
           <div className="grid gap-1.5 text-xs">
             <StatusLine
-              label="WebSocket"
-              value={eventBridgeStatus === "connected" ? "Eventos OK" : eventBridgeStatus === "checking" ? "Conectando" : "Error"}
-              detail={lastRealtimeEventAt ? `ultimo ${lastRealtimeEventAt}` : "listeners Tauri"}
+              label={t("WebSocket")}
+              value={eventBridgeStatus === "connected" ? t("Eventos OK") : eventBridgeStatus === "checking" ? t("Conectando") : t("Error")}
+              detail={lastRealtimeEventAt ? `${t("ultimo")} ${lastRealtimeEventAt}` : t("listeners Tauri")}
               tone={eventBridgeStatus === "connected" ? "ok" : eventBridgeStatus === "checking" ? "pending" : "error"}
             />
             <StatusLine
-              label="FFmpeg"
+              label={t("FFmpeg")}
               value={ffmpegLabel}
-              detail={systemStatus?.ffmpeg.path ?? systemStatus?.ffmpeg.version ?? systemStatus?.ffmpeg.message ?? systemStatusError ?? "conversion engine"}
+              detail={systemStatus?.ffmpeg.path ?? systemStatus?.ffmpeg.version ?? systemStatus?.ffmpeg.message ?? systemStatusError ?? t("conversion engine")}
               tone={ffmpegInstalled ? "ok" : systemStatusLoading ? "pending" : "error"}
             />
             <StatusLine
-              label="FFprobe"
+              label={t("FFprobe")}
               value={ffprobeLabel}
-              detail={systemStatus?.ffprobe.path ?? systemStatus?.ffprobe.version ?? systemStatus?.ffprobe.message ?? systemStatusError ?? "metadata probe"}
+              detail={systemStatus?.ffprobe.path ?? systemStatus?.ffprobe.version ?? systemStatus?.ffprobe.message ?? systemStatusError ?? t("metadata probe")}
               tone={ffprobeInstalled ? "ok" : systemStatusLoading ? "pending" : "error"}
             />
           </div>
@@ -2316,26 +2365,26 @@ function AppSidebar({
             <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
               <div className="mb-1 flex items-center gap-1.5 font-semibold">
                 <AlertTriangle className="h-3.5 w-3.5" />
-                Instala ffmpeg
+                {t("Instala ffmpeg")}
               </div>
               <code className="block rounded bg-background/70 px-1.5 py-1 font-mono text-[10px]">
                 brew install ffmpeg
               </code>
               <span className="mt-1 block text-amber-800 dark:text-amber-200">
-                Incluye ffprobe. Puedes ajustar rutas en Settings.
+                {t("Incluye ffprobe. Puedes ajustar rutas en Settings.")}
               </span>
             </div>
           ) : null}
         </div>
 
         <div ref={creatorRef} className="relative flex items-center justify-between gap-2 px-1">
-          <span className="truncate text-[11px] text-muted-foreground">Rauversion community build</span>
+          <span className="truncate text-[11px] text-muted-foreground">{t("Rauversion community build")}</span>
           <Button
             type="button"
             variant="ghost"
             size="icon"
             className="h-7 w-7 shrink-0"
-            aria-label="Quien creo Rau Studio"
+            aria-label={t("Quien creo Rau Studio")}
             aria-expanded={creatorOpen}
             onClick={() => setCreatorOpen((current) => !current)}
           >
@@ -2345,7 +2394,7 @@ function AppSidebar({
           {creatorOpen ? (
             <div
               role="dialog"
-              aria-label="Creditos de Rau Studio"
+              aria-label={t("Creditos de Rau Studio")}
               className="absolute bottom-9 left-0 z-50 w-60 rounded-md border border-border bg-card p-3 text-xs text-card-foreground shadow-xl"
             >
               <div className="flex items-center gap-2">
@@ -2358,7 +2407,7 @@ function AppSidebar({
                 </div>
               </div>
               <p className="mt-1 leading-relaxed text-muted-foreground">
-                Creado por{" "}
+                {t("Creado por")}{" "}
                 <a
                   href="https://rauversion.com"
                   target="_blank"
@@ -2367,10 +2416,10 @@ function AppSidebar({
                 >
                   Rauversion
                 </a>{" "}
-                para la comunidad.
+                {t("para la comunidad.")}
               </p>
               <p className="mt-2 leading-relaxed text-muted-foreground">
-                Herramienta local para preparar audio, playlists y visuales sin depender de servicios externos.
+                {t("Herramienta local para preparar audio, playlists y visuales sin depender de servicios externos.")}
               </p>
             </div>
           ) : null}
@@ -2517,26 +2566,28 @@ function CreatePlanButton({
   selectedCount: number;
   onClick: () => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <div className="group relative inline-flex">
       <Button onClick={onClick} disabled={disabled}>
         <ClipboardList className="h-4 w-4" />
-        Crear plan
+        {t("Crear plan")}
       </Button>
       <div className="pointer-events-none absolute right-0 top-[calc(100%+8px)] z-50 hidden w-80 rounded-md border border-border bg-card p-3 text-card-foreground shadow-lg group-hover:block group-focus-within:block">
         <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
           <ClipboardList className="h-4 w-4" />
-          Preflight de conversion
+          {t("Preflight de conversion")}
         </div>
         <p className="text-xs leading-relaxed text-muted-foreground">
-          El plan revisa las playlists seleccionadas antes de convertir. No modifica archivos ni exporta XML.
+          {t("El plan revisa las playlists seleccionadas antes de convertir. No modifica archivos ni exporta XML.")}
         </p>
         <div className="mt-3 grid gap-2 text-xs">
           <div className="rounded-md bg-secondary px-2 py-1.5">
-            Detecta tracks a convertir, AIFF existentes, archivos faltantes y formatos bloqueados.
+            {t("Detecta tracks a convertir, AIFF existentes, archivos faltantes y formatos bloqueados.")}
           </div>
           <div className="rounded-md bg-secondary px-2 py-1.5">
-            Seleccionadas: <strong>{selectedCount}</strong>. Si no eliges ninguna, se planifica toda la libreria.
+            {t("Seleccionadas:")} <strong>{selectedCount}</strong>. {t("Si no eliges ninguna, se planifica toda la libreria.")}
           </div>
         </div>
       </div>

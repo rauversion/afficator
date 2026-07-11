@@ -203,6 +203,19 @@ fn save_audio_tool_settings(
 }
 
 #[tauri::command]
+fn get_language_settings(app: AppHandle) -> Result<settings::LanguageSettings, String> {
+    settings::get_language_settings(&app)
+}
+
+#[tauri::command]
+fn save_language_settings(
+    app: AppHandle,
+    language: String,
+) -> Result<settings::LanguageSettings, String> {
+    settings::save_language_settings(&app, language)
+}
+
+#[tauri::command]
 fn import_rekordbox_xml(path: String) -> Result<ImportResponse, String> {
     let library = parse_rekordbox_xml_file(path).map_err(|error| error.to_string())?;
     let playlists = library.playlists_flat();
@@ -440,11 +453,18 @@ async fn convert_tracks(
     track_ids: Vec<String>,
     max_concurrency: Option<usize>,
 ) -> Result<ConversionBatchResult, String> {
+    let app_for_error = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         convert_tracks_blocking(app, path, track_ids, max_concurrency)
     })
     .await
-    .map_err(|error| format!("La conversion fallo inesperadamente: {error}"))?
+    .map_err(|error| {
+        settings::localized(
+            &app_for_error,
+            &format!("La conversion fallo inesperadamente: {error}"),
+            &format!("Conversion failed unexpectedly: {error}"),
+        )
+    })?
 }
 
 fn convert_tracks_blocking(
@@ -470,10 +490,18 @@ fn convert_tracks_blocking(
             level: ConversionLogLevel::Info,
             track_id: None,
             name: None,
-            message: format!(
-                "Conversion iniciada: {} track(s), concurrencia maxima {}",
-                ordered_track_ids.len(),
-                max_concurrency
+            message: settings::localized(
+                &app,
+                &format!(
+                    "Conversion iniciada: {} track(s), concurrencia maxima {}",
+                    ordered_track_ids.len(),
+                    max_concurrency
+                ),
+                &format!(
+                    "Conversion started: {} track(s), max concurrency {}",
+                    ordered_track_ids.len(),
+                    max_concurrency
+                ),
             ),
         },
     );
@@ -490,7 +518,11 @@ fn convert_tracks_blocking(
                     source_path: None,
                     target_path: None,
                     status: ConversionStatus::Failed,
-                    message: Some(format!("TrackID no existe en COLLECTION: {track_id}")),
+                    message: Some(settings::localized(
+                        &app,
+                        &format!("TrackID no existe en COLLECTION: {track_id}"),
+                        &format!("TrackID does not exist in COLLECTION: {track_id}"),
+                    )),
                 };
                 emit_conversion_progress(&app, item_progress_event(&item, None, None, None));
                 emit_conversion_log(
@@ -499,7 +531,11 @@ fn convert_tracks_blocking(
                         level: ConversionLogLevel::Error,
                         track_id: Some(track_id.clone()),
                         name: None,
-                        message: format!("TrackID no existe en COLLECTION: {track_id}"),
+                        message: settings::localized(
+                            &app,
+                            &format!("TrackID no existe en COLLECTION: {track_id}"),
+                            &format!("TrackID does not exist in COLLECTION: {track_id}"),
+                        ),
                     },
                 );
                 items.push(item);
@@ -525,7 +561,11 @@ fn convert_tracks_blocking(
                         source_path: None,
                         target_path: None,
                         status: ConversionStatus::Failed,
-                        message: Some("La conversion fallo por un panic interno".to_string()),
+                        message: Some(settings::localized(
+                            &app,
+                            "La conversion fallo por un panic interno",
+                            "Conversion failed because of an internal panic",
+                        )),
                     };
                     emit_conversion_progress(&app, item_progress_event(&item, None, None, None));
                     emit_conversion_log(
@@ -534,7 +574,11 @@ fn convert_tracks_blocking(
                             level: ConversionLogLevel::Error,
                             track_id: Some(track_id),
                             name: None,
-                            message: "La conversion fallo por un panic interno".to_string(),
+                            message: settings::localized(
+                                &app,
+                                "La conversion fallo por un panic interno",
+                                "Conversion failed because of an internal panic",
+                            ),
                         },
                     );
                     items.push(item);
@@ -573,12 +617,22 @@ fn convert_tracks_blocking(
             },
             track_id: None,
             name: None,
-            message: format!(
-                "Conversion terminada: {} convertidos, {} existentes, {} AIFF originales, {} errores",
-                result.converted_total,
-                result.already_converted_total,
-                result.already_aiff_total,
-                result.failed_total
+            message: settings::localized(
+                &app,
+                &format!(
+                    "Conversion terminada: {} convertidos, {} existentes, {} AIFF originales, {} errores",
+                    result.converted_total,
+                    result.already_converted_total,
+                    result.already_aiff_total,
+                    result.failed_total
+                ),
+                &format!(
+                    "Conversion finished: {} converted, {} existing, {} original AIFF, {} errors",
+                    result.converted_total,
+                    result.already_converted_total,
+                    result.already_aiff_total,
+                    result.failed_total
+                ),
             ),
         },
     );
@@ -600,7 +654,7 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
         status: ConversionStatus::Queued,
-        message: Some("En cola".to_string()),
+        message: Some(settings::localized(app, "En cola", "Queued")),
     };
 
     emit_conversion_progress(app, item_progress_event(&item, Some(0.0), None, None));
@@ -610,7 +664,7 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
             level: ConversionLogLevel::Info,
             track_id: Some(item.track_id.clone()),
             name: item.name.clone(),
-            message: "En cola".to_string(),
+            message: settings::localized(app, "En cola", "Queued"),
         },
     );
 
@@ -636,7 +690,11 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
     if track_action(track) == TrackAction::AlreadyAiff {
         item.target_path = item.source_path.clone();
         item.status = ConversionStatus::AlreadyAiff;
-        item.message = Some("El original ya es AIFF".to_string());
+        item.message = Some(settings::localized(
+            app,
+            "El original ya es AIFF",
+            "Original file is already AIFF",
+        ));
         emit_conversion_progress(app, item_progress_event(&item, Some(100.0), None, None));
         emit_conversion_log(
             app,
@@ -644,7 +702,11 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
                 level: ConversionLogLevel::Info,
                 track_id: Some(item.track_id.clone()),
                 name: item.name.clone(),
-                message: "Omitido: el original ya es AIFF".to_string(),
+                message: settings::localized(
+                    app,
+                    "Omitido: el original ya es AIFF",
+                    "Skipped: original file is already AIFF",
+                ),
             },
         );
         return item;
@@ -652,7 +714,11 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
 
     let Some(source_path) = source_path else {
         item.status = ConversionStatus::Failed;
-        item.message = Some("El track no tiene Location valida".to_string());
+        item.message = Some(settings::localized(
+            app,
+            "El track no tiene Location valida",
+            "Track does not have a valid Location",
+        ));
         emit_conversion_progress(app, item_progress_event(&item, None, None, None));
         emit_conversion_log(
             app,
@@ -667,7 +733,11 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
     };
     let Some(target_path) = target_path else {
         item.status = ConversionStatus::Failed;
-        item.message = Some("No se pudo resolver la ruta de salida".to_string());
+        item.message = Some(settings::localized(
+            app,
+            "No se pudo resolver la ruta de salida",
+            "Could not resolve output path",
+        ));
         emit_conversion_progress(app, item_progress_event(&item, None, None, None));
         emit_conversion_log(
             app,
@@ -683,7 +753,11 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
 
     if target_path.exists() {
         item.status = ConversionStatus::AlreadyConverted;
-        item.message = Some("AIFF convertido ya existe".to_string());
+        item.message = Some(settings::localized(
+            app,
+            "AIFF convertido ya existe",
+            "Converted AIFF already exists",
+        ));
         emit_conversion_progress(app, item_progress_event(&item, Some(100.0), None, None));
         emit_conversion_log(
             app,
@@ -691,7 +765,11 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
                 level: ConversionLogLevel::Info,
                 track_id: Some(item.track_id.clone()),
                 name: item.name.clone(),
-                message: format!("Reutilizando AIFF existente: {}", target_path.display()),
+                message: settings::localized(
+                    app,
+                    &format!("Reutilizando AIFF existente: {}", target_path.display()),
+                    &format!("Reusing existing AIFF: {}", target_path.display()),
+                ),
             },
         );
         return item;
@@ -700,9 +778,10 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
     if let Some(parent) = target_path.parent() {
         if let Err(error) = fs::create_dir_all(parent) {
             item.status = ConversionStatus::Failed;
-            item.message = Some(format!(
-                "No se pudo crear la carpeta {}: {error}",
-                parent.display()
+            item.message = Some(settings::localized(
+                app,
+                &format!("No se pudo crear la carpeta {}: {error}", parent.display()),
+                &format!("Could not create folder {}: {error}", parent.display()),
             ));
             emit_conversion_progress(app, item_progress_event(&item, None, None, None));
             emit_conversion_log(
@@ -719,7 +798,11 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
     }
 
     item.status = ConversionStatus::Running;
-    item.message = Some("Convirtiendo con ffmpeg".to_string());
+    item.message = Some(settings::localized(
+        app,
+        "Convirtiendo con ffmpeg",
+        "Converting with ffmpeg",
+    ));
     emit_conversion_progress(app, item_progress_event(&item, Some(0.0), Some(0.0), None));
     emit_conversion_log(
         app,
@@ -727,10 +810,18 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
             level: ConversionLogLevel::Info,
             track_id: Some(item.track_id.clone()),
             name: item.name.clone(),
-            message: format!(
-                "ffmpeg iniciado: {} -> {}",
-                source_path.display(),
-                target_path.display()
+            message: settings::localized(
+                app,
+                &format!(
+                    "ffmpeg iniciado: {} -> {}",
+                    source_path.display(),
+                    target_path.display()
+                ),
+                &format!(
+                    "ffmpeg started: {} -> {}",
+                    source_path.display(),
+                    target_path.display()
+                ),
             ),
         },
     );
@@ -738,7 +829,11 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
     match run_ffmpeg_conversion(app, track, &source_path, &target_path) {
         Ok(()) => {
             item.status = ConversionStatus::Converted;
-            item.message = Some("Conversion completada".to_string());
+            item.message = Some(settings::localized(
+                app,
+                "Conversion completada",
+                "Conversion completed",
+            ));
             emit_conversion_progress(app, item_progress_event(&item, Some(100.0), None, None));
             emit_conversion_log(
                 app,
@@ -746,7 +841,11 @@ fn convert_track(app: &tauri::AppHandle, track: &Track) -> ConversionItemResult 
                     level: ConversionLogLevel::Info,
                     track_id: Some(item.track_id.clone()),
                     name: item.name.clone(),
-                    message: format!("Conversion completada: {}", target_path.display()),
+                    message: settings::localized(
+                        app,
+                        &format!("Conversion completada: {}", target_path.display()),
+                        &format!("Conversion completed: {}", target_path.display()),
+                    ),
                 },
             );
         }
@@ -783,13 +882,20 @@ fn run_ffmpeg_conversion(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| {
-            format!("No se pudo ejecutar ffmpeg. Revisa que este instalado en PATH: {error}")
+            settings::localized(
+                app,
+                &format!("No se pudo ejecutar ffmpeg. Revisa que este instalado en PATH: {error}"),
+                &format!("Could not run ffmpeg. Check that it is installed in PATH: {error}"),
+            )
         })?;
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "No se pudo leer el progreso de ffmpeg".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        settings::localized(
+            app,
+            "No se pudo leer el progreso de ffmpeg",
+            "Could not read ffmpeg progress",
+        )
+    })?;
     let stderr = child.stderr.take();
     let stderr_handle = stderr.map(|stderr| {
         let app = app.clone();
@@ -858,9 +964,13 @@ fn run_ffmpeg_conversion(
                         target_path: Some(target_path.to_string_lossy().into_owned()),
                         status: ConversionStatus::Running,
                         message: Some(if value == "end" {
-                            "Finalizando".to_string()
+                            settings::localized(app, "Finalizando", "Finalizing")
                         } else {
-                            "Convirtiendo con ffmpeg".to_string()
+                            settings::localized(
+                                app,
+                                "Convirtiendo con ffmpeg",
+                                "Converting with ffmpeg",
+                            )
                         }),
                         percent,
                         elapsed_seconds,
@@ -872,24 +982,39 @@ fn run_ffmpeg_conversion(
         }
     }
 
-    let status = child
-        .wait()
-        .map_err(|error| format!("No se pudo esperar a ffmpeg: {error}"))?;
+    let status = child.wait().map_err(|error| {
+        settings::localized(
+            app,
+            &format!("No se pudo esperar a ffmpeg: {error}"),
+            &format!("Could not wait for ffmpeg: {error}"),
+        )
+    })?;
     let stderr_output = stderr_handle
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
 
     if !status.success() {
-        return Err(format!(
-            "ffmpeg fallo con estado {status}. {}",
-            stderr_tail(&stderr_output)
+        return Err(settings::localized(
+            app,
+            &format!(
+                "ffmpeg fallo con estado {status}. {}",
+                stderr_tail(&stderr_output)
+            ),
+            &format!(
+                "ffmpeg failed with status {status}. {}",
+                stderr_tail(&stderr_output)
+            ),
         ));
     }
 
     if !target_path.exists() {
-        return Err(format!(
-            "ffmpeg termino sin generar el archivo {}",
-            target_path.display()
+        return Err(settings::localized(
+            app,
+            &format!(
+                "ffmpeg termino sin generar el archivo {}",
+                target_path.display()
+            ),
+            &format!("ffmpeg finished without creating {}", target_path.display()),
         ));
     }
 
@@ -1262,6 +1387,8 @@ pub fn run() {
             clear_openai_api_key,
             get_audio_tool_settings,
             save_audio_tool_settings,
+            get_language_settings,
+            save_language_settings,
             local_conversion::local_conversion_list_items,
             local_conversion::local_conversion_list_groups,
             local_conversion::local_conversion_group_items,

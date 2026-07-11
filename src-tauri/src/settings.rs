@@ -17,6 +17,7 @@ const SECRET_FILE: &str = "settings-secret.bin";
 const OPENAI_API_KEY_SETTING: &str = "openai_api_key";
 const FFMPEG_PATH_SETTING: &str = "ffmpeg_path";
 const FFPROBE_PATH_SETTING: &str = "ffprobe_path";
+const LANGUAGE_SETTING: &str = "language";
 const CIPHER_VERSION: u8 = 1;
 const SECRET_LEN: usize = 32;
 
@@ -42,6 +43,52 @@ pub struct AudioToolSettings {
     database_dir: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LanguageOption {
+    value: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LanguageSettings {
+    language: String,
+    available_languages: Vec<LanguageOption>,
+}
+
+pub(crate) fn get_language_settings(app: &AppHandle) -> Result<LanguageSettings, String> {
+    language_settings(load_language(app)?)
+}
+
+pub(crate) fn save_language_settings(
+    app: &AppHandle,
+    language: String,
+) -> Result<LanguageSettings, String> {
+    let language = normalize_language(&language).ok_or_else(|| {
+        localized(
+            app,
+            "Idioma no soportado. Usa es o en.",
+            "Unsupported language. Use es or en.",
+        )
+    })?;
+    save_optional_text_setting(app, LANGUAGE_SETTING, Some(language.clone()))?;
+    language_settings(language)
+}
+
+pub(crate) fn load_language(app: &AppHandle) -> Result<String, String> {
+    let language = load_text_setting(app, LANGUAGE_SETTING)?;
+    Ok(language
+        .as_deref()
+        .and_then(normalize_language)
+        .unwrap_or_else(|| "es".to_string()))
+}
+
+pub(crate) fn localized(app: &AppHandle, spanish: &str, english: &str) -> String {
+    match load_language(app) {
+        Ok(language) if language == "en" => english.to_string(),
+        _ => spanish.to_string(),
+    }
+}
+
 pub(crate) fn get_openai_api_key_status(app: &AppHandle) -> Result<OpenAiApiKeyStatus, String> {
     match load_openai_api_key(app)? {
         Some(api_key) if !api_key.trim().is_empty() => Ok(openai_key_status(&api_key)),
@@ -59,7 +106,11 @@ pub(crate) fn save_openai_api_key(
     let api_key = api_key.trim();
 
     if api_key.is_empty() {
-        return Err("Ingresa un OpenAI API key.".to_string());
+        return Err(localized(
+            app,
+            "Ingresa un OpenAI API key.",
+            "Enter an OpenAI API key.",
+        ));
     }
 
     let conn = open_settings_db(app)?;
@@ -383,6 +434,30 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn settings_db_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join(DB_FILE))
+}
+
+fn language_settings(language: String) -> Result<LanguageSettings, String> {
+    Ok(LanguageSettings {
+        language,
+        available_languages: vec![
+            LanguageOption {
+                value: "es".to_string(),
+                label: "Español".to_string(),
+            },
+            LanguageOption {
+                value: "en".to_string(),
+                label: "English".to_string(),
+            },
+        ],
+    })
+}
+
+fn normalize_language(value: &str) -> Option<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "es" | "es-cl" | "es_es" | "spanish" | "español" => Some("es".to_string()),
+        "en" | "en-us" | "en_us" | "english" => Some("en".to_string()),
+        _ => None,
+    }
 }
 
 fn openai_key_status(api_key: &str) -> OpenAiApiKeyStatus {

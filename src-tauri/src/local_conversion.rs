@@ -1,4 +1,4 @@
-use crate::system;
+use crate::{settings, system};
 use aifficator_core::conversion::{ffmpeg_args, ConversionSettings};
 use aifficator_core::validation::default_target_path;
 use chrono::Utc;
@@ -194,11 +194,18 @@ pub async fn local_conversion_convert_items(
     item_ids: Vec<String>,
     max_concurrency: Option<usize>,
 ) -> Result<LocalConversionBatchResult, String> {
+    let app_for_error = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         convert_items_blocking(app, item_ids, max_concurrency)
     })
     .await
-    .map_err(|error| format!("La conversion local fallo inesperadamente: {error}"))?
+    .map_err(|error| {
+        settings::localized(
+            &app_for_error,
+            &format!("La conversion local fallo inesperadamente: {error}"),
+            &format!("Local conversion failed unexpectedly: {error}"),
+        )
+    })?
 }
 
 #[tauri::command]
@@ -243,10 +250,18 @@ fn convert_items_blocking(
             level: "info".to_string(),
             item_id: None,
             name: None,
-            message: format!(
-                "Conversion local iniciada: {} archivo(s), concurrencia maxima {}",
-                ordered_ids.len(),
-                max_concurrency
+            message: settings::localized(
+                &app,
+                &format!(
+                    "Conversion local iniciada: {} archivo(s), concurrencia maxima {}",
+                    ordered_ids.len(),
+                    max_concurrency
+                ),
+                &format!(
+                    "Local conversion started: {} file(s), max concurrency {}",
+                    ordered_ids.len(),
+                    max_concurrency
+                ),
             ),
         },
     );
@@ -261,7 +276,11 @@ fn convert_items_blocking(
                         level: "error".to_string(),
                         item_id: Some(item_id.clone()),
                         name: None,
-                        message: format!("Archivo local no encontrado en SQLite: {item_id}"),
+                        message: settings::localized(
+                            &app,
+                            &format!("Archivo local no encontrado en SQLite: {item_id}"),
+                            &format!("Local file not found in SQLite: {item_id}"),
+                        ),
                     },
                 );
             }
@@ -283,13 +302,12 @@ fn convert_items_blocking(
             match handle.join() {
                 Ok(item) => output_items.push(item),
                 Err(_) => {
-                    let _ = update_item_state(
+                    let panic_message = settings::localized(
                         &app,
-                        &item_id,
-                        "failed",
-                        Some("La conversion fallo por un panic interno"),
-                        None,
+                        "La conversion fallo por un panic interno",
+                        "Conversion failed because of an internal panic",
                     );
+                    let _ = update_item_state(&app, &item_id, "failed", Some(&panic_message), None);
                     if let Ok(conn) = open_db(&app) {
                         if let Ok(Some(item)) = get_item(&conn, &item_id) {
                             output_items.push(item);
@@ -301,7 +319,7 @@ fn convert_items_blocking(
                             level: "error".to_string(),
                             item_id: Some(item_id),
                             name: None,
-                            message: "La conversion fallo por un panic interno".to_string(),
+                            message: panic_message,
                         },
                     );
                 }
@@ -339,12 +357,22 @@ fn convert_items_blocking(
             },
             item_id: None,
             name: None,
-            message: format!(
-                "Conversion local terminada: {} convertidos, {} existentes, {} AIFF originales, {} errores",
-                result.converted_total,
-                result.already_converted_total,
-                result.already_aiff_total,
-                result.failed_total
+            message: settings::localized(
+                &app,
+                &format!(
+                    "Conversion local terminada: {} convertidos, {} existentes, {} AIFF originales, {} errores",
+                    result.converted_total,
+                    result.already_converted_total,
+                    result.already_aiff_total,
+                    result.failed_total
+                ),
+                &format!(
+                    "Local conversion finished: {} converted, {} existing, {} original AIFF, {} errors",
+                    result.converted_total,
+                    result.already_converted_total,
+                    result.already_aiff_total,
+                    result.failed_total
+                ),
             ),
         },
     );
@@ -353,9 +381,10 @@ fn convert_items_blocking(
 }
 
 fn convert_item(app: &AppHandle, mut item: LocalConversionItem) -> LocalConversionItem {
-    let _ = update_item_state(app, &item.id, "queued", Some("En cola"), None);
+    let queued_message = settings::localized(app, "En cola", "Queued");
+    let _ = update_item_state(app, &item.id, "queued", Some(&queued_message), None);
     item.state = "queued".to_string();
-    item.message = Some("En cola".to_string());
+    item.message = Some(queued_message.clone());
     emit_progress(app, item_progress_event(&item, Some(0.0), None, None));
     emit_log(
         app,
@@ -363,7 +392,7 @@ fn convert_item(app: &AppHandle, mut item: LocalConversionItem) -> LocalConversi
             level: "info".to_string(),
             item_id: Some(item.id.clone()),
             name: Some(item.source_name.clone()),
-            message: "En cola".to_string(),
+            message: queued_message,
         },
     );
 
@@ -371,20 +400,27 @@ fn convert_item(app: &AppHandle, mut item: LocalConversionItem) -> LocalConversi
     let target_path = PathBuf::from(&item.target_path);
 
     if !source_path.is_file() {
-        item = fail_item(app, item, "Archivo fuente no encontrado");
+        let message =
+            settings::localized(app, "Archivo fuente no encontrado", "Source file not found");
+        item = fail_item(app, item, &message);
         return item;
     }
 
     if is_aiff_path(&source_path) {
+        let already_aiff_message = settings::localized(
+            app,
+            "El original ya es AIFF",
+            "Original file is already AIFF",
+        );
         let _ = update_item_state(
             app,
             &item.id,
             "already_aiff",
-            Some("El original ya es AIFF"),
+            Some(&already_aiff_message),
             None,
         );
         item.state = "already_aiff".to_string();
-        item.message = Some("El original ya es AIFF".to_string());
+        item.message = Some(already_aiff_message);
         item.target_path = item.source_path.clone();
         item.target_exists = true;
         emit_progress(app, item_progress_event(&item, Some(100.0), None, None));
@@ -394,22 +430,31 @@ fn convert_item(app: &AppHandle, mut item: LocalConversionItem) -> LocalConversi
                 level: "info".to_string(),
                 item_id: Some(item.id.clone()),
                 name: Some(item.source_name.clone()),
-                message: "Omitido: el original ya es AIFF".to_string(),
+                message: settings::localized(
+                    app,
+                    "Omitido: el original ya es AIFF",
+                    "Skipped: original file is already AIFF",
+                ),
             },
         );
         return item;
     }
 
     if target_path.exists() {
+        let already_converted_message = settings::localized(
+            app,
+            "AIFF convertido ya existe",
+            "Converted AIFF already exists",
+        );
         let _ = update_item_state(
             app,
             &item.id,
             "already_converted",
-            Some("AIFF convertido ya existe"),
+            Some(&already_converted_message),
             Some(&target_path),
         );
         item.state = "already_converted".to_string();
-        item.message = Some("AIFF convertido ya existe".to_string());
+        item.message = Some(already_converted_message);
         item.target_exists = true;
         emit_progress(app, item_progress_event(&item, Some(100.0), None, None));
         emit_log(
@@ -418,7 +463,11 @@ fn convert_item(app: &AppHandle, mut item: LocalConversionItem) -> LocalConversi
                 level: "info".to_string(),
                 item_id: Some(item.id.clone()),
                 name: Some(item.source_name.clone()),
-                message: format!("Reutilizando AIFF existente: {}", target_path.display()),
+                message: settings::localized(
+                    app,
+                    &format!("Reutilizando AIFF existente: {}", target_path.display()),
+                    &format!("Reusing existing AIFF: {}", target_path.display()),
+                ),
             },
         );
         return item;
@@ -426,24 +475,27 @@ fn convert_item(app: &AppHandle, mut item: LocalConversionItem) -> LocalConversi
 
     if let Some(parent) = target_path.parent() {
         if let Err(error) = fs::create_dir_all(parent) {
-            item = fail_item(
+            let message = settings::localized(
                 app,
-                item,
                 &format!("No se pudo crear la carpeta {}: {error}", parent.display()),
+                &format!("Could not create folder {}: {error}", parent.display()),
             );
+            item = fail_item(app, item, &message);
             return item;
         }
     }
 
+    let running_message =
+        settings::localized(app, "Convirtiendo con ffmpeg", "Converting with ffmpeg");
     let _ = update_item_state(
         app,
         &item.id,
         "running",
-        Some("Convirtiendo con ffmpeg"),
+        Some(&running_message),
         Some(&target_path),
     );
     item.state = "running".to_string();
-    item.message = Some("Convirtiendo con ffmpeg".to_string());
+    item.message = Some(running_message);
     emit_progress(app, item_progress_event(&item, Some(0.0), Some(0.0), None));
     emit_log(
         app,
@@ -451,25 +503,35 @@ fn convert_item(app: &AppHandle, mut item: LocalConversionItem) -> LocalConversi
             level: "info".to_string(),
             item_id: Some(item.id.clone()),
             name: Some(item.source_name.clone()),
-            message: format!(
-                "ffmpeg iniciado: {} -> {}",
-                source_path.display(),
-                target_path.display()
+            message: settings::localized(
+                app,
+                &format!(
+                    "ffmpeg iniciado: {} -> {}",
+                    source_path.display(),
+                    target_path.display()
+                ),
+                &format!(
+                    "ffmpeg started: {} -> {}",
+                    source_path.display(),
+                    target_path.display()
+                ),
             ),
         },
     );
 
     match run_ffmpeg_conversion(app, &item, &source_path, &target_path) {
         Ok(()) => {
+            let completed_message =
+                settings::localized(app, "Conversion completada", "Conversion completed");
             let _ = update_item_state(
                 app,
                 &item.id,
                 "converted",
-                Some("Conversion completada"),
+                Some(&completed_message),
                 Some(&target_path),
             );
             item.state = "converted".to_string();
-            item.message = Some("Conversion completada".to_string());
+            item.message = Some(completed_message);
             item.target_exists = true;
             emit_progress(app, item_progress_event(&item, Some(100.0), None, None));
             emit_log(
@@ -478,7 +540,11 @@ fn convert_item(app: &AppHandle, mut item: LocalConversionItem) -> LocalConversi
                     level: "info".to_string(),
                     item_id: Some(item.id.clone()),
                     name: Some(item.source_name.clone()),
-                    message: format!("Conversion completada: {}", target_path.display()),
+                    message: settings::localized(
+                        app,
+                        &format!("Conversion completada: {}", target_path.display()),
+                        &format!("Conversion completed: {}", target_path.display()),
+                    ),
                 },
             );
         }
@@ -521,13 +587,20 @@ fn run_ffmpeg_conversion(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| {
-            format!("No se pudo ejecutar ffmpeg. Revisa que este instalado en PATH: {error}")
+            settings::localized(
+                app,
+                &format!("No se pudo ejecutar ffmpeg. Revisa que este instalado en PATH: {error}"),
+                &format!("Could not run ffmpeg. Check that it is installed in PATH: {error}"),
+            )
         })?;
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "No se pudo leer el progreso de ffmpeg".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        settings::localized(
+            app,
+            "No se pudo leer el progreso de ffmpeg",
+            "Could not read ffmpeg progress",
+        )
+    })?;
     let stderr = child.stderr.take();
     let stderr_handle = stderr.map(|stderr| {
         let app = app.clone();
@@ -593,9 +666,13 @@ fn run_ffmpeg_conversion(
                         target_path: target_path.to_string_lossy().into_owned(),
                         status: "running".to_string(),
                         message: Some(if value == "end" {
-                            "Finalizando".to_string()
+                            settings::localized(app, "Finalizando", "Finalizing")
                         } else {
-                            "Convirtiendo con ffmpeg".to_string()
+                            settings::localized(
+                                app,
+                                "Convirtiendo con ffmpeg",
+                                "Converting with ffmpeg",
+                            )
                         }),
                         percent,
                         elapsed_seconds,
@@ -607,24 +684,39 @@ fn run_ffmpeg_conversion(
         }
     }
 
-    let status = child
-        .wait()
-        .map_err(|error| format!("No se pudo esperar a ffmpeg: {error}"))?;
+    let status = child.wait().map_err(|error| {
+        settings::localized(
+            app,
+            &format!("No se pudo esperar a ffmpeg: {error}"),
+            &format!("Could not wait for ffmpeg: {error}"),
+        )
+    })?;
     let stderr_output = stderr_handle
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
 
     if !status.success() {
-        return Err(format!(
-            "ffmpeg fallo con estado {status}. {}",
-            stderr_tail(&stderr_output)
+        return Err(settings::localized(
+            app,
+            &format!(
+                "ffmpeg fallo con estado {status}. {}",
+                stderr_tail(&stderr_output)
+            ),
+            &format!(
+                "ffmpeg failed with status {status}. {}",
+                stderr_tail(&stderr_output)
+            ),
         ));
     }
 
     if !target_path.exists() {
-        return Err(format!(
-            "ffmpeg termino sin generar el archivo {}",
-            target_path.display()
+        return Err(settings::localized(
+            app,
+            &format!(
+                "ffmpeg termino sin generar el archivo {}",
+                target_path.display()
+            ),
+            &format!("ffmpeg finished without creating {}", target_path.display()),
         ));
     }
 
