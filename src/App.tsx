@@ -16,11 +16,14 @@ import {
   Gauge,
   HardDrive,
   Info,
+  KeyRound,
+  Monitor,
   Moon,
   MoreHorizontal,
   Pause,
   Play,
   RefreshCcw,
+  Settings,
   Square,
   Sun,
   Trash2,
@@ -28,6 +31,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { HashRouter, Navigate, NavLink, Outlet, Route, Routes, useOutletContext } from "react-router-dom";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import {
@@ -36,7 +40,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "./components/ui/dropdown-menu";
+import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
 import { cn } from "./lib/utils";
+import { FileConversionPage } from "./FileConversionPage";
+import { MasteringPage } from "./MasteringPage";
 import type * as React from "react";
 
 type Issue = {
@@ -172,10 +179,7 @@ type ConversionLogEvent = {
   message: string;
 };
 
-type TerminalLog = ConversionLogEvent & {
-  id: number;
-  time: string;
-};
+type TerminalLog = TerminalLogEntry;
 
 type ConversionItemResult = {
   track_id: string;
@@ -210,6 +214,16 @@ type PlayerState = {
 
 type DetailTab = "playlist" | "converted" | "plan" | "report";
 
+type AppShellContext = {
+  darkMode: boolean;
+  setDarkMode: React.Dispatch<React.SetStateAction<boolean>>;
+};
+
+type OpenAiApiKeyStatus = {
+  configured: boolean;
+  preview?: string | null;
+};
+
 const maxConcurrencyLimit = 4;
 const themeModeKey = "aifficator.themeMode";
 const savedXmlPathKey = "aifficator.savedXmlPath";
@@ -239,8 +253,267 @@ function detectInitialDarkMode() {
 }
 
 export default function App() {
-  const [detectedLogicalCores] = useState(() => detectLogicalCores());
+  return (
+    <HashRouter>
+      <Routes>
+        <Route element={<AppShell />}>
+          <Route path="/" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+          <Route path="/rekordbox-convert" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+          <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+          <Route path="/file-conversion/local" element={<FileConversionPage />} />
+          <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
+          <Route path="/mastering" element={<MasteringPage />} />
+          <Route
+            path="/settings"
+            element={<SettingsPage />}
+          />
+          <Route path="*" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+        </Route>
+      </Routes>
+    </HashRouter>
+  );
+}
+
+function AppShell() {
   const [darkMode, setDarkMode] = useState(() => detectInitialDarkMode());
+  const shellContext = useMemo<AppShellContext>(() => ({ darkMode, setDarkMode }), [darkMode]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem(themeModeKey, darkMode ? "dark" : "light");
+  }, [darkMode]);
+
+  return (
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="flex min-h-screen max-lg:flex-col">
+        <AppSidebar />
+        <div className="min-w-0 flex-1">
+          <Outlet context={shellContext} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlaceholderPage({
+  icon,
+  title,
+  description
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <main className="min-w-0 p-4 pb-20">
+      <header className="mb-3 flex items-center gap-3 border-b border-border pb-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-border bg-secondary text-secondary-foreground">
+          {icon}
+        </span>
+        <div className="min-w-0">
+          <h1 className="m-0 text-2xl font-semibold tracking-normal">{title}</h1>
+          <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        </div>
+      </header>
+
+      <Card className="p-6">
+        <CardTitle>{title}</CardTitle>
+        <p className="mt-2 max-w-xl text-sm text-muted-foreground">
+          Esta seccion ya esta registrada en el router y lista para recibir su flujo.
+        </p>
+      </Card>
+    </main>
+  );
+}
+
+function SettingsPage() {
+  const { darkMode, setDarkMode } = useOutletContext<AppShellContext>();
+  const [apiKey, setApiKey] = useState("");
+  const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [apiKeyStatus, setApiKeyStatus] = useState<OpenAiApiKeyStatus | null>(null);
+  const [loadingApiKey, setLoadingApiKey] = useState(true);
+  const [savingApiKey, setSavingApiKey] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [settingsError, setSettingsError] = useState("");
+
+  useEffect(() => {
+    void loadApiKeyStatus();
+  }, []);
+
+  async function loadApiKeyStatus() {
+    setLoadingApiKey(true);
+    setSettingsError("");
+
+    try {
+      const status = await invoke<OpenAiApiKeyStatus>("get_openai_api_key_status");
+      setApiKeyStatus(status);
+    } catch (error) {
+      setSettingsError(String(error));
+    } finally {
+      setLoadingApiKey(false);
+    }
+  }
+
+  async function saveApiKey(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingApiKey(true);
+    setSettingsMessage("");
+    setSettingsError("");
+
+    try {
+      const status = await invoke<OpenAiApiKeyStatus>("save_openai_api_key", { apiKey });
+      setApiKeyStatus(status);
+      setApiKey("");
+      setApiKeyVisible(false);
+      setSettingsMessage("OpenAI API key guardada.");
+    } catch (error) {
+      setSettingsError(String(error));
+    } finally {
+      setSavingApiKey(false);
+    }
+  }
+
+  async function clearApiKey() {
+    setSavingApiKey(true);
+    setSettingsMessage("");
+    setSettingsError("");
+
+    try {
+      const status = await invoke<OpenAiApiKeyStatus>("clear_openai_api_key");
+      setApiKeyStatus(status);
+      setApiKey("");
+      setSettingsMessage("OpenAI API key eliminada.");
+    } catch (error) {
+      setSettingsError(String(error));
+    } finally {
+      setSavingApiKey(false);
+    }
+  }
+
+  return (
+    <main className="min-w-0 p-4 pb-20">
+      <header className="mb-3 flex items-center gap-3 border-b border-border pb-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-border bg-secondary text-secondary-foreground">
+          <Settings className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <h1 className="m-0 text-2xl font-semibold tracking-normal">Settings</h1>
+          <p className="mt-1 text-xs text-muted-foreground">Preferencias generales de Aifficator.</p>
+        </div>
+      </header>
+
+      <section className="grid max-w-3xl gap-3">
+        {settingsError ? (
+          <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-200">
+            {settingsError}
+          </div>
+        ) : null}
+        {settingsMessage ? (
+          <div className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground">
+            {settingsMessage}
+          </div>
+        ) : null}
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Monitor className="h-4 w-4" />
+              <CardTitle>Apariencia</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="inline-flex rounded-md border border-border bg-secondary p-1">
+              <Button
+                type="button"
+                variant={!darkMode ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setDarkMode(false)}
+              >
+                <Sun className="h-4 w-4" />
+                Claro
+              </Button>
+              <Button
+                type="button"
+                variant={darkMode ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setDarkMode(true)}
+              >
+                <Moon className="h-4 w-4" />
+                Oscuro
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4" />
+              <CardTitle>OpenAI API key</CardTitle>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {loadingApiKey
+                ? "Revisando estado..."
+                : apiKeyStatus?.configured
+                  ? `Guardada: ${apiKeyStatus.preview}`
+                  : "No configurada"}
+            </span>
+          </CardHeader>
+          <CardContent>
+            <form className="grid gap-3" onSubmit={saveApiKey}>
+              <label className="grid gap-1 text-sm font-medium">
+                API key
+                <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                  <input
+                    className="h-10 min-w-0 rounded-md border border-input bg-background px-3 text-sm outline-none ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
+                    type={apiKeyVisible ? "text" : "password"}
+                    value={apiKey}
+                    autoComplete="off"
+                    placeholder="sk-..."
+                    onChange={(event) => setApiKey(event.currentTarget.value)}
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => setApiKeyVisible((current) => !current)}
+                  >
+                    {apiKeyVisible ? "Ocultar" : "Mostrar"}
+                  </Button>
+                </div>
+              </label>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="submit" disabled={savingApiKey || apiKey.trim().length === 0}>
+                  Guardar key
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={savingApiKey || loadingApiKey || !apiKeyStatus?.configured}
+                  onClick={() => void clearApiKey()}
+                >
+                  Eliminar key
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={savingApiKey || loadingApiKey}
+                  onClick={() => void loadApiKeyStatus()}
+                >
+                  Refrescar
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      </section>
+    </main>
+  );
+}
+
+function RekordboxConvertPage() {
+  const { darkMode, setDarkMode } = useOutletContext<AppShellContext>();
+  const [detectedLogicalCores] = useState(() => detectLogicalCores());
   const [xmlPath, setXmlPath] = useState("");
   const [recentXmlPaths, setRecentXmlPaths] = useState<string[]>([]);
   const [importResult, setImportResult] = useState<ImportResponse | null>(null);
@@ -306,11 +579,6 @@ export default function App() {
   useEffect(() => {
     maxConcurrencyRef.current = maxConcurrency;
   }, [maxConcurrency]);
-
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", darkMode);
-    localStorage.setItem(themeModeKey, darkMode ? "dark" : "light");
-  }, [darkMode]);
 
   useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
@@ -1089,11 +1357,11 @@ export default function App() {
   }
 
   return (
-    <main className={cn("min-h-screen bg-background p-4 pb-20 text-foreground", terminalExpanded && "pb-72")}>
+    <main className={cn("min-w-0 p-4 pb-20", terminalExpanded && "pb-72")}>
       <header className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
-          <h1 className="m-0 text-2xl font-semibold tracking-normal">Aifficator</h1>
-          <p className="mt-1 max-w-[72vw] truncate text-xs text-muted-foreground">{xmlPath || "Sin XML cargado"}</p>
+          <h1 className="m-0 text-2xl font-semibold tracking-normal">Rekordbox Convert</h1>
+          <p className="mt-1 max-w-[72vw] truncate text-xs text-muted-foreground lg:max-w-[56vw]">{xmlPath || "Sin XML cargado"}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button onClick={chooseXml} disabled={busy}>
@@ -1634,6 +1902,7 @@ export default function App() {
         logs={terminalLogs}
         expanded={terminalExpanded}
         terminalRef={terminalElement}
+        subtitle="ffmpeg / conversion / export"
         onToggle={() => setTerminalExpanded((current) => !current)}
         onClear={clearTerminal}
       />
@@ -1643,6 +1912,83 @@ export default function App() {
         onClose={() => setMetadataSheetOpen(false)}
       />
     </main>
+  );
+}
+
+function AppSidebar() {
+  return (
+    <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-border bg-card px-3 py-4 max-lg:static max-lg:h-auto max-lg:w-full max-lg:border-b max-lg:border-r-0">
+      <div className="mb-5 flex items-center gap-3 px-2 max-lg:mb-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-border bg-secondary text-secondary-foreground">
+          <Disc3 className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <strong className="block truncate text-sm font-semibold">Aifficator</strong>
+          <span className="block truncate text-xs text-muted-foreground">Desktop</span>
+        </div>
+      </div>
+
+      <nav className="grid gap-5 max-lg:flex max-lg:gap-3 max-lg:overflow-x-auto">
+        <SidebarSection title="File Conversion">
+          <SidebarLink to="/file-conversion/local" icon={<Upload className="h-4 w-4" />}>
+            File Conversion
+          </SidebarLink>
+          <SidebarLink to="/file-conversion/rekordbox-convert" icon={<FileAudio2 className="h-4 w-4" />}>
+            Rekordbox Convert
+          </SidebarLink>
+        </SidebarSection>
+
+        <SidebarSection title="Mastering">
+          <SidebarLink to="/mastering" icon={<Gauge className="h-4 w-4" />}>
+            Mastering
+          </SidebarLink>
+        </SidebarSection>
+
+        <SidebarSection title="Settings">
+          <SidebarLink to="/settings" icon={<Settings className="h-4 w-4" />}>
+            Settings
+          </SidebarLink>
+        </SidebarSection>
+      </nav>
+    </aside>
+  );
+}
+
+function SidebarSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="grid gap-1 max-lg:min-w-52">
+      <span className="px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        {title}
+      </span>
+      {children}
+    </section>
+  );
+}
+
+function SidebarLink({
+  to,
+  icon,
+  children
+}: {
+  to: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        cn(
+          "flex min-h-10 min-w-0 items-center gap-2 rounded-md px-3 text-left text-sm font-medium transition-colors",
+          isActive
+            ? "bg-primary text-primary-foreground shadow-sm"
+            : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+        )
+      }
+    >
+      <span className="shrink-0">{icon}</span>
+      <span className="truncate">{children}</span>
+    </NavLink>
   );
 }
 
@@ -2012,60 +2358,6 @@ function RowActions({
   );
 }
 
-function TerminalDrawer({
-  logs,
-  expanded,
-  terminalRef,
-  onToggle,
-  onClear
-}: {
-  logs: TerminalLog[];
-  expanded: boolean;
-  terminalRef: React.RefObject<HTMLDivElement | null>;
-  onToggle: () => void;
-  onClear: () => void;
-}) {
-  return (
-    <Card
-      className={cn(
-        "fixed bottom-3 left-4 right-4 z-50 overflow-hidden shadow-2xl transition-[height]",
-        expanded ? "h-[250px]" : "h-12"
-      )}
-    >
-      <CardHeader className="min-h-12">
-        <div className="min-w-0">
-          <CardTitle>Terminal</CardTitle>
-          <span className="block text-xs text-muted-foreground">{logs.length} eventos</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">ffmpeg / conversion / export</span>
-          <Button variant="secondary" size="sm" onClick={onToggle}>
-            {expanded ? "Contraer" : "Expandir"}
-          </Button>
-          <Button variant="secondary" size="sm" onClick={onClear}>
-            Limpiar
-          </Button>
-        </div>
-      </CardHeader>
-      {expanded ? (
-        <div ref={terminalRef} className="h-[calc(250px-48px)] overflow-auto bg-slate-950 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-200">
-          {logs.length === 0 ? <div className="text-slate-500">Sin eventos todavia.</div> : null}
-          {logs.map((log) => (
-            <div key={log.id} className={cn("terminal-line", terminalLogClass(log.level))}>
-              <span className="truncate text-slate-500">{log.time}</span>
-              <span className="truncate font-semibold">{log.level.toUpperCase()}</span>
-              <span className="truncate text-slate-400" title={log.track_id ?? ""}>
-                {log.name ?? log.track_id ?? "system"}
-              </span>
-              <span className="whitespace-pre-wrap break-words">{log.message}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </Card>
-  );
-}
-
 function planRowClass(action: PlanItem["action"]) {
   if (action === "reuse_existing") return "bg-emerald-50 dark:bg-emerald-950/30";
   if (action === "blocked") return "bg-red-50 dark:bg-red-950/30";
@@ -2077,10 +2369,4 @@ function issueRowClass(severity: Issue["severity"]) {
   if (severity === "error") return "bg-red-50 dark:bg-red-950/30";
   if (severity === "warning") return "bg-amber-50 dark:bg-amber-950/30";
   return "bg-slate-50 dark:bg-slate-900/40";
-}
-
-function terminalLogClass(level: TerminalLog["level"]) {
-  if (level === "error") return "text-red-200";
-  if (level === "warning") return "text-amber-200";
-  return "text-slate-200";
 }

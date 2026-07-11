@@ -18,7 +18,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::UNIX_EPOCH;
-use tauri::Emitter;
+use tauri::{AppHandle, Emitter};
+
+mod local_conversion;
+mod mastering;
+mod settings;
 
 #[derive(Debug, Serialize)]
 struct ImportResponse {
@@ -143,6 +147,24 @@ struct ExportXmlResult {
     selected_playlist_total: usize,
     selected_track_total: usize,
     replaced_track_total: usize,
+}
+
+#[tauri::command]
+fn get_openai_api_key_status(app: AppHandle) -> Result<settings::OpenAiApiKeyStatus, String> {
+    settings::get_openai_api_key_status(&app)
+}
+
+#[tauri::command]
+fn save_openai_api_key(
+    app: AppHandle,
+    api_key: String,
+) -> Result<settings::OpenAiApiKeyStatus, String> {
+    settings::save_openai_api_key(&app, api_key)
+}
+
+#[tauri::command]
+fn clear_openai_api_key(app: AppHandle) -> Result<settings::OpenAiApiKeyStatus, String> {
+    settings::clear_openai_api_key(&app)
 }
 
 #[tauri::command]
@@ -332,7 +354,9 @@ fn export_replacements(
     }
 }
 
-fn existing_converted_replacements(library: &RekordboxLibrary) -> BTreeMap<String, ExportTrackReplacement> {
+fn existing_converted_replacements(
+    library: &RekordboxLibrary,
+) -> BTreeMap<String, ExportTrackReplacement> {
     let mut replacements = BTreeMap::new();
 
     for track in &library.tracks {
@@ -1196,7 +1220,24 @@ pub fn run() {
             list_audio_files,
             playlist_tracks,
             reveal_path,
-            open_parent_folder
+            open_parent_folder,
+            get_openai_api_key_status,
+            save_openai_api_key,
+            clear_openai_api_key,
+            local_conversion::local_conversion_list_items,
+            local_conversion::local_conversion_list_groups,
+            local_conversion::local_conversion_group_items,
+            local_conversion::local_conversion_add_files,
+            local_conversion::local_conversion_scan_folder,
+            local_conversion::local_conversion_convert_items,
+            local_conversion::local_conversion_delete_item,
+            mastering::mastering_profiles,
+            mastering::mastering_list_jobs,
+            mastering::mastering_get_job,
+            mastering::mastering_job_events,
+            mastering::mastering_start_job,
+            mastering::mastering_retry_job,
+            mastering::mastering_delete_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aifficator");
