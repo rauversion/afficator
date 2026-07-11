@@ -10,7 +10,6 @@ use aifficator_core::validation::{
     default_target_path, track_action, validate_library, validate_track, IssueSeverity,
     TrackAction, ValidationReport,
 };
-use keyring::Entry;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -19,10 +18,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::UNIX_EPOCH;
-use tauri::Emitter;
+use tauri::{AppHandle, Emitter};
 
-const OPENAI_KEY_SERVICE: &str = "aifficator";
-const OPENAI_KEY_ACCOUNT: &str = "openai_api_key";
+mod mastering;
+mod settings;
 
 #[derive(Debug, Serialize)]
 struct ImportResponse {
@@ -149,88 +148,22 @@ struct ExportXmlResult {
     replaced_track_total: usize,
 }
 
-#[derive(Debug, Serialize)]
-struct OpenAiApiKeyStatus {
-    configured: bool,
-    preview: Option<String>,
+#[tauri::command]
+fn get_openai_api_key_status(app: AppHandle) -> Result<settings::OpenAiApiKeyStatus, String> {
+    settings::get_openai_api_key_status(&app)
 }
 
 #[tauri::command]
-fn get_openai_api_key_status() -> Result<OpenAiApiKeyStatus, String> {
-    let entry = openai_key_entry()?;
-
-    match entry.get_password() {
-        Ok(api_key) if !api_key.trim().is_empty() => Ok(openai_key_status(&api_key)),
-        Ok(_) => Ok(OpenAiApiKeyStatus {
-            configured: false,
-            preview: None,
-        }),
-        Err(keyring::Error::NoEntry) => Ok(OpenAiApiKeyStatus {
-            configured: false,
-            preview: None,
-        }),
-        Err(error) => Err(format!("No se pudo leer OpenAI API key: {error}")),
-    }
+fn save_openai_api_key(
+    app: AppHandle,
+    api_key: String,
+) -> Result<settings::OpenAiApiKeyStatus, String> {
+    settings::save_openai_api_key(&app, api_key)
 }
 
 #[tauri::command]
-fn save_openai_api_key(api_key: String) -> Result<OpenAiApiKeyStatus, String> {
-    let api_key = api_key.trim();
-
-    if api_key.is_empty() {
-        return Err("Ingresa un OpenAI API key.".to_string());
-    }
-
-    let entry = openai_key_entry()?;
-    entry
-        .set_password(api_key)
-        .map_err(|error| format!("No se pudo guardar OpenAI API key: {error}"))?;
-
-    Ok(openai_key_status(api_key))
-}
-
-#[tauri::command]
-fn clear_openai_api_key() -> Result<OpenAiApiKeyStatus, String> {
-    let entry = openai_key_entry()?;
-
-    match entry.delete_password() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(OpenAiApiKeyStatus {
-            configured: false,
-            preview: None,
-        }),
-        Err(error) => Err(format!("No se pudo borrar OpenAI API key: {error}")),
-    }
-}
-
-fn openai_key_entry() -> Result<Entry, String> {
-    Entry::new(OPENAI_KEY_SERVICE, OPENAI_KEY_ACCOUNT)
-        .map_err(|error| format!("No se pudo abrir el llavero del sistema: {error}"))
-}
-
-fn openai_key_status(api_key: &str) -> OpenAiApiKeyStatus {
-    OpenAiApiKeyStatus {
-        configured: true,
-        preview: Some(mask_secret(api_key)),
-    }
-}
-
-fn mask_secret(value: &str) -> String {
-    let value = value.trim();
-    let prefix = value.chars().take(7).collect::<String>();
-    let suffix = value
-        .chars()
-        .rev()
-        .take(4)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-
-    if value.chars().count() <= 12 {
-        "********".to_string()
-    } else {
-        format!("{prefix}...{suffix}")
-    }
+fn clear_openai_api_key(app: AppHandle) -> Result<settings::OpenAiApiKeyStatus, String> {
+    settings::clear_openai_api_key(&app)
 }
 
 #[tauri::command]
@@ -1289,7 +1222,14 @@ pub fn run() {
             open_parent_folder,
             get_openai_api_key_status,
             save_openai_api_key,
-            clear_openai_api_key
+            clear_openai_api_key,
+            mastering::mastering_profiles,
+            mastering::mastering_list_jobs,
+            mastering::mastering_get_job,
+            mastering::mastering_job_events,
+            mastering::mastering_start_job,
+            mastering::mastering_retry_job,
+            mastering::mastering_delete_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aifficator");

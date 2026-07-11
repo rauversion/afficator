@@ -40,7 +40,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from "./components/ui/dropdown-menu";
+import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
 import { cn } from "./lib/utils";
+import { MasteringPage } from "./MasteringPage";
 import type * as React from "react";
 
 type Issue = {
@@ -176,10 +178,7 @@ type ConversionLogEvent = {
   message: string;
 };
 
-type TerminalLog = ConversionLogEvent & {
-  id: number;
-  time: string;
-};
+type TerminalLog = TerminalLogEntry;
 
 type ConversionItemResult = {
   track_id: string;
@@ -261,16 +260,7 @@ export default function App() {
           <Route path="/rekordbox-convert" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
           <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
           <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
-          <Route
-            path="/mastering"
-            element={
-              <PlaceholderPage
-                icon={<Gauge className="h-5 w-5" />}
-                title="Mastering"
-                description="Workspace reservado para herramientas de mastering."
-              />
-            }
-          />
+          <Route path="/mastering" element={<MasteringPage />} />
           <Route
             path="/settings"
             element={<SettingsPage />}
@@ -1910,6 +1900,7 @@ function RekordboxConvertPage() {
         logs={terminalLogs}
         expanded={terminalExpanded}
         terminalRef={terminalElement}
+        subtitle="ffmpeg / conversion / export"
         onToggle={() => setTerminalExpanded((current) => !current)}
         onClear={clearTerminal}
       />
@@ -2362,60 +2353,6 @@ function RowActions({
   );
 }
 
-function TerminalDrawer({
-  logs,
-  expanded,
-  terminalRef,
-  onToggle,
-  onClear
-}: {
-  logs: TerminalLog[];
-  expanded: boolean;
-  terminalRef: React.RefObject<HTMLDivElement | null>;
-  onToggle: () => void;
-  onClear: () => void;
-}) {
-  return (
-    <Card
-      className={cn(
-        "fixed bottom-3 left-4 right-4 z-50 overflow-hidden shadow-2xl transition-[height] lg:left-[17rem]",
-        expanded ? "h-[250px]" : "h-12"
-      )}
-    >
-      <CardHeader className="min-h-12">
-        <div className="min-w-0">
-          <CardTitle>Terminal</CardTitle>
-          <span className="block text-xs text-muted-foreground">{logs.length} eventos</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">ffmpeg / conversion / export</span>
-          <Button variant="secondary" size="sm" onClick={onToggle}>
-            {expanded ? "Contraer" : "Expandir"}
-          </Button>
-          <Button variant="secondary" size="sm" onClick={onClear}>
-            Limpiar
-          </Button>
-        </div>
-      </CardHeader>
-      {expanded ? (
-        <div ref={terminalRef} className="h-[calc(250px-48px)] overflow-auto bg-slate-950 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-200">
-          {logs.length === 0 ? <div className="text-slate-500">Sin eventos todavia.</div> : null}
-          {logs.map((log) => (
-            <div key={log.id} className={cn("terminal-line", terminalLogClass(log.level))}>
-              <span className="truncate text-slate-500">{log.time}</span>
-              <span className="truncate font-semibold">{log.level.toUpperCase()}</span>
-              <span className="truncate text-slate-400" title={log.track_id ?? ""}>
-                {log.name ?? log.track_id ?? "system"}
-              </span>
-              <span className="whitespace-pre-wrap break-words">{log.message}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </Card>
-  );
-}
-
 function planRowClass(action: PlanItem["action"]) {
   if (action === "reuse_existing") return "bg-emerald-50 dark:bg-emerald-950/30";
   if (action === "blocked") return "bg-red-50 dark:bg-red-950/30";
@@ -2427,10 +2364,4 @@ function issueRowClass(severity: Issue["severity"]) {
   if (severity === "error") return "bg-red-50 dark:bg-red-950/30";
   if (severity === "warning") return "bg-amber-50 dark:bg-amber-950/30";
   return "bg-slate-50 dark:bg-slate-900/40";
-}
-
-function terminalLogClass(level: TerminalLog["level"]) {
-  if (level === "error") return "text-red-200";
-  if (level === "warning") return "text-amber-200";
-  return "text-slate-200";
 }
