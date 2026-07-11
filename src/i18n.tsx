@@ -254,6 +254,8 @@ const translations: Record<Locale, Record<string, string>> = {
     "Indexar XML": "Index XML",
     "Indexar todo": "Index all",
     "Indexar {count} playlists": "Index {count} playlists",
+    "Indexar {count} vectores": "Index {count} vectors",
+    "Indexar vector": "Index vector",
     "Indexar vectores": "Index vectors",
     "Indice actualizado: {tracks} tracks, {playlists} playlists.": "Index updated: {tracks} tracks, {playlists} playlists.",
     "Indice eliminado: {name}": "Index deleted: {name}",

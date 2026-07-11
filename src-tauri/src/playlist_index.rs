@@ -792,10 +792,11 @@ pub async fn playlist_index_generate_embeddings(
     app: AppHandle,
     library_id: String,
     limit: Option<usize>,
+    track_ids: Option<Vec<String>>,
 ) -> Result<PlaylistEmbeddingResult, String> {
     let app_for_error = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        generate_embeddings_blocking(app, library_id, limit)
+        generate_embeddings_blocking(app, library_id, limit, track_ids)
     })
     .await
     .map_err(|error| {
@@ -1536,6 +1537,7 @@ fn generate_embeddings_blocking(
     app: AppHandle,
     library_id: String,
     limit: Option<usize>,
+    track_ids: Option<Vec<String>>,
 ) -> Result<PlaylistEmbeddingResult, String> {
     let api_key = settings::load_openai_api_key(&app)?
         .ok_or_else(|| "OpenAI API key no configurada. Guardala en Settings.".to_string())?;
@@ -1545,7 +1547,13 @@ fn generate_embeddings_blocking(
     }
 
     let max_items = limit.unwrap_or(500).clamp(1, 5000);
-    let pending = embedding_candidates(&conn, &library_id, max_items)?;
+    let selected_track_ids = track_ids
+        .unwrap_or_default()
+        .into_iter()
+        .map(|track_id| track_id.trim().to_string())
+        .filter(|track_id| !track_id.is_empty())
+        .collect::<BTreeSet<_>>();
+    let pending = embedding_candidates(&conn, &library_id, max_items, &selected_track_ids)?;
     let total = pending.len();
     if total == 0 {
         emit_progress(
@@ -1661,50 +1669,81 @@ fn embedding_candidates(
     conn: &Connection,
     library_id: &str,
     limit: usize,
+    selected_track_ids: &BTreeSet<String>,
 ) -> Result<Vec<EmbeddingCandidate>, String> {
+    let limit_clause = if selected_track_ids.is_empty() {
+        "LIMIT ?4"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT t.track_id, t.search_text, e.text_hash
+         FROM playlist_index_tracks t
+         LEFT JOIN playlist_track_embeddings e ON e.library_id = t.library_id
+            AND e.track_id = t.track_id
+            AND e.model = ?2
+            AND e.dimensions = ?3
+         WHERE t.library_id = ?1
+         ORDER BY COALESCE(t.artist, ''), COALESCE(t.name, ''), t.track_id
+         {limit_clause}"
+    );
     let mut stmt = conn
-        .prepare(
-            "SELECT t.track_id, t.search_text, e.text_hash
-             FROM playlist_index_tracks t
-             LEFT JOIN playlist_track_embeddings e ON e.library_id = t.library_id
-                AND e.track_id = t.track_id
-                AND e.model = ?2
-                AND e.dimensions = ?3
-             WHERE t.library_id = ?1
-             ORDER BY COALESCE(t.artist, ''), COALESCE(t.name, ''), t.track_id
-             LIMIT ?4",
-        )
+        .prepare(&sql)
         .map_err(|error| format!("No se pudo preparar candidatos de embeddings: {error}"))?;
-    let rows = stmt
-        .query_map(
-            params![
-                library_id,
-                EMBEDDING_MODEL,
-                EMBEDDING_DIMENSIONS as i64,
-                limit as i64
-            ],
-            |row| {
-                let track_id: String = row.get(0)?;
-                let search_text: String = row.get(1)?;
-                let existing_hash: Option<String> = row.get(2)?;
-                let text_hash = stable_hash(&search_text);
-                Ok((track_id, search_text, text_hash, existing_hash))
-            },
-        )
-        .map_err(|error| format!("No se pudieron leer candidatos de embeddings: {error}"))?;
 
     let mut candidates = Vec::new();
-    for row in rows {
-        let (track_id, search_text, text_hash, existing_hash) =
-            row.map_err(|error| format!("No se pudo mapear candidato: {error}"))?;
-        if existing_hash.as_deref() == Some(text_hash.as_str()) {
-            continue;
+    let mut push_row =
+        |row: rusqlite::Result<(String, String, String, Option<String>)>| -> Result<(), String> {
+            let (track_id, search_text, text_hash, existing_hash) =
+                row.map_err(|error| format!("No se pudo mapear candidato: {error}"))?;
+            if !selected_track_ids.is_empty() && !selected_track_ids.contains(&track_id) {
+                return Ok(());
+            }
+            if existing_hash.as_deref() == Some(text_hash.as_str()) {
+                return Ok(());
+            }
+            candidates.push(EmbeddingCandidate {
+                track_id,
+                search_text,
+                text_hash,
+            });
+            Ok(())
+        };
+
+    let map_row =
+        |row: &rusqlite::Row<'_>| -> rusqlite::Result<(String, String, String, Option<String>)> {
+            let track_id: String = row.get(0)?;
+            let search_text: String = row.get(1)?;
+            let existing_hash: Option<String> = row.get(2)?;
+            let text_hash = stable_hash(&search_text);
+            Ok((track_id, search_text, text_hash, existing_hash))
+        };
+
+    if selected_track_ids.is_empty() {
+        let rows = stmt
+            .query_map(
+                params![
+                    library_id,
+                    EMBEDDING_MODEL,
+                    EMBEDDING_DIMENSIONS as i64,
+                    limit as i64
+                ],
+                map_row,
+            )
+            .map_err(|error| format!("No se pudieron leer candidatos de embeddings: {error}"))?;
+        for row in rows {
+            push_row(row)?;
         }
-        candidates.push(EmbeddingCandidate {
-            track_id,
-            search_text,
-            text_hash,
-        });
+    } else {
+        let rows = stmt
+            .query_map(
+                params![library_id, EMBEDDING_MODEL, EMBEDDING_DIMENSIONS as i64],
+                map_row,
+            )
+            .map_err(|error| format!("No se pudieron leer candidatos de embeddings: {error}"))?;
+        for row in rows {
+            push_row(row)?;
+        }
     }
 
     Ok(candidates)

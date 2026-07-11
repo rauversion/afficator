@@ -502,17 +502,24 @@ export function PlaylistIndexPage() {
     }
   }
 
-  async function generateEmbeddings() {
+  async function generateEmbeddings(trackIds?: string[]) {
     if (!activeLibraryId) return;
 
+    const requestedTrackIds = Array.from(new Set((trackIds ?? []).filter(Boolean)));
     setBusy(true);
     setErrorMessage("");
     setMessage("");
     setTrackEmbeddingStatuses((current) => {
       const next = { ...current };
-      for (const result of searchResults) {
-        if (!result.track.embedding_ready) {
-          next[result.track.track_id] = "queued";
+      if (requestedTrackIds.length > 0) {
+        for (const trackId of requestedTrackIds) {
+          next[trackId] = "queued";
+        }
+      } else {
+        for (const result of searchResults) {
+          if (!result.track.embedding_ready) {
+            next[result.track.track_id] = "queued";
+          }
         }
       }
       return next;
@@ -522,8 +529,18 @@ export function PlaylistIndexPage() {
     try {
       const result = await invoke<PlaylistEmbeddingResult>("playlist_index_generate_embeddings", {
         libraryId: activeLibraryId,
-        limit: 2000
+        limit: requestedTrackIds.length > 0 ? requestedTrackIds.length : 2000,
+        trackIds: requestedTrackIds.length > 0 ? requestedTrackIds : null
       });
+      if (requestedTrackIds.length > 0) {
+        setTrackEmbeddingStatuses((current) => {
+          const next = { ...current };
+          for (const trackId of requestedTrackIds) {
+            next[trackId] = "embedded";
+          }
+          return next;
+        });
+      }
       setMessage(t("Embeddings listos: {count} generados con {model}.", {
         count: result.generated_total,
         model: result.model
@@ -1269,6 +1286,17 @@ export function PlaylistIndexPage() {
                     <Button
                       variant="secondary"
                       size="sm"
+                      disabled={selectedTrackIds.size === 0 || busy}
+                      onClick={() => void generateEmbeddings(Array.from(selectedTrackIds))}
+                    >
+                      <Sparkles className="h-3.5 w-3.5" />
+                      {selectedTrackIds.size > 1
+                        ? t("Indexar {count} vectores", { count: selectedTrackIds.size })
+                        : t("Indexar vector")}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       disabled={!activeLibraryId || selectedTrackIds.size === 0 || busy}
                       onClick={() => openCreateDraft(Array.from(selectedTrackIds))}
                     >
@@ -1311,6 +1339,7 @@ export function PlaylistIndexPage() {
                       onDetails={() => openTrackDetail(result.track)}
                       onReveal={() => void reveal(result.track.source_path)}
                       onOpenFolder={() => void openFolder(result.track.source_path)}
+                      onVector={() => void generateEmbeddings([result.track.track_id])}
                       onDelete={() => requestDeleteIndexedTracks([result.track])}
                       embeddingStatus={trackEmbeddingStatus(result.track)}
                       playing={Boolean(result.track.source_path && player?.path === result.track.source_path && playerPlaying)}
@@ -1511,6 +1540,7 @@ function TrackRow({
   onDetails,
   onReveal,
   onOpenFolder,
+  onVector,
   onDelete
 }: {
   track: PlaylistIndexTrack;
@@ -1523,6 +1553,7 @@ function TrackRow({
   onDetails: () => void;
   onReveal: () => void;
   onOpenFolder: () => void;
+  onVector: () => void;
   onDelete: () => void;
 }) {
   const { t } = useI18n();
@@ -1560,6 +1591,15 @@ function TrackRow({
         </Button>
         <Button variant="secondary" size="icon" disabled={!track.source_path} title={t("Abrir carpeta")} onClick={onOpenFolder}>
           <FolderOpen className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          variant="secondary"
+          size="icon"
+          disabled={embeddingStatus === "queued" || embeddingStatus === "embedding"}
+          title={t("Indexar vector")}
+          onClick={onVector}
+        >
+          <Sparkles className="h-3.5 w-3.5" />
         </Button>
         <Button variant="destructive" size="icon" title={t("Eliminar track")} onClick={onDelete}>
           <Trash2 className="h-3.5 w-3.5" />
