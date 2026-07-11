@@ -96,11 +96,31 @@ Opciones:
 Ejemplo:
 
 ```sh
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.4
+git push origin v0.1.4
 ```
 
-Los builds actuales son unsigned. En macOS y Windows puede aparecer una advertencia del sistema hasta configurar certificados de firma/notarizacion.
+### macOS no firmado
+
+Los builds de macOS publicados actualmente no estan firmados ni notarizados con Apple Developer ID. Gatekeeper puede mostrar el aviso "Apple could not verify..." al abrir la app descargada.
+
+Para probarla localmente, descomprime el `.app.tar.gz` y quita la marca de quarantine:
+
+```sh
+cd ~/Downloads
+tar -xzf Aifficator_0.1.4_arm64.app.tar.gz
+xattr -dr com.apple.quarantine Aifficator.app
+open Aifficator.app
+```
+
+Si ya la copiaste a `/Applications`:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Aifficator.app
+open /Applications/Aifficator.app
+```
+
+El bypass es solo para testing local. Para distribuir sin advertencias hay que firmar y notarizar; los detalles estan en [docs/macos-signing.md](docs/macos-signing.md).
 
 Artefactos esperados:
 
