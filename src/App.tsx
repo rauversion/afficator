@@ -17,6 +17,7 @@ import {
   HardDrive,
   Info,
   KeyRound,
+  ListMusic,
   Monitor,
   Moon,
   MoreHorizontal,
@@ -44,6 +45,7 @@ import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-dra
 import { cn } from "./lib/utils";
 import { FileConversionPage } from "./FileConversionPage";
 import { MasteringPage } from "./MasteringPage";
+import { PlaylistIndexPage } from "./PlaylistIndexPage";
 import { TurnPage } from "./TurnPage";
 import { I18nProvider, languageLabel, translate, translateBackendMessage, useI18n, type Locale } from "./i18n";
 import packageMetadata from "../package.json";
@@ -293,6 +295,7 @@ export default function App() {
             <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
             <Route path="/file-conversion/local" element={<FileConversionPage />} />
             <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
+            <Route path="/playlists" element={<PlaylistIndexPage />} />
             <Route path="/turn" element={<TurnPage />} />
             <Route path="/mastering" element={<MasteringPage />} />
             <Route
@@ -339,6 +342,7 @@ function AppShell() {
       "local-conversion-progress",
       "local-conversion-log",
       "mastering-progress",
+      "playlist-index-progress",
       "turn-progress"
     ];
 
@@ -2304,6 +2308,12 @@ function AppSidebar({
         <SidebarSection title={t("Turn")}>
           <SidebarLink to="/turn" icon={<Disc3 className="h-4 w-4" />}>
             {t("Turn")}
+          </SidebarLink>
+        </SidebarSection>
+
+        <SidebarSection title={t("Playlists")}>
+          <SidebarLink to="/playlists" icon={<ListMusic className="h-4 w-4" />}>
+            {t("Playlist Library")}
           </SidebarLink>
         </SidebarSection>
 

@@ -71,6 +71,7 @@
 @layer components {
   .file-grid,
   .playlist-track-grid,
+  .playlist-index-track-grid,
   .plan-grid,
   .issue-grid {
     display: grid;
@@ -86,6 +87,8 @@
   .file-grid > div,
   .playlist-track-grid > span,
   .playlist-track-grid > div,
+  .playlist-index-track-grid > span,
+  .playlist-index-track-grid > div,
   .plan-grid > span,
   .plan-grid > div,
   .issue-grid > span {
@@ -104,6 +107,12 @@
     grid-template-columns:
       32px 34px minmax(0, 1.25fr) minmax(0, 0.72fr) 72px
       minmax(0, 1.15fr) minmax(0, 0.85fr) 44px;
+  }
+
+  .playlist-index-track-grid {
+    grid-template-columns:
+      24px 32px minmax(0, 1.25fr) minmax(0, 0.75fr) minmax(0, 0.75fr)
+      88px 70px 74px;
   }
 
   .plan-grid {
@@ -129,6 +138,16 @@
 
     to {
       transform: translate(-50%, -50%) rotate(360deg);
+    }
+  }
+
+  @keyframes playlist-index-row {
+    from {
+      transform: translateX(-110%);
+    }
+
+    to {
+      transform: translateX(310%);
     }
   }
 }
@@ -161,6 +180,17 @@
   .playlist-track-grid > span:nth-child(5),
   .playlist-track-grid > span:nth-child(6),
   .playlist-track-grid > span:nth-child(7) {
+    display: none;
+  }
+
+  .playlist-index-track-grid {
+    grid-template-columns: 24px 32px minmax(0, 1fr) 74px;
+  }
+
+  .playlist-index-track-grid > span:nth-child(4),
+  .playlist-index-track-grid > span:nth-child(5),
+  .playlist-index-track-grid > span:nth-child(6),
+  .playlist-index-track-grid > span:nth-child(7) {
     display: none;
   }
 

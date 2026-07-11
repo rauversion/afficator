@@ -3,8 +3,8 @@ use aifficator_core::rekordbox::parse_rekordbox_xml;
 use aifficator_core::validation::{validate_library, IssueCode};
 use aifficator_core::{conversion::ffmpeg_args, conversion::ConversionSettings};
 use aifficator_core::{
-    exporter::export_replacement_xml, exporter::path_to_rekordbox_location,
-    exporter::ExportTrackReplacement,
+    exporter::export_replacement_xml, exporter::export_with_new_playlist_xml,
+    exporter::path_to_rekordbox_location, exporter::ExportTrackReplacement,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -143,4 +143,32 @@ fn export_replacement_xml_rewrites_track_location_and_preserves_children() {
     assert!(exported.contains("Kind=\"AIFF File\""));
     assert!(exported.contains("Location=\"file://localhost/tmp/converted/Track%20One.aiff\""));
     assert!(exported.contains("<TEMPO Inizio=\"0.025\" Bpm=\"128.00\""));
+}
+
+#[test]
+fn export_with_new_playlist_xml_appends_rau_studio_playlist() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <COLLECTION Entries="2">
+    <TRACK TrackID="1" Name="One" Kind="AIFF File"/>
+    <TRACK TrackID="2" Name="Two" Kind="AIFF File"/>
+  </COLLECTION>
+  <PLAYLISTS>
+    <NODE Type="0" Name="ROOT" Count="0"/>
+  </PLAYLISTS>
+</DJ_PLAYLISTS>"#;
+
+    let exported = export_with_new_playlist_xml(
+        xml,
+        "Generated Set",
+        &["1".to_string(), "2".to_string()],
+    )
+    .unwrap();
+
+    assert!(exported.contains("Name=\"Rau Studio\""));
+    assert!(exported.contains("Name=\"Generated Set\""));
+    assert!(exported.contains("Entries=\"2\""));
+    assert!(exported.contains("<TRACK Key=\"1\"/>"));
+    assert!(exported.contains("<TRACK Key=\"2\"/>"));
+    assert!(exported.contains("<TRACK TrackID=\"1\" Name=\"One\" Kind=\"AIFF File\"/>"));
 }

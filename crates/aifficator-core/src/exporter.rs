@@ -1,4 +1,4 @@
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::{Reader, Writer};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -26,6 +26,8 @@ pub enum ExportError {
     Io(#[from] std::io::Error),
     #[error("path cannot be represented as a file URL: {0}")]
     InvalidPath(String),
+    #[error("PLAYLISTS section was not found in Rekordbox XML")]
+    MissingPlaylistsSection,
 }
 
 pub fn export_replacement_xml(
@@ -82,6 +84,55 @@ pub fn export_replacement_xml(
                 writer.write_event(event)?;
             }
         }
+    }
+
+    Ok(String::from_utf8(writer.into_inner())?)
+}
+
+pub fn export_with_new_playlist_xml(
+    xml: &str,
+    playlist_name: &str,
+    track_ids: &[String],
+) -> Result<String, ExportError> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut writer = Writer::new(Vec::with_capacity(xml.len() + track_ids.len() * 32));
+    let mut injected = false;
+
+    loop {
+        match reader.read_event()? {
+            Event::Empty(event) => {
+                let name = element_name(event.name().as_ref());
+
+                if name == "PLAYLISTS" {
+                    writer.write_event(Event::Start(event.to_owned()))?;
+                    write_generated_playlist(&mut writer, playlist_name, track_ids)?;
+                    writer.write_event(Event::End(BytesEnd::new("PLAYLISTS")))?;
+                    injected = true;
+                } else {
+                    writer.write_event(Event::Empty(event))?;
+                }
+            }
+            Event::End(event) => {
+                let name = element_name(event.name().as_ref());
+
+                if name == "PLAYLISTS" && !injected {
+                    write_generated_playlist(&mut writer, playlist_name, track_ids)?;
+                    injected = true;
+                }
+
+                writer.write_event(Event::End(event))?;
+            }
+            Event::Eof => break,
+            event => {
+                writer.write_event(event)?;
+            }
+        }
+    }
+
+    if !injected {
+        return Err(ExportError::MissingPlaylistsSection);
     }
 
     Ok(String::from_utf8(writer.into_inner())?)
@@ -175,6 +226,37 @@ fn rewrite_track_start(
     }
 
     Ok(rewritten)
+}
+
+fn write_generated_playlist(
+    writer: &mut Writer<Vec<u8>>,
+    playlist_name: &str,
+    track_ids: &[String],
+) -> Result<(), ExportError> {
+    let folder_count = "1".to_string();
+    let mut folder = BytesStart::new("NODE");
+    folder.push_attribute(("Name", "Rau Studio"));
+    folder.push_attribute(("Type", "0"));
+    folder.push_attribute(("Count", folder_count.as_str()));
+    writer.write_event(Event::Start(folder))?;
+
+    let entries = track_ids.len().to_string();
+    let mut playlist = BytesStart::new("NODE");
+    playlist.push_attribute(("Name", playlist_name));
+    playlist.push_attribute(("Type", "1"));
+    playlist.push_attribute(("KeyType", "0"));
+    playlist.push_attribute(("Entries", entries.as_str()));
+    writer.write_event(Event::Start(playlist))?;
+
+    for track_id in track_ids {
+        let mut track = BytesStart::new("TRACK");
+        track.push_attribute(("Key", track_id.as_str()));
+        writer.write_event(Event::Empty(track))?;
+    }
+
+    writer.write_event(Event::End(BytesEnd::new("NODE")))?;
+    writer.write_event(Event::End(BytesEnd::new("NODE")))?;
+    Ok(())
 }
 
 fn decoded_attributes(

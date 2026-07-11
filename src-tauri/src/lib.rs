@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter};
 
 mod local_conversion;
 mod mastering;
+mod playlist_index;
 mod settings;
 mod system;
 mod turn;
@@ -1403,6 +1404,20 @@ pub fn run() {
             mastering::mastering_start_job,
             mastering::mastering_retry_job,
             mastering::mastering_delete_job,
+            playlist_index::playlist_index_libraries,
+            playlist_index::playlist_index_preview_xml,
+            playlist_index::playlist_index_import_xml,
+            playlist_index::playlist_index_library_playlists,
+            playlist_index::playlist_index_playlist_tracks,
+            playlist_index::playlist_index_search_tracks,
+            playlist_index::playlist_index_generate_embeddings,
+            playlist_index::playlist_index_drafts,
+            playlist_index::playlist_index_create_draft,
+            playlist_index::playlist_index_add_tracks_to_draft,
+            playlist_index::playlist_index_remove_draft_track,
+            playlist_index::playlist_index_delete_draft,
+            playlist_index::playlist_index_draft_tracks,
+            playlist_index::playlist_index_export_draft_xml,
             turn::turn_list_jobs,
             turn::turn_get_job,
             turn::turn_job_events,
