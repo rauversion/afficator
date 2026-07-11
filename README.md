@@ -96,8 +96,8 @@ Opciones:
 Ejemplo:
 
 ```sh
-git tag v0.1.2
-git push origin v0.1.2
+git tag v0.1.3
+git push origin v0.1.3
 ```
 
 Los builds actuales son unsigned. En macOS y Windows puede aparecer una advertencia del sistema hasta configurar certificados de firma/notarizacion.

@@ -1,6 +1,6 @@
 [package]
 name = "aifficator"
-version = "0.1.2"
+version = "0.1.3"
 description = "Convert Rekordbox playlist exports to AIFF-compatible exports"
 authors = ["Aifficator"]
 edition = "2021"

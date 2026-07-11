@@ -25,20 +25,32 @@ jobs:
             os: macos-latest
             artifact: aifficator-macos-arm64
             tauri_args: --bundles app
+            rust_target: ""
+            build_target_arg: ""
+            bundle_dir: target/release/bundle
+            mac_artifact_arch: arm64
             artifact_paths: |
               target/release/bundle/*.app.tar.gz
               target/release/bundle/**/*.app.tar.gz
           - label: macOS Intel
-            os: macos-13
+            os: macos-latest
             artifact: aifficator-macos-intel
             tauri_args: --bundles app
+            rust_target: x86_64-apple-darwin
+            build_target_arg: --target x86_64-apple-darwin
+            bundle_dir: target/x86_64-apple-darwin/release/bundle
+            mac_artifact_arch: x86_64
             artifact_paths: |
-              target/release/bundle/*.app.tar.gz
-              target/release/bundle/**/*.app.tar.gz
+              target/x86_64-apple-darwin/release/bundle/*.app.tar.gz
+              target/x86_64-apple-darwin/release/bundle/**/*.app.tar.gz
           - label: Windows
             os: windows-latest
             artifact: aifficator-windows
             tauri_args: --bundles nsis,msi
+            rust_target: ""
+            build_target_arg: ""
+            bundle_dir: target/release/bundle
+            mac_artifact_arch: ""
             artifact_paths: |
               target/release/bundle/**/*.msi
               target/release/bundle/**/*.exe
@@ -46,6 +58,10 @@ jobs:
             os: ubuntu-22.04
             artifact: aifficator-linux
             tauri_args: --bundles appimage,deb
+            rust_target: ""
+            build_target_arg: ""
+            bundle_dir: target/release/bundle
+            mac_artifact_arch: ""
             artifact_paths: |
               target/release/bundle/**/*.AppImage
               target/release/bundle/**/*.deb
@@ -67,6 +83,11 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
 
+      - name: Add Rust target
+        if: matrix.rust_target != ''
+        shell: bash
+        run: rustup target add ${{ matrix.rust_target }}
+
       - name: Install Linux Tauri dependencies
         if: runner.os == 'Linux'
         run: |
@@ -82,24 +103,25 @@ jobs:
         run: npm ci
 
       - name: Build installers
-        run: npm run tauri:build -- ${{ matrix.tauri_args }}
+        shell: bash
+        run: npm run tauri:build -- ${{ matrix.build_target_arg }} ${{ matrix.tauri_args }}
 
       - name: Ad-hoc sign macOS app bundle
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          xattr -cr target/release/bundle/macos/Aifficator.app
-          codesign --force --deep --sign - target/release/bundle/macos/Aifficator.app
-          codesign --verify --deep --strict --verbose=2 target/release/bundle/macos/Aifficator.app
+          xattr -cr "${{ matrix.bundle_dir }}/macos/Aifficator.app"
+          codesign --force --deep --sign - "${{ matrix.bundle_dir }}/macos/Aifficator.app"
+          codesign --verify --deep --strict --verbose=2 "${{ matrix.bundle_dir }}/macos/Aifficator.app"
 
       - name: Archive macOS app bundle
         if: runner.os == 'macOS'
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
-          arch="$(uname -m)"
-          tar -C target/release/bundle/macos \
-            -czf "target/release/bundle/Aifficator_${version}_${arch}.app.tar.gz" \
+          arch="${{ matrix.mac_artifact_arch }}"
+          tar -C "${{ matrix.bundle_dir }}/macos" \
+            -czf "${{ matrix.bundle_dir }}/Aifficator_${version}_${arch}.app.tar.gz" \
             Aifficator.app
 
       - name: Upload installer artifacts
