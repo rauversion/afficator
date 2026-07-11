@@ -83,6 +83,30 @@ Los bundles quedan bajo:
 src-tauri/target/release/bundle/
 ```
 
+## Releases
+
+GitHub Actions genera instaladores descargables para macOS, Windows y Linux.
+
+Opciones:
+
+- Ejecutar manualmente **Build installers** desde la tab **Actions**.
+- Crear un tag `v*` para publicar un GitHub Release con artefactos adjuntos.
+
+Ejemplo:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Los builds actuales son unsigned. En macOS y Windows puede aparecer una advertencia del sistema hasta configurar certificados de firma/notarizacion.
+
+Artefactos esperados:
+
+- macOS: `.app.tar.gz`
+- Windows: `.exe` / `.msi`
+- Linux: `.AppImage` / `.deb`
+
 Probar el core Rust:
 
 ```sh
