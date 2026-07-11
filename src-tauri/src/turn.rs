@@ -1,3 +1,4 @@
+use crate::system;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
@@ -302,7 +303,7 @@ fn run_ffmpeg_turn(
     let background_input = format!("color=c={background}:s=1080x1080");
     let filter_complex = turn_filter(job);
 
-    let mut command = Command::new("ffmpeg");
+    let mut command = system::ffmpeg_command(app);
     command
         .args(["-hide_banner", "-f", "lavfi", "-t"])
         .arg(&duration)

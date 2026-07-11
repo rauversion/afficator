@@ -15,6 +15,8 @@ use std::os::unix::fs::OpenOptionsExt;
 const DB_FILE: &str = "aifficator.sqlite3";
 const SECRET_FILE: &str = "settings-secret.bin";
 const OPENAI_API_KEY_SETTING: &str = "openai_api_key";
+const FFMPEG_PATH_SETTING: &str = "ffmpeg_path";
+const FFPROBE_PATH_SETTING: &str = "ffprobe_path";
 const CIPHER_VERSION: u8 = 1;
 const SECRET_LEN: usize = 32;
 
@@ -22,6 +24,22 @@ const SECRET_LEN: usize = 32;
 pub struct OpenAiApiKeyStatus {
     configured: bool,
     preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioToolPaths {
+    pub ffmpeg_path: Option<String>,
+    pub ffprobe_path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AudioToolSettings {
+    ffmpeg_path: Option<String>,
+    ffprobe_path: Option<String>,
+    default_ffmpeg_paths: Vec<String>,
+    default_ffprobe_paths: Vec<String>,
+    database_path: String,
+    database_dir: String,
 }
 
 pub(crate) fn get_openai_api_key_status(app: &AppHandle) -> Result<OpenAiApiKeyStatus, String> {
@@ -71,6 +89,43 @@ pub(crate) fn clear_openai_api_key(app: &AppHandle) -> Result<OpenAiApiKeyStatus
     })
 }
 
+pub(crate) fn get_audio_tool_settings(app: &AppHandle) -> Result<AudioToolSettings, String> {
+    let paths = load_audio_tool_paths(app)?;
+    Ok(AudioToolSettings {
+        ffmpeg_path: paths.ffmpeg_path,
+        ffprobe_path: paths.ffprobe_path,
+        default_ffmpeg_paths: default_binary_paths("ffmpeg"),
+        default_ffprobe_paths: default_binary_paths("ffprobe"),
+        database_path: settings_db_path(app)?.to_string_lossy().into_owned(),
+        database_dir: app_data_dir(app)?.to_string_lossy().into_owned(),
+    })
+}
+
+pub(crate) fn save_audio_tool_settings(
+    app: &AppHandle,
+    ffmpeg_path: Option<String>,
+    ffprobe_path: Option<String>,
+) -> Result<AudioToolSettings, String> {
+    save_optional_text_setting(
+        app,
+        FFMPEG_PATH_SETTING,
+        normalize_path_setting(ffmpeg_path),
+    )?;
+    save_optional_text_setting(
+        app,
+        FFPROBE_PATH_SETTING,
+        normalize_path_setting(ffprobe_path),
+    )?;
+    get_audio_tool_settings(app)
+}
+
+pub(crate) fn load_audio_tool_paths(app: &AppHandle) -> Result<AudioToolPaths, String> {
+    Ok(AudioToolPaths {
+        ffmpeg_path: load_text_setting(app, FFMPEG_PATH_SETTING)?,
+        ffprobe_path: load_text_setting(app, FFPROBE_PATH_SETTING)?,
+    })
+}
+
 pub(crate) fn load_openai_api_key(app: &AppHandle) -> Result<Option<String>, String> {
     let conn = open_settings_db(app)?;
     let encrypted = conn
@@ -94,6 +149,104 @@ pub(crate) fn load_openai_api_key(app: &AppHandle) -> Result<Option<String>, Str
         Ok(None)
     } else {
         Ok(Some(api_key))
+    }
+}
+
+fn load_text_setting(app: &AppHandle, key: &str) -> Result<Option<String>, String> {
+    let conn = open_settings_db(app)?;
+    let encrypted = conn
+        .query_row(
+            "SELECT value_ciphertext FROM app_settings WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("No se pudo leer setting {key}: {error}"))?;
+
+    let Some(encrypted) = encrypted else {
+        return Ok(None);
+    };
+
+    let decrypted = decrypt_setting(app, key, &encrypted)?;
+    let value = String::from_utf8(decrypted)
+        .map_err(|error| format!("Setting {key} descifrado no es UTF-8 valido: {error}"))?;
+    let value = value.trim().to_string();
+
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn save_optional_text_setting(
+    app: &AppHandle,
+    key: &str,
+    value: Option<String>,
+) -> Result<(), String> {
+    let conn = open_settings_db(app)?;
+
+    let Some(value) = value else {
+        conn.execute("DELETE FROM app_settings WHERE key = ?1", params![key])
+            .map_err(|error| format!("No se pudo borrar setting {key}: {error}"))?;
+        return Ok(());
+    };
+
+    let encrypted = encrypt_setting(app, key, value.as_bytes())?;
+    conn.execute(
+        "INSERT INTO app_settings (key, value_ciphertext, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value_ciphertext = excluded.value_ciphertext, updated_at = excluded.updated_at",
+        params![key, encrypted, timestamp()],
+    )
+    .map_err(|error| format!("No se pudo guardar setting {key}: {error}"))?;
+
+    Ok(())
+}
+
+fn normalize_path_setting(value: Option<String>) -> Option<String> {
+    value
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty() && !path.eq_ignore_ascii_case("auto"))
+}
+
+pub(crate) fn default_binary_paths(name: &str) -> Vec<String> {
+    default_binary_dirs()
+        .iter()
+        .map(|directory| format!("{directory}/{name}"))
+        .chain(std::iter::once(name.to_string()))
+        .collect()
+}
+
+fn default_binary_dirs() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/opt/local/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        &["/usr/local/bin", "/usr/bin", "/bin", "/snap/bin"]
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        &[
+            "C:/ProgramData/chocolatey/bin",
+            "C:/ffmpeg/bin",
+            "C:/Program Files/ffmpeg/bin",
+        ]
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        &[]
     }
 }
 
@@ -226,6 +379,10 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
         .map_err(|error| format!("No se pudo resolver app data dir: {error}"))
+}
+
+fn settings_db_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join(DB_FILE))
 }
 
 fn openai_key_status(api_key: &str) -> OpenAiApiKeyStatus {

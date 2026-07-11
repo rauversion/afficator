@@ -11,7 +11,7 @@ Aifficator puede compilar bundles para macOS sin certificado, pero esos builds n
 
 ```sh
 cd ~/Downloads
-tar -xzf Aifficator_0.1.4_arm64.app.tar.gz
+tar -xzf Aifficator_0.1.5_arm64.app.tar.gz
 xattr -dr com.apple.quarantine Aifficator.app
 open Aifficator.app
 ```

@@ -96,8 +96,8 @@ Opciones:
 Ejemplo:
 
 ```sh
-git tag v0.1.4
-git push origin v0.1.4
+git tag v0.1.5
+git push origin v0.1.5
 ```
 
 ### macOS no firmado
@@ -108,7 +108,7 @@ Para probarla localmente, descomprime el `.app.tar.gz` y quita la marca de quara
 
 ```sh
 cd ~/Downloads
-tar -xzf Aifficator_0.1.4_arm64.app.tar.gz
+tar -xzf Aifficator_0.1.5_arm64.app.tar.gz
 xattr -dr com.apple.quarantine Aifficator.app
 open Aifficator.app
 ```

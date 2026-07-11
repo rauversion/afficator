@@ -218,12 +218,38 @@ type DetailTab = "playlist" | "converted" | "plan" | "report";
 type AppShellContext = {
   darkMode: boolean;
   setDarkMode: React.Dispatch<React.SetStateAction<boolean>>;
+  refreshSystemStatus: () => Promise<void>;
 };
 
 type OpenAiApiKeyStatus = {
   configured: boolean;
   preview?: string | null;
 };
+
+type BinaryStatus = {
+  installed: boolean;
+  version?: string | null;
+  path?: string | null;
+  configured_path?: string | null;
+  message?: string | null;
+};
+
+type SystemStatus = {
+  ffmpeg: BinaryStatus;
+  ffprobe: BinaryStatus;
+  checked_at_ms: number;
+};
+
+type AudioToolSettings = {
+  ffmpeg_path?: string | null;
+  ffprobe_path?: string | null;
+  default_ffmpeg_paths: string[];
+  default_ffprobe_paths: string[];
+  database_path: string;
+  database_dir: string;
+};
+
+type EventBridgeStatus = "checking" | "connected" | "error";
 
 const maxConcurrencyLimit = 4;
 const themeModeKey = "aifficator.themeMode";
@@ -278,17 +304,93 @@ export default function App() {
 
 function AppShell() {
   const [darkMode, setDarkMode] = useState(() => detectInitialDarkMode());
-  const shellContext = useMemo<AppShellContext>(() => ({ darkMode, setDarkMode }), [darkMode]);
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  const [systemStatusLoading, setSystemStatusLoading] = useState(true);
+  const [systemStatusError, setSystemStatusError] = useState<string | null>(null);
+  const [eventBridgeStatus, setEventBridgeStatus] = useState<EventBridgeStatus>("checking");
+  const [lastRealtimeEventAt, setLastRealtimeEventAt] = useState<string | null>(null);
+  const shellContext = useMemo<AppShellContext>(
+    () => ({ darkMode, setDarkMode, refreshSystemStatus }),
+    [darkMode]
+  );
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
     localStorage.setItem(themeModeKey, darkMode ? "dark" : "light");
   }, [darkMode]);
 
+  useEffect(() => {
+    refreshSystemStatus();
+    const timer = window.setInterval(refreshSystemStatus, 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    let unlisteners: UnlistenFn[] = [];
+    const realtimeEvents = [
+      "conversion-progress",
+      "conversion-log",
+      "local-conversion-progress",
+      "local-conversion-log",
+      "mastering-progress",
+      "turn-progress"
+    ];
+
+    setEventBridgeStatus("checking");
+
+    Promise.all(
+      realtimeEvents.map((eventName) =>
+        listen<unknown>(eventName, () => {
+          setEventBridgeStatus("connected");
+          setLastRealtimeEventAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+        })
+      )
+    )
+      .then((listeners) => {
+        if (!mounted) {
+          for (const unlisten of listeners) unlisten();
+          return;
+        }
+        unlisteners = listeners;
+        setEventBridgeStatus("connected");
+      })
+      .catch((error) => {
+        console.error(error);
+        if (mounted) setEventBridgeStatus("error");
+      });
+
+    return () => {
+      mounted = false;
+      for (const unlisten of unlisteners) unlisten();
+    };
+  }, []);
+
+  async function refreshSystemStatus() {
+    setSystemStatusLoading(true);
+    setSystemStatusError(null);
+    try {
+      const status = await invoke<SystemStatus>("system_status");
+      setSystemStatus(status);
+    } catch (error) {
+      console.error(error);
+      setSystemStatusError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSystemStatusLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="flex min-h-screen max-lg:flex-col">
-        <AppSidebar />
+        <AppSidebar
+          eventBridgeStatus={eventBridgeStatus}
+          lastRealtimeEventAt={lastRealtimeEventAt}
+          systemStatus={systemStatus}
+          systemStatusError={systemStatusError}
+          systemStatusLoading={systemStatusLoading}
+          onRefreshSystemStatus={refreshSystemStatus}
+        />
         <div className="min-w-0 flex-1">
           <Outlet context={shellContext} />
         </div>
@@ -329,17 +431,23 @@ function PlaceholderPage({
 }
 
 function SettingsPage() {
-  const { darkMode, setDarkMode } = useOutletContext<AppShellContext>();
+  const { darkMode, setDarkMode, refreshSystemStatus } = useOutletContext<AppShellContext>();
   const [apiKey, setApiKey] = useState("");
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState<OpenAiApiKeyStatus | null>(null);
+  const [audioToolSettings, setAudioToolSettings] = useState<AudioToolSettings | null>(null);
+  const [ffmpegPath, setFfmpegPath] = useState("");
+  const [ffprobePath, setFfprobePath] = useState("");
   const [loadingApiKey, setLoadingApiKey] = useState(true);
   const [savingApiKey, setSavingApiKey] = useState(false);
+  const [loadingAudioTools, setLoadingAudioTools] = useState(true);
+  const [savingAudioTools, setSavingAudioTools] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState("");
   const [settingsError, setSettingsError] = useState("");
 
   useEffect(() => {
     void loadApiKeyStatus();
+    void loadAudioToolSettings();
   }, []);
 
   async function loadApiKeyStatus() {
@@ -389,6 +497,76 @@ function SettingsPage() {
       setSettingsError(String(error));
     } finally {
       setSavingApiKey(false);
+    }
+  }
+
+  async function loadAudioToolSettings() {
+    setLoadingAudioTools(true);
+    setSettingsError("");
+
+    try {
+      const settings = await invoke<AudioToolSettings>("get_audio_tool_settings");
+      setAudioToolSettings(settings);
+      setFfmpegPath(settings.ffmpeg_path ?? "");
+      setFfprobePath(settings.ffprobe_path ?? "");
+    } catch (error) {
+      setSettingsError(String(error));
+    } finally {
+      setLoadingAudioTools(false);
+    }
+  }
+
+  async function saveAudioToolSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSavingAudioTools(true);
+    setSettingsMessage("");
+    setSettingsError("");
+
+    try {
+      const settings = await invoke<AudioToolSettings>("save_audio_tool_settings", {
+        ffmpegPath: ffmpegPath.trim() || null,
+        ffprobePath: ffprobePath.trim() || null
+      });
+      setAudioToolSettings(settings);
+      setFfmpegPath(settings.ffmpeg_path ?? "");
+      setFfprobePath(settings.ffprobe_path ?? "");
+      setSettingsMessage("Rutas de herramientas guardadas.");
+      void refreshSystemStatus();
+    } catch (error) {
+      setSettingsError(String(error));
+    } finally {
+      setSavingAudioTools(false);
+    }
+  }
+
+  async function clearAudioToolSettings() {
+    setSavingAudioTools(true);
+    setSettingsMessage("");
+    setSettingsError("");
+
+    try {
+      const settings = await invoke<AudioToolSettings>("save_audio_tool_settings", {
+        ffmpegPath: null,
+        ffprobePath: null
+      });
+      setAudioToolSettings(settings);
+      setFfmpegPath("");
+      setFfprobePath("");
+      setSettingsMessage("Rutas de herramientas restauradas a autodeteccion.");
+      void refreshSystemStatus();
+    } catch (error) {
+      setSettingsError(String(error));
+    } finally {
+      setSavingAudioTools(false);
+    }
+  }
+
+  async function openDatabaseFolder() {
+    if (!audioToolSettings?.database_path) return;
+    try {
+      await invoke("open_parent_folder", { path: audioToolSettings.database_path });
+    } catch (error) {
+      setSettingsError(String(error));
     }
   }
 
@@ -444,6 +622,92 @@ function SettingsPage() {
                 Oscuro
               </Button>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <HardDrive className="h-4 w-4" />
+              <CardTitle>Audio tools</CardTitle>
+            </div>
+            <span className="text-xs text-muted-foreground">
+              {loadingAudioTools ? "Cargando rutas..." : "Configura ffmpeg/ffprobe o deja autodeteccion."}
+            </span>
+          </CardHeader>
+          <CardContent>
+            <form className="grid gap-3" onSubmit={saveAudioToolSettings}>
+              <label className="grid gap-1 text-sm font-medium">
+                Ruta ffmpeg
+                <input
+                  className="h-10 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-sm outline-none ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
+                  value={ffmpegPath}
+                  placeholder="auto"
+                  onChange={(event) => setFfmpegPath(event.currentTarget.value)}
+                />
+              </label>
+
+              <label className="grid gap-1 text-sm font-medium">
+                Ruta ffprobe
+                <input
+                  className="h-10 min-w-0 rounded-md border border-input bg-background px-3 font-mono text-sm outline-none ring-offset-background transition-shadow focus-visible:ring-2 focus-visible:ring-ring"
+                  value={ffprobePath}
+                  placeholder="auto"
+                  onChange={(event) => setFfprobePath(event.currentTarget.value)}
+                />
+              </label>
+
+              <div className="grid gap-1 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                <strong className="text-foreground">Defaults del sistema</strong>
+                <span className="break-all">
+                  ffmpeg: {audioToolSettings?.default_ffmpeg_paths.join(" | ") ?? "n/d"}
+                </span>
+                <span className="break-all">
+                  ffprobe: {audioToolSettings?.default_ffprobe_paths.join(" | ") ?? "n/d"}
+                </span>
+              </div>
+
+              <div className="grid gap-1 rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <strong className="text-foreground">Base de datos local</strong>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    disabled={!audioToolSettings?.database_path}
+                    onClick={() => void openDatabaseFolder()}
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                    Abrir carpeta
+                  </Button>
+                </div>
+                <span className="break-all font-mono">
+                  {audioToolSettings?.database_path ?? "n/d"}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="submit" disabled={savingAudioTools || loadingAudioTools}>
+                  Guardar rutas
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={savingAudioTools || loadingAudioTools}
+                  onClick={() => void clearAudioToolSettings()}
+                >
+                  Usar defaults
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={savingAudioTools || loadingAudioTools}
+                  onClick={() => void loadAudioToolSettings()}
+                >
+                  Refrescar
+                </Button>
+              </div>
+            </form>
           </CardContent>
         </Card>
 
@@ -1917,7 +2181,53 @@ function RekordboxConvertPage() {
   );
 }
 
-function AppSidebar() {
+function AppSidebar({
+  eventBridgeStatus,
+  lastRealtimeEventAt,
+  systemStatus,
+  systemStatusError,
+  systemStatusLoading,
+  onRefreshSystemStatus
+}: {
+  eventBridgeStatus: EventBridgeStatus;
+  lastRealtimeEventAt: string | null;
+  systemStatus: SystemStatus | null;
+  systemStatusError: string | null;
+  systemStatusLoading: boolean;
+  onRefreshSystemStatus: () => void;
+}) {
+  const [creatorOpen, setCreatorOpen] = useState(false);
+  const creatorRef = useRef<HTMLDivElement | null>(null);
+  const ffmpegInstalled = systemStatus?.ffmpeg.installed ?? false;
+  const ffprobeInstalled = systemStatus?.ffprobe.installed ?? false;
+  const ffmpegLabel = systemStatusLoading && !systemStatus
+    ? "Chequeando"
+    : systemStatusError
+      ? "Error"
+      : ffmpegInstalled
+        ? "Disponible"
+        : "No instalado";
+  const ffprobeLabel = systemStatusLoading && !systemStatus
+    ? "Chequeando"
+    : systemStatusError
+      ? "Error"
+      : ffprobeInstalled
+        ? "Disponible"
+        : "No instalado";
+
+  useEffect(() => {
+    if (!creatorOpen) return;
+
+    function closeOnOutsideClick(event: MouseEvent) {
+      if (!creatorRef.current?.contains(event.target as Node)) {
+        setCreatorOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [creatorOpen]);
+
   return (
     <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-border bg-card px-3 py-4 max-lg:static max-lg:h-auto max-lg:w-full max-lg:border-b max-lg:border-r-0">
       <div className="mb-5 flex items-center gap-3 px-2 max-lg:mb-3">
@@ -1958,7 +2268,130 @@ function AppSidebar() {
           </SidebarLink>
         </SidebarSection>
       </nav>
+
+      <div className="mt-auto grid gap-2 border-t border-border pt-3 max-lg:mt-3 max-lg:border-t-0 max-lg:pt-0">
+        <div className="rounded-md border border-border bg-background p-2">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="flex min-w-0 items-center gap-2 text-xs font-semibold">
+              <Monitor className="h-3.5 w-3.5 text-muted-foreground" />
+              Status
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              title="Actualizar status"
+              onClick={onRefreshSystemStatus}
+              disabled={systemStatusLoading}
+            >
+              <RefreshCcw className={cn("h-3.5 w-3.5", systemStatusLoading && "animate-spin")} />
+            </Button>
+          </div>
+
+          <div className="grid gap-1.5 text-xs">
+            <StatusLine
+              label="WebSocket"
+              value={eventBridgeStatus === "connected" ? "Eventos OK" : eventBridgeStatus === "checking" ? "Conectando" : "Error"}
+              detail={lastRealtimeEventAt ? `ultimo ${lastRealtimeEventAt}` : "listeners Tauri"}
+              tone={eventBridgeStatus === "connected" ? "ok" : eventBridgeStatus === "checking" ? "pending" : "error"}
+            />
+            <StatusLine
+              label="FFmpeg"
+              value={ffmpegLabel}
+              detail={systemStatus?.ffmpeg.path ?? systemStatus?.ffmpeg.version ?? systemStatus?.ffmpeg.message ?? systemStatusError ?? "conversion engine"}
+              tone={ffmpegInstalled ? "ok" : systemStatusLoading ? "pending" : "error"}
+            />
+            <StatusLine
+              label="FFprobe"
+              value={ffprobeLabel}
+              detail={systemStatus?.ffprobe.path ?? systemStatus?.ffprobe.version ?? systemStatus?.ffprobe.message ?? systemStatusError ?? "metadata probe"}
+              tone={ffprobeInstalled ? "ok" : systemStatusLoading ? "pending" : "error"}
+            />
+          </div>
+
+          {(!ffmpegInstalled || !ffprobeInstalled) && !systemStatusLoading ? (
+            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
+              <div className="mb-1 flex items-center gap-1.5 font-semibold">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Instala ffmpeg
+              </div>
+              <code className="block rounded bg-background/70 px-1.5 py-1 font-mono text-[10px]">
+                brew install ffmpeg
+              </code>
+              <span className="mt-1 block text-amber-800 dark:text-amber-200">
+                Incluye ffprobe. Puedes ajustar rutas en Settings.
+              </span>
+            </div>
+          ) : null}
+        </div>
+
+        <div ref={creatorRef} className="relative flex items-center justify-between gap-2 px-1">
+          <span className="truncate text-[11px] text-muted-foreground">Rauversion community build</span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            aria-label="Quien creo Aifficator"
+            aria-expanded={creatorOpen}
+            onClick={() => setCreatorOpen((current) => !current)}
+          >
+            <Info className="h-4 w-4" />
+          </Button>
+
+          {creatorOpen ? (
+            <div
+              role="dialog"
+              aria-label="Creditos de Aifficator"
+              className="absolute bottom-9 left-0 z-50 w-60 rounded-md border border-border bg-card p-3 text-xs text-card-foreground shadow-xl"
+            >
+              <strong className="block text-sm">Aifficator</strong>
+              <p className="mt-1 leading-relaxed text-muted-foreground">
+                Creado por <span className="font-semibold text-foreground">Rauversion</span> para la comunidad.
+              </p>
+              <p className="mt-2 leading-relaxed text-muted-foreground">
+                Herramienta local para preparar audio, playlists y visuales sin depender de servicios externos.
+              </p>
+            </div>
+          ) : null}
+        </div>
+      </div>
     </aside>
+  );
+}
+
+function StatusLine({
+  label,
+  value,
+  detail,
+  tone
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone: "ok" | "pending" | "error";
+}) {
+  return (
+    <div className="grid grid-cols-[10px_minmax(0,1fr)] gap-2">
+      <span
+        className={cn(
+          "mt-1.5 h-2 w-2 rounded-full",
+          tone === "ok" && "bg-emerald-500",
+          tone === "pending" && "bg-amber-400",
+          tone === "error" && "bg-red-500"
+        )}
+      />
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <span className="text-muted-foreground">{label}</span>
+          <strong className="truncate font-semibold">{value}</strong>
+        </div>
+        <span className="block truncate text-[11px] text-muted-foreground" title={detail}>
+          {detail}
+        </span>
+      </div>
+    </div>
   );
 }
 

@@ -17,12 +17,13 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
 mod local_conversion;
 mod mastering;
 mod settings;
+mod system;
 mod turn;
 
 #[derive(Debug, Serialize)]
@@ -150,6 +151,25 @@ struct ExportXmlResult {
     replaced_track_total: usize,
 }
 
+#[derive(Debug, Serialize)]
+struct SystemStatus {
+    ffmpeg: system::BinaryStatus,
+    ffprobe: system::BinaryStatus,
+    checked_at_ms: u128,
+}
+
+#[tauri::command]
+fn system_status(app: AppHandle) -> SystemStatus {
+    SystemStatus {
+        ffmpeg: system::binary_status(&app, "ffmpeg"),
+        ffprobe: system::binary_status(&app, "ffprobe"),
+        checked_at_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default(),
+    }
+}
+
 #[tauri::command]
 fn get_openai_api_key_status(app: AppHandle) -> Result<settings::OpenAiApiKeyStatus, String> {
     settings::get_openai_api_key_status(&app)
@@ -166,6 +186,20 @@ fn save_openai_api_key(
 #[tauri::command]
 fn clear_openai_api_key(app: AppHandle) -> Result<settings::OpenAiApiKeyStatus, String> {
     settings::clear_openai_api_key(&app)
+}
+
+#[tauri::command]
+fn get_audio_tool_settings(app: AppHandle) -> Result<settings::AudioToolSettings, String> {
+    settings::get_audio_tool_settings(&app)
+}
+
+#[tauri::command]
+fn save_audio_tool_settings(
+    app: AppHandle,
+    ffmpeg_path: Option<String>,
+    ffprobe_path: Option<String>,
+) -> Result<settings::AudioToolSettings, String> {
+    settings::save_audio_tool_settings(&app, ffmpeg_path, ffprobe_path)
 }
 
 #[tauri::command]
@@ -743,7 +777,7 @@ fn run_ffmpeg_conversion(
 ) -> Result<(), String> {
     let settings = ConversionSettings::default();
     let args = ffmpeg_args(source_path, target_path, &settings);
-    let mut child = Command::new("ffmpeg")
+    let mut child = system::ffmpeg_command(app)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1213,6 +1247,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            system_status,
             import_rekordbox_xml,
             plan_conversion,
             export_rekordbox_xml,
@@ -1225,6 +1260,8 @@ pub fn run() {
             get_openai_api_key_status,
             save_openai_api_key,
             clear_openai_api_key,
+            get_audio_tool_settings,
+            save_audio_tool_settings,
             local_conversion::local_conversion_list_items,
             local_conversion::local_conversion_list_groups,
             local_conversion::local_conversion_group_items,

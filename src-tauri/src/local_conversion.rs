@@ -1,3 +1,4 @@
+use crate::system;
 use aifficator_core::conversion::{ffmpeg_args, ConversionSettings};
 use aifficator_core::validation::default_target_path;
 use chrono::Utc;
@@ -8,7 +9,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::UNIX_EPOCH;
 use tauri::{AppHandle, Emitter, Manager};
@@ -514,7 +515,7 @@ fn run_ffmpeg_conversion(
 ) -> Result<(), String> {
     let settings = ConversionSettings::default();
     let args = ffmpeg_args(source_path, target_path, &settings);
-    let mut child = Command::new("ffmpeg")
+    let mut child = system::ffmpeg_command(app)
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -560,7 +561,7 @@ fn run_ffmpeg_conversion(
         })
     });
 
-    let total_seconds = probe_duration_seconds(source_path);
+    let total_seconds = probe_duration_seconds(app, source_path);
     let reader = BufReader::new(stdout);
     let mut elapsed_seconds = None;
     let mut speed = None;
@@ -1183,8 +1184,8 @@ fn is_inside_any_converted_folder(path: &Path) -> bool {
     })
 }
 
-fn probe_duration_seconds(source_path: &Path) -> Option<f64> {
-    let output = Command::new("ffprobe")
+fn probe_duration_seconds(app: &AppHandle, source_path: &Path) -> Option<f64> {
+    let output = system::ffprobe_command(app)
         .args([
             "-v",
             "error",

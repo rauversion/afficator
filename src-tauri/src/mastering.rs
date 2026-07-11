@@ -1,3 +1,4 @@
+use crate::system;
 use chrono::Utc;
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -6,7 +7,6 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
@@ -363,7 +363,7 @@ fn run_mastering_job(app: &AppHandle, job_id: &str, use_ai: bool) -> Result<(), 
             payload: json!({}),
         },
     )?;
-    let analysis_before = analyze_audio(Path::new(&job.source_path))?;
+    let analysis_before = analyze_audio(app, Path::new(&job.source_path))?;
     let analysis_before_json = serde_json::to_value(&analysis_before)
         .map_err(|error| format!("No se pudo serializar analisis inicial: {error}"))?;
     save_json_field(&conn, job_id, "analysis_before_json", &analysis_before_json)?;
@@ -437,6 +437,7 @@ fn run_mastering_job(app: &AppHandle, job_id: &str, use_ai: bool) -> Result<(), 
         },
     )?;
     let mut output_path = render_master(
+        app,
         Path::new(&job.source_path),
         &dir,
         0,
@@ -470,7 +471,7 @@ fn run_mastering_job(app: &AppHandle, job_id: &str, use_ai: bool) -> Result<(), 
             payload: json!({}),
         },
     )?;
-    let mut analysis_after = analyze_audio(&output_path)?;
+    let mut analysis_after = analyze_audio(app, &output_path)?;
     let mut analysis_after_json = serde_json::to_value(&analysis_after)
         .map_err(|error| format!("No se pudo serializar analisis final: {error}"))?;
     save_json_field(&conn, job_id, "analysis_after_json", &analysis_after_json)?;
@@ -519,13 +520,14 @@ fn run_mastering_job(app: &AppHandle, job_id: &str, use_ai: bool) -> Result<(), 
         let corrected_recipe =
             recipe_with_loudness_offset(&recipe, loudness_offset_db, correction_pass);
         let corrected_output = render_master(
+            app,
             Path::new(&job.source_path),
             &dir,
             correction_pass,
             &corrected_recipe,
             &analysis_before,
         )?;
-        let corrected_analysis = analyze_audio(&corrected_output)?;
+        let corrected_analysis = analyze_audio(app, &corrected_output)?;
 
         if unsafe_analysis(&corrected_recipe, &corrected_analysis)
             || overcompressed_analysis(&corrected_recipe, &analysis_before, &corrected_analysis)
@@ -598,7 +600,7 @@ fn run_mastering_job(app: &AppHandle, job_id: &str, use_ai: bool) -> Result<(), 
             }),
         },
     )?;
-    let package_report = package_master(&output_path, &final_path, &job, &recipe)?;
+    let package_report = package_master(app, &output_path, &final_path, &job, &recipe)?;
     let _ = fs::remove_file(&output_path);
     emit_event(
         app,
@@ -980,10 +982,10 @@ fn mark_failed(conn: &Connection, job_id: &str, message: &str) -> Result<(), Str
     Ok(())
 }
 
-fn analyze_audio(input_path: &Path) -> Result<AudioAnalysis, String> {
-    let metadata = probe_metadata(input_path)?;
-    let (integrated_lufs, ebur_true_peak) = analyze_ebur128(input_path)?;
-    let (dc_offset, sample_peak_dbfs, crest_factor_db) = analyze_astats(input_path)?;
+fn analyze_audio(app: &AppHandle, input_path: &Path) -> Result<AudioAnalysis, String> {
+    let metadata = probe_metadata(app, input_path)?;
+    let (integrated_lufs, ebur_true_peak) = analyze_ebur128(app, input_path)?;
+    let (dc_offset, sample_peak_dbfs, crest_factor_db) = analyze_astats(app, input_path)?;
     let true_peak_dbfs = ebur_true_peak.or(sample_peak_dbfs);
     let clipping_detected = [sample_peak_dbfs, true_peak_dbfs]
         .into_iter()
@@ -1011,8 +1013,8 @@ struct ProbeMetadata {
     channels: Option<u32>,
 }
 
-fn probe_metadata(input_path: &Path) -> Result<ProbeMetadata, String> {
-    let output = Command::new("ffprobe")
+fn probe_metadata(app: &AppHandle, input_path: &Path) -> Result<ProbeMetadata, String> {
+    let output = system::ffprobe_command(app)
         .args([
             "-v",
             "error",
@@ -1058,8 +1060,11 @@ fn probe_metadata(input_path: &Path) -> Result<ProbeMetadata, String> {
     })
 }
 
-fn analyze_ebur128(input_path: &Path) -> Result<(Option<f64>, Option<f64>), String> {
-    let output = Command::new("ffmpeg")
+fn analyze_ebur128(
+    app: &AppHandle,
+    input_path: &Path,
+) -> Result<(Option<f64>, Option<f64>), String> {
+    let output = system::ffmpeg_command(app)
         .args(["-hide_banner", "-nostats", "-i"])
         .arg(input_path)
         .args(["-filter_complex", "ebur128=peak=true", "-f", "null", "-"])
@@ -1091,8 +1096,11 @@ fn analyze_ebur128(input_path: &Path) -> Result<(Option<f64>, Option<f64>), Stri
     Ok((integrated, true_peak))
 }
 
-fn analyze_astats(input_path: &Path) -> Result<(Option<f64>, Option<f64>, Option<f64>), String> {
-    let output = Command::new("ffmpeg")
+fn analyze_astats(
+    app: &AppHandle,
+    input_path: &Path,
+) -> Result<(Option<f64>, Option<f64>, Option<f64>), String> {
+    let output = system::ffmpeg_command(app)
         .args(["-hide_banner", "-nostats", "-i"])
         .arg(input_path)
         .args(["-af", "astats=metadata=1:reset=0", "-f", "null", "-"])
@@ -1931,6 +1939,7 @@ fn default_policy(profile: &MasteringProfile, analysis: &AudioAnalysis) -> Value
 }
 
 fn render_master(
+    app: &AppHandle,
     input_path: &Path,
     output_dir: &Path,
     pass: usize,
@@ -1941,7 +1950,7 @@ fn render_master(
         .map_err(|error| format!("No se pudo crear carpeta de render: {error}"))?;
     let output_path = output_dir.join(format!("render-{pass}.wav"));
     let filters = filter_chain(recipe, analysis_before);
-    let mut command = Command::new("ffmpeg");
+    let mut command = system::ffmpeg_command(app);
     command
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(input_path)
@@ -1977,6 +1986,7 @@ fn render_master(
 }
 
 fn package_master(
+    app: &AppHandle,
     rendered_path: &Path,
     final_path: &Path,
     job: &MasteringJob,
@@ -1998,6 +2008,7 @@ fn package_master(
 
     if let Some(cover) = cover_path.as_ref() {
         match run_package_command(
+            app,
             rendered_path,
             final_path,
             job,
@@ -2010,7 +2021,7 @@ fn package_master(
                     "No se pudo incrustar la caratula; se genero audio sin cover: {error}"
                 ));
                 let _ = fs::remove_file(final_path);
-                run_package_command(rendered_path, final_path, job, recipe, None)?;
+                run_package_command(app, rendered_path, final_path, job, recipe, None)?;
             }
         }
     } else {
@@ -2019,10 +2030,10 @@ fn package_master(
                 "Caratula omitida porque el archivo ya no existe o no es JPG/PNG.".to_string(),
             );
         }
-        run_package_command(rendered_path, final_path, job, recipe, None)?;
+        run_package_command(app, rendered_path, final_path, job, recipe, None)?;
     }
 
-    let validation = validate_packaged_file(final_path)?;
+    let validation = validate_packaged_file(app, final_path)?;
     let validation_cover = validation
         .get("cover_detected")
         .and_then(Value::as_bool)
@@ -2045,6 +2056,7 @@ fn package_master(
 }
 
 fn run_package_command(
+    app: &AppHandle,
     rendered_path: &Path,
     final_path: &Path,
     job: &MasteringJob,
@@ -2053,7 +2065,7 @@ fn run_package_command(
 ) -> Result<(), String> {
     let output_format = normalize_output_format(Some(&job.output_format));
     let is_aiff = output_format != "wav_24";
-    let mut command = Command::new("ffmpeg");
+    let mut command = system::ffmpeg_command(app);
     command
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(rendered_path);
@@ -2129,8 +2141,8 @@ fn run_package_command(
     Ok(())
 }
 
-fn validate_packaged_file(path: &Path) -> Result<Value, String> {
-    let output = Command::new("ffprobe")
+fn validate_packaged_file(app: &AppHandle, path: &Path) -> Result<Value, String> {
+    let output = system::ffprobe_command(app)
         .args([
             "-v",
             "error",
