@@ -93,6 +93,14 @@ Compilar la app nativa:
 npm run tauri:build
 ```
 
+Los bundles generados quedan bajo:
+
+```text
+src-tauri/target/release/bundle/
+```
+
+En macOS, Tauri normalmente genera artefactos como `.app` y/o `.dmg` dentro de esa carpeta.
+
 Probar el core Rust:
 
 ```sh
@@ -111,6 +119,8 @@ cargo test -p aifficator-core
 8. Revisa el terminal para progreso y errores de `ffmpeg`.
 9. Exporta un XML nuevo cuando los AIFF necesarios ya existan.
 10. Importa ese XML en Rekordbox.
+
+Guia visual con capturas: [Importar XML en Rekordbox](docs/rekordbox-import/README.md).
 
 ## Conversion
 
@@ -222,7 +232,14 @@ El limite superior actual es `4`, incluso si la maquina tiene mas cores. Esto ev
 |           |-- rekordbox.rs
 |           `-- validation.rs
 |-- docs/
-|   `-- architecture.md
+|   |-- architecture.md
+|   `-- rekordbox-import/
+|       |-- README.md
+|       |-- rekordbox-import-xml-file.png
+|       |-- rekordbox-refresh-icon.png
+|       |-- rekordbox-xml-display.png
+|       |-- rekordbox-xml-library-tab.png
+|       `-- rekordbox-xml-library.png
 |-- src/
 |   |-- App.tsx
 |   |-- main.tsx
@@ -333,4 +350,4 @@ Ideas pendientes o candidatas:
 
 ## Licencia
 
-Proyecto interno en desarrollo.
+MIT

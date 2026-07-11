@@ -16,11 +16,13 @@ import {
   Gauge,
   HardDrive,
   Info,
+  Moon,
   MoreHorizontal,
   Pause,
   Play,
   RefreshCcw,
   Square,
+  Sun,
   Trash2,
   Upload,
   X
@@ -209,6 +211,7 @@ type PlayerState = {
 type DetailTab = "playlist" | "converted" | "plan" | "report";
 
 const maxConcurrencyLimit = 4;
+const themeModeKey = "aifficator.themeMode";
 const savedXmlPathKey = "aifficator.savedXmlPath";
 const recentXmlPathsKey = "aifficator.recentXmlPaths";
 
@@ -227,8 +230,17 @@ function concurrencyOptionsForCores(cores: number) {
   return Array.from({ length: max }, (_, index) => index + 1);
 }
 
+function detectInitialDarkMode() {
+  if (typeof window === "undefined") return false;
+  const savedMode = localStorage.getItem(themeModeKey);
+  if (savedMode === "dark") return true;
+  if (savedMode === "light") return false;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+}
+
 export default function App() {
   const [detectedLogicalCores] = useState(() => detectLogicalCores());
+  const [darkMode, setDarkMode] = useState(() => detectInitialDarkMode());
   const [xmlPath, setXmlPath] = useState("");
   const [recentXmlPaths, setRecentXmlPaths] = useState<string[]>([]);
   const [importResult, setImportResult] = useState<ImportResponse | null>(null);
@@ -296,6 +308,11 @@ export default function App() {
   }, [maxConcurrency]);
 
   useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem(themeModeKey, darkMode ? "dark" : "light");
+  }, [darkMode]);
+
+  useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
     const recent = readRecentXmlPaths();
     setRecentXmlPaths(recent);
@@ -333,6 +350,8 @@ export default function App() {
   const sortedIssues = validation?.issues ?? [];
   const plannedRows = plan?.items ?? [];
   const activePlaylist = playlistRows.find((playlist) => playlist.path === activePlaylistPath);
+  const allPlaylistsSelected = playlistRows.length > 0 && selectedPlaylists.size === playlistRows.length;
+  const somePlaylistsSelected = selectedPlaylists.size > 0 && !allPlaylistsSelected;
   const recommendedConcurrency = useMemo(
     () => recommendedConcurrencyForCores(detectedLogicalCores),
     [detectedLogicalCores]
@@ -605,6 +624,13 @@ export default function App() {
         next.add(path);
       }
       return next;
+    });
+  }
+
+  function toggleAllPlaylists() {
+    setSelectedPlaylists(() => {
+      if (allPlaylistsSelected) return new Set();
+      return new Set(playlistRows.map((playlist) => playlist.path));
     });
   }
 
@@ -1087,6 +1113,14 @@ export default function App() {
             <FileOutput className="h-4 w-4" />
             Exportar XML
           </Button>
+          <Button
+            variant="secondary"
+            onClick={() => setDarkMode((current) => !current)}
+            title={darkMode ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
+          >
+            {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            {darkMode ? "Claro" : "Oscuro"}
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -1143,7 +1177,7 @@ export default function App() {
       ) : null}
 
       {errorMessage ? (
-        <div className="mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+        <div className="mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-200">
           {errorMessage}
         </div>
       ) : null}
@@ -1288,7 +1322,7 @@ export default function App() {
           ))}
         </CardContent>
         {folderSkippedErrors.length > 0 ? (
-          <div className="border-t border-border px-3 py-2 text-xs text-red-700">
+          <div className="border-t border-border px-3 py-2 text-xs text-red-700 dark:text-red-300">
             {folderSkippedErrors.length} carpetas o archivos no se pudieron leer.
           </div>
         ) : null}
@@ -1298,7 +1332,15 @@ export default function App() {
         <section className="grid min-h-0 grid-cols-[minmax(240px,300px)_minmax(0,1fr)] gap-3 max-lg:grid-cols-1">
           <Card className="flex h-[520px] min-h-0 flex-col overflow-hidden max-lg:h-[360px]">
             <CardHeader>
-              <CardTitle>Playlists</CardTitle>
+              <div className="flex min-w-0 items-center gap-2">
+                <PlaylistSelectAllCheckbox
+                  checked={allPlaylistsSelected}
+                  indeterminate={somePlaylistsSelected}
+                  disabled={playlistRows.length === 0}
+                  onChange={toggleAllPlaylists}
+                />
+                <CardTitle>Playlists</CardTitle>
+              </div>
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <span className="text-xs text-muted-foreground">{selectedPlaylists.size} seleccionadas</span>
                 {selectedPlaylists.size > 0 ? (
@@ -1325,7 +1367,7 @@ export default function App() {
                     key={playlist.path}
                     className={cn(
                       "grid min-h-9 grid-cols-[22px_minmax(0,1fr)_minmax(0,48px)_58px] items-center gap-2 border-b border-l-2 border-b-border border-l-transparent px-3",
-                      processingCount > 0 && "border-l-amber-500 bg-amber-50/70",
+                      processingCount > 0 && "border-l-amber-500 bg-amber-50/70 dark:bg-amber-950/30",
                       playlist.path === activePlaylistPath && "bg-muted"
                     )}
                   >
@@ -1345,7 +1387,7 @@ export default function App() {
                     <span className="flex justify-end">
                       {processingCount > 0 ? (
                         <span
-                          className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800"
+                          className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-200"
                           title={`${processingCount} archivo(s) procesandose en esta playlist`}
                         >
                           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500" />
@@ -1442,7 +1484,7 @@ export default function App() {
                 {playlistFiles.map((file) => (
                   <div
                     key={`${file.track_id}-${file.position}`}
-                    className={cn("playlist-track-grid border-b border-border text-xs", !file.source_exists && "bg-red-50")}
+                    className={cn("playlist-track-grid border-b border-border text-xs", !file.source_exists && "bg-red-50 dark:bg-red-950/30")}
                   >
                     <span className="flex justify-center">
                       <Button
@@ -1606,7 +1648,7 @@ export default function App() {
 
 function Metric({ label, value, danger = false }: { label: string; value: number; danger?: boolean }) {
   return (
-    <Card className={cn("p-3", danger && "border-red-300 text-red-800")}>
+    <Card className={cn("p-3", danger && "border-red-300 text-red-800 dark:border-red-900 dark:text-red-200")}>
       <span className="block text-xs text-muted-foreground">{label}</span>
       <strong className="mt-1 block text-xl">{value}</strong>
     </Card>
@@ -1614,16 +1656,47 @@ function Metric({ label, value, danger = false }: { label: string; value: number
 }
 
 function PlanMetric({ children, danger = false }: { children: React.ReactNode; danger?: boolean }) {
-  return <Card className={cn("p-3 text-sm font-semibold", danger && "border-red-300 text-red-800")}>{children}</Card>;
+  return <Card className={cn("p-3 text-sm font-semibold", danger && "border-red-300 text-red-800 dark:border-red-900 dark:text-red-200")}>{children}</Card>;
 }
 
 function EmptyRow({ children }: { children: React.ReactNode }) {
   return <div className="flex min-h-11 items-center px-3 text-sm text-muted-foreground">{children}</div>;
 }
 
+function PlaylistSelectAllCheckbox({
+  checked,
+  indeterminate,
+  disabled,
+  onChange
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  disabled: boolean;
+  onChange: () => void;
+}) {
+  const checkboxRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (checkboxRef.current) {
+      checkboxRef.current.indeterminate = indeterminate;
+    }
+  }, [indeterminate]);
+
+  return (
+    <input
+      ref={checkboxRef}
+      type="checkbox"
+      checked={checked}
+      disabled={disabled}
+      title={checked ? "Deseleccionar todas las playlists" : "Seleccionar todas las playlists"}
+      onChange={onChange}
+    />
+  );
+}
+
 function Progress({ value, small = false }: { value: number; small?: boolean }) {
   return (
-    <div className={cn("overflow-hidden rounded-full bg-slate-200", small ? "mt-1 h-1.5" : "h-2")}>
+    <div className={cn("overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800", small ? "mt-1 h-1.5" : "h-2")}>
       <div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(0, Math.min(100, value))}%` }} />
     </div>
   );
@@ -1809,8 +1882,8 @@ function StatusPill({ tone, children }: { tone: "ok" | "error" | "muted"; childr
     <span
       className={cn(
         "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold",
-        tone === "ok" && "border-emerald-200 bg-emerald-50 text-emerald-800",
-        tone === "error" && "border-red-200 bg-red-50 text-red-800",
+        tone === "ok" && "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200",
+        tone === "error" && "border-red-200 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-200",
         tone === "muted" && "border-border bg-secondary text-secondary-foreground"
       )}
     >
@@ -1865,7 +1938,7 @@ function MetadataRow({
 
 function PathBlock({ label, value, missing }: { label: string; value?: string; missing: boolean }) {
   return (
-    <div className={cn("rounded-md border p-3", missing ? "border-red-200 bg-red-50" : "border-border bg-secondary/60")}>
+    <div className={cn("rounded-md border p-3", missing ? "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/40" : "border-border bg-secondary/60")}>
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="text-xs font-semibold text-muted-foreground">{label}</span>
         <Button variant="ghost" size="icon" title="Copiar path" disabled={!value} onClick={() => value && copyText(value)}>
@@ -1994,16 +2067,16 @@ function TerminalDrawer({
 }
 
 function planRowClass(action: PlanItem["action"]) {
-  if (action === "reuse_existing") return "bg-emerald-50";
-  if (action === "blocked") return "bg-red-50";
-  if (action === "skip_already_aiff") return "bg-slate-50";
+  if (action === "reuse_existing") return "bg-emerald-50 dark:bg-emerald-950/30";
+  if (action === "blocked") return "bg-red-50 dark:bg-red-950/30";
+  if (action === "skip_already_aiff") return "bg-slate-50 dark:bg-slate-900/40";
   return "";
 }
 
 function issueRowClass(severity: Issue["severity"]) {
-  if (severity === "error") return "bg-red-50";
-  if (severity === "warning") return "bg-amber-50";
-  return "bg-slate-50";
+  if (severity === "error") return "bg-red-50 dark:bg-red-950/30";
+  if (severity === "warning") return "bg-amber-50 dark:bg-amber-950/30";
+  return "bg-slate-50 dark:bg-slate-900/40";
 }
 
 function terminalLogClass(level: TerminalLog["level"]) {

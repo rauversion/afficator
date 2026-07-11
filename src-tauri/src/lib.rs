@@ -180,7 +180,9 @@ fn export_rekordbox_xml(
     let xml = fs::read_to_string(&path).map_err(|error| format!("No se pudo leer XML: {error}"))?;
     let library = parse_rekordbox_xml_file(&path).map_err(|error| error.to_string())?;
     let selected_track_ids = export_track_ids(&library, &playlist_paths)?;
-    let replacements = export_replacements(&library, &selected_track_ids)?;
+    let selected_replacements = export_replacements(&library, &selected_track_ids)?;
+    let mut replacements = existing_converted_replacements(&library);
+    replacements.extend(selected_replacements.clone());
     let exported_xml =
         export_replacement_xml(&xml, &replacements).map_err(|error| error.to_string())?;
 
@@ -191,7 +193,7 @@ fn export_rekordbox_xml(
         output_path,
         selected_playlist_total: playlist_paths.len(),
         selected_track_total: selected_track_ids.len(),
-        replaced_track_total: replacements.len(),
+        replaced_track_total: selected_replacements.len(),
     })
 }
 
@@ -311,24 +313,14 @@ fn export_replacements(
                     }
                 };
 
-                let location = match path_to_rekordbox_location(&target_path) {
-                    Ok(location) => location,
-                    Err(error) => {
-                        errors.push(error.to_string());
-                        continue;
+                match replacement_for_converted_file(&target_path, &metadata) {
+                    Ok(replacement) => {
+                        replacements.insert(track.track_id.clone(), replacement);
                     }
-                };
-
-                replacements.insert(
-                    track.track_id.clone(),
-                    ExportTrackReplacement {
-                        location,
-                        kind: "AIFF File".to_string(),
-                        size: Some(metadata.len()),
-                        sample_rate: Some(44_100),
-                        bit_rate: Some(1411),
-                    },
-                );
+                    Err(error) => {
+                        errors.push(error);
+                    }
+                }
             }
         }
     }
@@ -338,6 +330,48 @@ fn export_replacements(
     } else {
         Err(errors.join("\n"))
     }
+}
+
+fn existing_converted_replacements(library: &RekordboxLibrary) -> BTreeMap<String, ExportTrackReplacement> {
+    let mut replacements = BTreeMap::new();
+
+    for track in &library.tracks {
+        if track_action(track) != TrackAction::Convert {
+            continue;
+        }
+
+        let Some(source_path) = &track.file_path else {
+            continue;
+        };
+        let target_path = default_target_path(source_path);
+        let Ok(metadata) = fs::metadata(&target_path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+
+        if let Ok(replacement) = replacement_for_converted_file(&target_path, &metadata) {
+            replacements.insert(track.track_id.clone(), replacement);
+        }
+    }
+
+    replacements
+}
+
+fn replacement_for_converted_file(
+    target_path: &Path,
+    metadata: &fs::Metadata,
+) -> Result<ExportTrackReplacement, String> {
+    let location = path_to_rekordbox_location(target_path).map_err(|error| error.to_string())?;
+
+    Ok(ExportTrackReplacement {
+        location,
+        kind: "AIFF File".to_string(),
+        size: Some(metadata.len()),
+        sample_rate: Some(44_100),
+        bit_rate: Some(1411),
+    })
 }
 
 #[tauri::command]
