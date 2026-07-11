@@ -25,14 +25,24 @@ jobs:
             os: macos-latest
             artifact: aifficator-macos
             tauri_args: --bundles app
+            artifact_paths: |
+              target/release/bundle/*.app.tar.gz
+              target/release/bundle/**/*.app.tar.gz
           - label: Windows
             os: windows-latest
             artifact: aifficator-windows
             tauri_args: --bundles nsis,msi
+            artifact_paths: |
+              target/release/bundle/**/*.msi
+              target/release/bundle/**/*.exe
           - label: Linux
             os: ubuntu-22.04
             artifact: aifficator-linux
             tauri_args: --bundles appimage,deb
+            artifact_paths: |
+              target/release/bundle/**/*.AppImage
+              target/release/bundle/**/*.deb
+              target/release/bundle/**/*.rpm
 
     steps:
       - name: Checkout
@@ -83,15 +93,7 @@ jobs:
           name: ${{ matrix.artifact }}
           if-no-files-found: error
           retention-days: 14
-          path: |
-            src-tauri/target/release/bundle/**/*.dmg
-            src-tauri/target/release/bundle/*.app.tar.gz
-            src-tauri/target/release/bundle/**/*.app.tar.gz
-            src-tauri/target/release/bundle/**/*.msi
-            src-tauri/target/release/bundle/**/*.exe
-            src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.deb
-            src-tauri/target/release/bundle/**/*.rpm
+          path: ${{ matrix.artifact_paths }}
 
   release:
     name: Publish GitHub Release
@@ -111,7 +113,6 @@ jobs:
         shell: bash
         run: |
           mapfile -t files < <(find release-artifacts -type f \( \
-            -name '*.dmg' -o \
             -name '*.app.tar.gz' -o \
             -name '*.msi' -o \
             -name '*.exe' -o \

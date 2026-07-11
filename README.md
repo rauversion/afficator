@@ -81,7 +81,7 @@ npm run tauri:build
 Los bundles quedan bajo:
 
 ```text
-src-tauri/target/release/bundle/
+target/release/bundle/
 ```
 
 ## Releases
