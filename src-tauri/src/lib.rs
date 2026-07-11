@@ -23,6 +23,7 @@ use tauri::{AppHandle, Emitter};
 mod local_conversion;
 mod mastering;
 mod settings;
+mod turn;
 
 #[derive(Debug, Serialize)]
 struct ImportResponse {
@@ -1237,7 +1238,13 @@ pub fn run() {
             mastering::mastering_job_events,
             mastering::mastering_start_job,
             mastering::mastering_retry_job,
-            mastering::mastering_delete_job
+            mastering::mastering_delete_job,
+            turn::turn_list_jobs,
+            turn::turn_get_job,
+            turn::turn_job_events,
+            turn::turn_start_job,
+            turn::turn_retry_job,
+            turn::turn_delete_job
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aifficator");

@@ -9,6 +9,7 @@ El proyecto usa Tauri 2, Rust, React, TypeScript, SQLite y `ffmpeg`. La app evit
 - [Rekordbox Convert](docs/rekordbox-convert.md): importa XML de Rekordbox, convierte tracks de playlists a AIFF y exporta un XML seguro.
 - [File Importer](docs/file-importer.md): importa archivos o carpetas locales, crea grupos de trabajo, convierte a AIFF y mantiene historial en SQLite.
 - [Mastering](docs/mastering.md): genera masters AIFF con presets, metadata, cover, analisis tecnico, eventos en tiempo real y reintentos.
+- [Turn](docs/turn.md): genera videos MP4 de discos girando desde cover y audio local, con preview por rango, progreso realtime e historial.
 - [Importar XML en Rekordbox](docs/rekordbox-import/README.md): guia visual para importar el XML exportado por Aifficator.
 - [Arquitectura](docs/architecture.md): notas tecnicas de la estructura interna.
 

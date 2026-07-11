@@ -121,6 +121,16 @@
     align-items: start;
     padding: 1px 0;
   }
+
+  @keyframes turn-spin {
+    from {
+      transform: translate(-50%, -50%) rotate(0deg);
+    }
+
+    to {
+      transform: translate(-50%, -50%) rotate(360deg);
+    }
+  }
 }
 
 @media (max-width: 820px) {
