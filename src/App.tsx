@@ -44,6 +44,7 @@ import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-dra
 import { cn } from "./lib/utils";
 import { FileConversionPage } from "./FileConversionPage";
 import { MasteringPage } from "./MasteringPage";
+import { TurnPage } from "./TurnPage";
 import type * as React from "react";
 
 type Issue = {
@@ -262,6 +263,7 @@ export default function App() {
           <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
           <Route path="/file-conversion/local" element={<FileConversionPage />} />
           <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
+          <Route path="/turn" element={<TurnPage />} />
           <Route path="/mastering" element={<MasteringPage />} />
           <Route
             path="/settings"
@@ -1935,6 +1937,12 @@ function AppSidebar() {
           </SidebarLink>
           <SidebarLink to="/file-conversion/rekordbox-convert" icon={<FileAudio2 className="h-4 w-4" />}>
             Rekordbox Convert
+          </SidebarLink>
+        </SidebarSection>
+
+        <SidebarSection title="Turn">
+          <SidebarLink to="/turn" icon={<Disc3 className="h-4 w-4" />}>
+            Turn
           </SidebarLink>
         </SidebarSection>
 
