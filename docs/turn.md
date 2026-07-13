@@ -1,148 +1,148 @@
 # Turn
 
-Turn genera mockups de discos girando en video MP4 desde una portada y un archivo de audio local. Esta seccion porta la idea del flujo `turn` de Rauversion, pero en Rau Studio todo queda local: no se sube a ActiveStorage, no se envia email y el resultado se abre desde la carpeta del archivo generado.
+Turn generates spinning-record MP4 mockups from local cover art and a local audio file. It ports the `turn` concept from Rauversion into Rau Studio, but everything stays local: no ActiveStorage upload, no email delivery, and results are opened from the folder that contains the generated file.
 
-## Objetivo
+## Goals
 
-- Elegir una imagen de portada.
-- Elegir un archivo de audio local.
-- Previsualizar el disco girando.
-- Escuchar el preview respetando el rango de audio seleccionado.
-- Ajustar color de fondo, tamano del disco y velocidad de rotacion.
-- Recortar el audio con un slider de rango.
-- Generar un MP4 cuadrado `1080x1080`.
-- Ver progreso en tiempo real.
-- Guardar historial, eventos y salida en SQLite.
-- Reabrir jobs anteriores, reintentar o eliminar resultados.
+- Choose cover art.
+- Choose a local audio file.
+- Preview the spinning record.
+- Listen to the selected audio range.
+- Adjust background color, record size, and rotation speed.
+- Trim audio with a range slider.
+- Generate a square `1080x1080` MP4.
+- Show realtime progress.
+- Store history, events, and output paths in SQLite.
+- Reopen previous jobs, retry, or delete results.
 
-## Flujo de uso
+## Workflow
 
-1. Entra a **Turn** desde el sidebar.
-2. En la tab **Editor**, elige un **Cover**.
-3. Elige un **Audio**.
-4. Ajusta el rango de audio en **Audio y duracion**.
-5. Pulsa **Play preview** para escuchar solo el tramo seleccionado.
-6. Ajusta fondo, tamano del disco y RPM.
-7. Pulsa **Generar video**.
-8. Revisa el progreso en pantalla y en el terminal inferior.
-9. Cuando termine, reproduce el MP4 en el detalle.
-10. Usa **Abrir carpeta MP4** para abrir la carpeta que contiene el video.
+1. Open **Turn** from the sidebar.
+2. In the **Editor** tab, choose a **Cover**.
+3. Choose an **Audio** file.
+4. Adjust the audio range in **Audio and Duration**.
+5. Click **Play Preview** to hear only the selected range.
+6. Adjust background, record size, and RPM.
+7. Click **Generate Video**.
+8. Watch progress in the UI and bottom terminal.
+9. When the job finishes, play the MP4 from the job detail.
+10. Use **Open MP4 Folder** to open the folder containing the video.
 
 ## Tabs
 
 ### Editor
 
-Contiene el formulario principal, preview, audio player, controles visuales, trim y detalle del job activo.
+Contains the main form, preview, audio player, visual controls, trim controls, and active job detail.
 
-El editor usa todo el ancho disponible para que el preview y el detalle del MP4 no compitan con el historial.
+The editor uses the available width so preview and MP4 detail do not compete with history.
 
-### Historial
+### History
 
-Muestra todos los videos generados o fallidos. Cada fila indica:
+Shows every generated or failed video. Each row includes:
 
 - cover;
 - audio;
-- estado;
-- progreso;
-- chips de MP4 disponible, procesando y eventos.
+- state;
+- progress;
+- chips for MP4 availability, processing state, and events.
 
-Al hacer click en una fila, el job se abre de vuelta en la tab **Editor**.
+Clicking a row opens that job back in the **Editor** tab.
 
-## Preview y trim
+## Preview and Trim
 
-El preview tiene dos partes sincronizadas:
+The preview has two synchronized parts:
 
-- El disco gira con la portada seleccionada.
-- El audio reproduce solo el rango seleccionado.
+- the record spins with the selected cover art;
+- the audio plays only the selected range.
 
-El trim funciona como en Rauversion:
+The range controls follow the Rauversion behavior:
 
-- Al cargar un audio nuevo, el rango queda `0..duracion completa`.
-- El handle izquierdo mueve el inicio.
-- El handle derecho mueve el fin.
-- El handle central mueve todo el rango manteniendo la duracion.
-- El boton de reset vuelve a usar el audio completo.
+- loading a new audio file sets the range to `0..full_duration`;
+- the left handle moves the start;
+- the right handle moves the end;
+- the center handle moves the full range while preserving duration;
+- reset returns to the full audio file.
 
-Cuando el preview llega al fin del rango, pausa y vuelve al inicio del rango. Si el usuario mueve el rango mientras el preview esta pausado, el audio se posiciona en el nuevo inicio.
+When preview playback reaches the range end, it pauses and seeks back to the range start. If the user changes the range while preview is paused, the audio seeks to the new start.
 
-## Controles
+## Controls
 
-| Control | Descripcion |
+| Control | Description |
 | --- | --- |
-| Cover | Imagen que se usa como disco girando |
-| Audio | Archivo que se corta y se incrusta en el video |
-| Fondo | Color solido del video |
-| Disco | Tamano del disco como porcentaje del canvas |
-| Velocidad | RPM usadas para calcular la rotacion |
-| Audio y duracion | Rango `inicio..fin`; la duracion del video es `fin - inicio` |
+| Cover | Image used as the spinning record |
+| Audio | File that is trimmed and embedded in the video |
+| Background | Solid video background color |
+| Record | Record size as a percentage of the canvas |
+| Speed | RPM used to calculate rotation |
+| Audio and Duration | Range `start..end`; video duration is `end - start` |
 
-Valores normalizados en backend:
+Backend normalization:
 
-- duracion: `1..900` segundos;
+- duration: `1..900` seconds;
 - RPM: `1..78`;
-- disco: `20..100`;
-- color: hex valido o nombre de color aceptado por `ffmpeg`.
+- record size: `20..100`;
+- color: valid hex color or an `ffmpeg`-accepted color name.
 
-## Salida
+## Output
 
-Cada job escribe sus archivos bajo el directorio de datos de la app:
+Each job writes files under the app data directory:
 
 ```text
 <app-data>/turn/jobs/<job-id>/
 ```
 
-Archivo principal:
+Main file:
 
 ```text
 turn-<cover-stem>.mp4
 ```
 
-El path queda guardado en `turn_jobs.output_path`.
+The path is stored in `turn_jobs.output_path`.
 
-## Render con ffmpeg
+## ffmpeg Render
 
-Turn renderiza con `ffmpeg` usando argumentos separados, sin shell. La salida actual es:
+Turn renders with `ffmpeg` using separated arguments, without shell interpolation. Current output:
 
 - video: H.264 (`libx264`);
 - audio: AAC;
 - pixel format: `yuv420p`;
-- dimensiones: `1080x1080`;
-- `+faststart` para mejor reproduccion;
-- progreso realtime con `-progress pipe:1`.
+- size: `1080x1080`;
+- `+faststart` for better playback;
+- realtime progress through `-progress pipe:1`.
 
-La app genera una mascara circular local en formato PGM:
+The app creates a local circular mask in PGM format:
 
 ```text
 <app-data>/turn/alpha-mask.pgm
 ```
 
-Esa mascara permite recortar la portada como disco sin depender de assets externos del repo Rails.
+That mask lets the app crop cover art into a record without depending on Rails assets.
 
-Pipeline conceptual:
+Conceptual pipeline:
 
-1. Crear fondo solido `1080x1080`.
-2. Escalar/cropear fondo.
-3. Escalar portada segun tamano de disco.
-4. Rotar portada usando RPM.
-5. Aplicar mascara circular.
-6. Overlay del disco sobre el fondo.
-7. Mapear audio recortado.
-8. Escribir MP4 final.
+1. Create a solid `1080x1080` background.
+2. Scale/crop the background.
+3. Scale cover art according to record size.
+4. Rotate cover art using RPM.
+5. Apply the circular mask.
+6. Overlay the record on the background.
+7. Map trimmed audio.
+8. Write the final MP4.
 
-## Estados
+## Statuses
 
-| Estado | Significado |
+| Status | Meaning |
 | --- | --- |
-| `pending` | Job creado, aun no iniciado por el worker |
-| `running` | ffmpeg esta renderizando |
-| `completed` | MP4 generado y disponible |
-| `failed` | Render fallido con mensaje de error |
+| `pending` | Job created but not started by the worker |
+| `running` | `ffmpeg` is rendering |
+| `completed` | MP4 is available |
+| `failed` | Render failed with an error message |
 
-## Terminal y eventos
+## Terminal and Events
 
-Los eventos se guardan en `turn_events` y tambien se emiten en tiempo real como `turn-progress`.
+Events are stored in `turn_events` and emitted in realtime as `turn-progress`.
 
-Cada evento incluye:
+Each event includes:
 
 - `event`
 - `step`
@@ -150,20 +150,20 @@ Cada evento incluye:
 - `message`
 - `progress`
 - `payload_json`
-- snapshot del job
+- job snapshot
 
-El terminal inferior muestra eventos del job activo, incluyendo logs relevantes de `ffmpeg`.
+The fixed bottom terminal shows active job events, including relevant `ffmpeg` logs.
 
-## Persistencia SQLite
+## SQLite Persistence
 
-Todo se guarda en SQLite local, actualmente en el archivo legacy `aifficator.sqlite3` dentro del directorio de datos de la app.
+Everything is stored in local SQLite, currently the legacy `aifficator.sqlite3` file inside the app data directory.
 
-Tablas principales:
+Main tables:
 
-- `turn_jobs`: configuracion, estado, entradas, salida y timestamps.
-- `turn_events`: timeline persistente por job.
+- `turn_jobs`: settings, state, inputs, output, and timestamps.
+- `turn_events`: persistent per-job timeline.
 
-Campos relevantes de `turn_jobs`:
+Relevant `turn_jobs` fields:
 
 - `cover_image_path`
 - `cover_image_name`
@@ -179,7 +179,7 @@ Campos relevantes de `turn_jobs`:
 - `disc_size`
 - `error_message`
 
-## Comandos Tauri
+## Tauri Commands
 
 - `turn_list_jobs`
 - `turn_get_job`
@@ -188,17 +188,17 @@ Campos relevantes de `turn_jobs`:
 - `turn_retry_job`
 - `turn_delete_job`
 
-## Diferencias con Rauversion
+## Differences from Rauversion
 
 | Rauversion | Rau Studio |
 | --- | --- |
-| Sube archivos a ActiveStorage | Usa paths locales |
-| Encola job Rails | Encola worker local Tauri/Rust |
-| Envia email al terminar | Muestra progreso y resultado en la app |
-| Descarga desde URL | Abre la carpeta local del MP4 |
-| Usa asset `alpha_mask.png` | Genera `alpha-mask.pgm` localmente |
+| Uploads files to ActiveStorage | Uses local paths |
+| Enqueues a Rails job | Enqueues a local Tauri/Rust worker |
+| Sends an email on completion | Shows progress and result in the app |
+| Downloads from a URL | Opens the local MP4 folder |
+| Uses `alpha_mask.png` asset | Generates `alpha-mask.pgm` locally |
 
-## Archivos relevantes
+## Relevant Files
 
 - `src/TurnPage.tsx`
 - `src-tauri/src/turn.rs`

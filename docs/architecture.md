@@ -1,159 +1,160 @@
-# Arquitectura
+# Architecture
 
-## Objetivo
+Rau Studio is a local-first desktop app for audio preparation, Rekordbox conversion, mastering, release visuals, and playlist intelligence.
 
-Rau Studio toma un XML exportado desde Rekordbox, permite elegir playlists, convierte los archivos seleccionados a AIFF y genera un nuevo XML importable. Los originales no se reemplazan: cada archivo convertido queda en una carpeta `converted` dentro del mismo directorio del archivo fuente.
+The application is built around a Tauri desktop shell, a Rust backend, a React/TypeScript frontend, local SQLite persistence, and external media tools (`ffmpeg`/`ffprobe`). Original media files and source XML files are treated as immutable inputs.
 
-Ejemplo:
+## Stack
+
+| Layer | Technology |
+| --- | --- |
+| Desktop shell | Tauri 2 |
+| Backend | Rust |
+| Frontend | React + TypeScript |
+| Styling | Tailwind + shadcn-style components |
+| Persistence | SQLite |
+| XML parsing/export | `quick-xml` and core Rekordbox helpers |
+| Audio/video | `ffmpeg` / `ffprobe` |
+| AI | Optional OpenAI API calls |
+
+## Local-First Data Model
+
+Rau Studio keeps operational state in a local SQLite database inside the app data directory. The historical database filename is `aifficator.sqlite3`.
+
+Major domains:
+
+- Rekordbox conversion plans and converted files.
+- Local file conversion groups and events.
+- Mastering jobs and events.
+- Turn jobs and events.
+- Indexed playlist libraries, memberships, draft playlists, and embeddings.
+- Encrypted settings, including the OpenAI API key and audio tool paths.
+
+The app never stores raw audio in SQLite. It stores file paths, metadata snapshots, derived analysis, and event logs.
+
+## File Safety
+
+The main file-safety rules are:
+
+- source audio is never overwritten;
+- source Rekordbox XML is never edited;
+- converted AIFF files are written into sibling `converted/` folders;
+- existing target AIFF files are reused or reported, not overwritten;
+- exports are written as new XML files.
+
+Example:
 
 ```text
 /Music/Artist/Track.flac
 /Music/Artist/converted/Track.aiff
 ```
 
-## Stack
+## Backend Boundaries
 
-- Rust para core, filesystem, validacion, conversion y export.
-- Tauri 2 para app desktop nativa.
-- Svelte + TypeScript para UI.
-- SQLite para historial de imports, conversiones y exports.
-- `ffmpeg`/`ffprobe` como herramientas de audio.
-- `quick-xml` para leer exports Rekordbox.
+The Rust backend owns:
 
-## Pipeline
+- filesystem access;
+- XML parsing and export;
+- SQLite migrations and queries;
+- conversion/mastering/render workers;
+- realtime event emission;
+- ffmpeg/ffprobe command construction;
+- optional OpenAI requests;
+- encrypted settings persistence.
 
-1. Importar XML.
-2. Parsear `COLLECTION/TRACK`.
-3. Parsear `PLAYLISTS/NODE` y referencias `TRACK Key`.
-4. Validar archivos:
-   - location faltante o invalida
-   - archivo no encontrado
-   - archivo sin permisos/metadata ilegible
-   - formato no soportado
-   - archivo ya convertido en `converted`
-   - referencias de playlist a tracks inexistentes
-5. Mostrar playlists, tracks e issues en UI.
-6. Crear plan de conversion desde playlists seleccionadas.
-7. Convertir con progreso en tiempo real.
-8. Persistir resultado en SQLite.
-9. Generar XML nuevo para importar en Rekordbox.
+The frontend owns:
 
-## Formatos
+- navigation and layout;
+- playlist and track selection;
+- player UI;
+- tables, sheets, dialogs, and terminal rendering;
+- presenting realtime events from Tauri;
+- user-facing validation messages.
 
-AIFF se considera formato final y se omite.
+## Realtime Events
 
-Formatos convertibles iniciales:
+Long-running tasks emit Tauri events:
 
-- FLAC
-- MP3
-- WAV/WAVE
-- ALAC
-- M4A
-- AAC
+- `conversion-progress`
+- `conversion-log`
+- `local-conversion-progress`
+- `local-conversion-log`
+- `mastering-progress`
+- `playlist-index-progress`
+- `turn-progress`
 
-La salida recomendada para compatibilidad maxima:
+The app shell listens to these events to report bridge health, while each feature page consumes the relevant stream for progress, row status, and terminal logs.
 
-```sh
-ffmpeg -i input.flac -map 0:a:0 -vn -c:a pcm_s16be output.aiff
+## Rekordbox Conversion Pipeline
+
+1. Import XML.
+2. Parse `COLLECTION/TRACK`.
+3. Parse `PLAYLISTS/NODE` and `TRACK Key` references.
+4. Validate files:
+   - missing or invalid `Location`;
+   - missing source file;
+   - unreadable metadata;
+   - unsupported format;
+   - existing converted target;
+   - playlist references to unknown tracks;
+   - target collisions.
+5. Show playlists, tracks, and issues.
+6. Build a conversion plan from selected playlists.
+7. Convert with realtime progress.
+8. Persist conversion results.
+9. Export a new Rekordbox XML that preserves the full collection and only rewrites converted `Location` values.
+
+## Playlist Intelligence Pipeline
+
+1. Import a Rekordbox XML into the playlist index.
+2. Store tracks, playlists, memberships, metadata attributes, and source paths in SQLite.
+3. Rebuild SQLite FTS for lexical search.
+4. Optionally generate OpenAI embeddings for selected tracks or the whole library.
+5. Search with lexical FTS, vector similarity, metadata browsing, taxonomy graphs, or Playlist Copilot.
+6. Select tracks and add them to local draft playlists.
+7. Export draft playlists back to Rekordbox XML.
+
+## AI Boundaries
+
+AI is optional and scoped:
+
+- Mastering can call OpenAI to interpret feedback and produce a processing policy.
+- Vector search sends text metadata to OpenAI embeddings, never audio.
+- Playlist Copilot sends the user's prompt and a compact library profile, not the full audio collection.
+
+If OpenAI is not configured or a request fails, the app uses local deterministic fallbacks where available.
+
+## Relevant Directories
+
+```text
+.
+|-- crates/aifficator-core/  # Rekordbox parsing, planning, validation, conversion helpers
+|-- src/                     # React UI
+|-- src/components/          # Shared UI and track components
+|-- src-tauri/               # Tauri/Rust backend
+|-- docs/                    # Documentation
+`-- .github/workflows/       # CI/release workflows
 ```
 
-Luego se puede agregar una opcion `pcm_s24be` si se quiere preservar 24-bit.
+## Key Frontend Files
 
-## Validacion y Reporte
+- `src/App.tsx`
+- `src/FileConversionPage.tsx`
+- `src/MasteringPage.tsx`
+- `src/TurnPage.tsx`
+- `src/PlaylistIndexPage.tsx`
+- `src/PlaylistBrowserPage.tsx`
+- `src/TaxonomyPage.tsx`
+- `src/PlaylistCopilotPage.tsx`
+- `src/components/tracks/*`
 
-El import no debe empezar conversiones de inmediato. Primero genera un reporte.
+## Key Backend Files
 
-Severidades:
-
-- `error`: bloquea conversion de ese track.
-- `warning`: requiere atencion, pero no necesariamente bloquea.
-- `info`: dato util, como AIFF existente o target ya creado.
-
-Codigos iniciales:
-
-- `missing_location`
-- `invalid_location`
-- `file_not_found`
-- `cannot_read_file`
-- `unsupported_format`
-- `already_aiff`
-- `target_already_exists`
-- `duplicate_source`
-- `missing_playlist_track`
-- `target_collision`
-
-## DB Propuesta
-
-```sql
-create table import_sessions (
-  id text primary key,
-  xml_path text not null,
-  product_name text,
-  product_version text,
-  imported_at text not null
-);
-
-create table tracks (
-  id text primary key,
-  import_session_id text not null,
-  rekordbox_track_id text not null,
-  name text,
-  artist text,
-  kind text,
-  source_path text,
-  target_path text,
-  validation_status text not null,
-  foreign key (import_session_id) references import_sessions(id)
-);
-
-create table playlists (
-  id text primary key,
-  import_session_id text not null,
-  path text not null,
-  name text not null,
-  node_type text,
-  foreign key (import_session_id) references import_sessions(id)
-);
-
-create table playlist_tracks (
-  playlist_id text not null,
-  rekordbox_track_id text not null,
-  position integer not null,
-  primary key (playlist_id, position)
-);
-
-create table conversion_jobs (
-  id text primary key,
-  import_session_id text not null,
-  status text not null,
-  created_at text not null,
-  finished_at text
-);
-
-create table conversion_items (
-  id text primary key,
-  job_id text not null,
-  rekordbox_track_id text not null,
-  source_path text not null,
-  target_path text not null,
-  status text not null,
-  progress real not null default 0,
-  error text,
-  started_at text,
-  finished_at text,
-  foreign key (job_id) references conversion_jobs(id)
-);
-
-create table exports (
-  id text primary key,
-  import_session_id text not null,
-  conversion_job_id text,
-  export_path text not null,
-  created_at text not null
-);
-```
-
-## Siguiente Corte
-
-El core ya separa import, validacion y plan. El siguiente paso es implementar el runner de conversion con eventos Tauri en tiempo real y despues el exporter XML que clona tracks convertidos preservando `TEMPO`, `POSITION_MARK` y el orden de playlists.
-
+- `src-tauri/src/lib.rs`
+- `src-tauri/src/local_conversion.rs`
+- `src-tauri/src/mastering.rs`
+- `src-tauri/src/playlist_index.rs`
+- `src-tauri/src/settings.rs`
+- `src-tauri/src/system.rs`
+- `src-tauri/src/turn.rs`
+- `crates/aifficator-core/src/*`

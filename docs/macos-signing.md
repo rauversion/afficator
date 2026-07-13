@@ -1,64 +1,69 @@
-# Firma y notarizacion en macOS
+# macOS Signing and Notarization
 
-Rau Studio puede compilar bundles para macOS sin certificado, pero esos builds no pasan Gatekeeper para usuarios finales. La firma ad-hoc evita bundles rotos en Apple Silicon, pero no reemplaza la firma con **Developer ID Application** ni la notarizacion de Apple.
+Rau Studio can build macOS bundles without an Apple Developer certificate, but unsigned builds do not pass Gatekeeper for end users. Ad-hoc signing helps avoid broken bundles on Apple Silicon, but it does not replace **Developer ID Application** signing or Apple notarization.
 
-## Estado actual
+## Current State
 
-- Los artefactos macOS publicados son `.app.tar.gz`.
-- No estan firmados con Developer ID.
-- No estan notarizados.
-- Para abrirlos en una maquina local hay que quitar `com.apple.quarantine`.
+- macOS artifacts are published as `.app.tar.gz`.
+- They may not be signed with Developer ID.
+- They may not be notarized.
+- Local users may need to remove `com.apple.quarantine` after downloading.
 
 ```sh
 cd ~/Downloads
-tar -xzf RauStudio_0.1.7_arm64.app.tar.gz
+tar -xzf RauStudio_0.1.8_arm64.app.tar.gz
 xattr -dr com.apple.quarantine "Rau Studio.app"
 open "Rau Studio.app"
 ```
 
-## Para distribuir sin aviso de Gatekeeper
+If the app was already copied to `/Applications`:
 
-Requisitos:
-
-- Cuenta pagada de Apple Developer.
-- Certificado **Developer ID Application**.
-- Certificado exportado desde Keychain como `.p12`.
-- App-specific password del Apple ID o credenciales de App Store Connect.
-- Team ID de Apple Developer.
-
-Secrets recomendados para GitHub Actions:
-
-```text
-APPLE_CERTIFICATE          # contenido base64 del .p12
-APPLE_CERTIFICATE_PASSWORD # password usado al exportar el .p12
-KEYCHAIN_PASSWORD          # password temporal para el keychain del runner
-APPLE_ID                   # email del Apple ID
-APPLE_PASSWORD             # app-specific password
-APPLE_TEAM_ID              # Team ID de Apple Developer
-APPLE_SIGNING_IDENTITY     # opcional: "Developer ID Application: Nombre (TEAMID)"
+```sh
+xattr -dr com.apple.quarantine "/Applications/Rau Studio.app"
+open "/Applications/Rau Studio.app"
 ```
 
-Para generar `APPLE_CERTIFICATE`:
+## Requirements for Gatekeeper-Friendly Distribution
+
+- Paid Apple Developer account.
+- **Developer ID Application** certificate.
+- Certificate exported from Keychain as `.p12`.
+- Apple ID app-specific password or App Store Connect credentials.
+- Apple Developer Team ID.
+
+Recommended GitHub Actions secrets:
+
+```text
+APPLE_CERTIFICATE          # base64 content of the .p12
+APPLE_CERTIFICATE_PASSWORD # password used when exporting the .p12
+KEYCHAIN_PASSWORD          # temporary keychain password for the runner
+APPLE_ID                   # Apple ID email
+APPLE_PASSWORD             # app-specific password
+APPLE_TEAM_ID              # Apple Developer Team ID
+APPLE_SIGNING_IDENTITY     # optional: "Developer ID Application: Name (TEAMID)"
+```
+
+Generate `APPLE_CERTIFICATE`:
 
 ```sh
 openssl base64 -A -in DeveloperIDApplication.p12 -out apple_certificate_base64.txt
 ```
 
-## Flujo recomendado
+## Recommended Flow
 
-1. Generar un certificado **Developer ID Application** desde Apple Developer.
-2. Exportarlo desde Keychain como `.p12`.
-3. Guardar el `.p12` como base64 en `APPLE_CERTIFICATE`.
-4. Configurar los secrets de Apple en GitHub.
-5. Cambiar el workflow de release para firmar con `APPLE_SIGNING_IDENTITY`.
-6. Notarizar el bundle con Apple antes de publicarlo.
+1. Create a **Developer ID Application** certificate in Apple Developer.
+2. Export it from Keychain as `.p12`.
+3. Store the base64 `.p12` in `APPLE_CERTIFICATE`.
+4. Configure Apple secrets in GitHub.
+5. Update the release workflow to sign with `APPLE_SIGNING_IDENTITY`.
+6. Notarize the bundle with Apple before publishing.
 
-Cuando esto quede activo, el artefacto recomendado para usuarios finales deberia ser un `.dmg` firmado y notarizado.
+Once this is active, the recommended user-facing macOS artifact should be a signed and notarized `.dmg`.
 
-## Servicios que simplifican el proceso
+## Services That Simplify the Process
 
-- **Codemagic**: simplifica code signing y App Store Connect para macOS.
-- **CrabNebula Cloud**: buena opcion para apps Tauri, sobre todo si despues se necesita updater/distribucion.
-- **GitHub Actions**: suficiente para este proyecto si los secrets quedan bien configurados.
+- **Codemagic**: simplifies code signing and App Store Connect setup for macOS.
+- **CrabNebula Cloud**: strong fit for Tauri apps, especially if an updater/distribution platform is needed later.
+- **GitHub Actions**: sufficient for this project once Apple secrets are configured.
 
-Ningun servicio serio evita la cuenta Apple Developer ni el certificado Developer ID; solo automatizan el manejo de credenciales, firma, notarizacion y publicacion.
+No serious service removes the need for a paid Apple Developer account and Developer ID certificate. They automate credential handling, signing, notarization, and publishing.

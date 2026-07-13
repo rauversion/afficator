@@ -1,49 +1,49 @@
 # Rekordbox Convert
 
-Rekordbox Convert importa un XML exportado desde Rekordbox, permite seleccionar playlists, convierte los archivos necesarios a AIFF y exporta un XML nuevo con reemplazos seguros.
+Rekordbox Convert imports a Rekordbox XML export, lets the user select playlists, converts the required audio files to AIFF, and exports a new XML with safe `Location` replacements.
 
-## Flujo
+## Workflow
 
-1. Exporta tu libreria o playlists desde Rekordbox como XML.
-2. Abre Rau Studio en **File Conversion > Rekordbox Convert**.
-3. Importa el XML.
-4. Revisa playlists, tracks y reporte.
-5. Selecciona una o varias playlists.
-6. Crea un plan si quieres revisar el preflight.
-7. Convierte por fila, por playlist o por multiples playlists.
-8. Revisa el terminal de `ffmpeg`.
-9. Exporta un XML nuevo.
-10. Importa ese XML en Rekordbox.
+1. Export a library or playlist set from Rekordbox as XML.
+2. Open **File Conversion > Rekordbox Convert** in Rau Studio.
+3. Import the XML.
+4. Review playlists, tracks, converted files, the conversion plan, and the report.
+5. Select one or more playlists.
+6. Create a plan if you want to run a preflight first.
+7. Convert by row, by active playlist, or by multiple selected playlists.
+8. Watch the fixed terminal for `ffmpeg` progress and errors.
+9. Export a new XML.
+10. Import the exported XML into Rekordbox.
 
-Guia visual de importacion: [Importar XML en Rekordbox](rekordbox-import/README.md).
+Visual import guide: [Import Rau Studio XML into Rekordbox](rekordbox-import/README.md).
 
-## Export XML seguro
+## Safe XML Export
 
-El XML original queda intacto. El export genera un archivo nuevo con extension sugerida:
+The original XML is never modified. Rau Studio writes a new XML with a suggested suffix:
 
 ```text
 original.rau-studio.aiff.xml
 ```
 
-El export mantiene toda la coleccion del XML original:
+The exported XML keeps the full collection from the original XML:
 
-- tracks no convertidos quedan apuntando a su `Location` original;
-- tracks convertidos apuntan al AIFF en `converted/`;
-- playlists y estructura se preservan.
+- tracks that were not converted keep their original `Location`;
+- converted tracks point to the AIFF file inside `converted/`;
+- playlists and folder structure are preserved.
 
-Si faltan conversiones necesarias o hay problemas bloqueantes, la app reporta el error antes de escribir un export ambiguo.
+If required conversions are missing or blocking issues exist, the app reports the problem before writing an ambiguous export.
 
-## Conversion AIFF
+## AIFF Conversion
 
-Los archivos se convierten con `ffmpeg` al perfil compatible:
+Conversion uses `ffmpeg` with a conservative compatibility profile:
 
-- AIFF
-- `pcm_s16be`
-- 44.1 kHz
-- stereo
-- sin overwrite
+- AIFF container;
+- `pcm_s16be`;
+- 44.1 kHz;
+- stereo;
+- no overwrite.
 
-Los originales no se reemplazan.
+Original files are not replaced.
 
 ```text
 /Music/Artist/Track.flac
@@ -52,27 +52,27 @@ Los originales no se reemplazan.
 
 ## Plan
 
-El boton **Crear plan** hace un preflight. No convierte y no exporta.
+The **Create Plan** button runs a preflight. It does not convert files and it does not export XML.
 
-Sirve para revisar:
+The plan helps review:
 
-- tracks que se convertiran;
-- tracks que ya son AIFF;
-- AIFF existentes reutilizables;
-- archivos faltantes;
-- formatos no soportados;
-- bloqueos antes de exportar.
+- tracks that will be converted;
+- tracks that are already AIFF;
+- existing converted AIFF files that can be reused;
+- missing files;
+- unsupported formats;
+- blocking issues before export.
 
-## Interfaz
+## Interface
 
-- Sidebar de playlists con seleccion y progreso.
-- Tabla de tracks de la playlist activa.
-- Player por fila.
-- Tabs de playlist, convertidos, plan y reporte.
-- Terminal fijo y expandible.
-- Concurrencia controlada.
+- Scrollable playlist sidebar with selection, processing indicators, and converted counters.
+- Track table for the active playlist.
+- Row-level player and actions.
+- Tabs for playlist files, converted files, plan, and report.
+- Fixed expandable terminal for conversion and export logs.
+- Controlled concurrency selector.
 
-## Archivos relevantes
+## Relevant Files
 
 - `src/App.tsx`
 - `src-tauri/src/lib.rs`

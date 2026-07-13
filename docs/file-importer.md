@@ -1,42 +1,42 @@
 # File Importer
 
-File Importer convierte archivos locales a AIFF sin depender de un XML de Rekordbox. Es util para preparar carpetas completas de musica o selecciones manuales antes de usarlas en otros flujos.
+File Importer converts local audio files to AIFF without requiring a Rekordbox XML. It is useful for preparing folders, external drives, or manual selections before using them in other workflows.
 
-## Objetivo
+## Goals
 
-- Abrir una carpeta o seleccionar archivos sueltos.
-- Mostrar la importacion actual sin mezclarla con todo el historial.
-- Guardar cada importacion como grupo navegable.
-- Convertir solo cuando el usuario lo ordena.
-- Mantener referencias, estados y eventos en SQLite.
-- Mostrar progreso y logs de `ffmpeg` en tiempo real.
+- Open a folder or select individual files.
+- Show the current import without mixing it with global history.
+- Save each import as a browsable group.
+- Convert only when the user explicitly starts conversion.
+- Keep file references, statuses, and events in SQLite.
+- Show `ffmpeg` progress and logs in realtime.
 
-## Flujo de uso
+## Workflow
 
-1. Entra a **File Conversion > File Conversion**.
-2. Usa **Carpeta** o **Archivos**.
-3. Revisa la tab **Importacion actual**.
-4. Selecciona archivos o usa el checkbox general.
-5. Ajusta la concurrencia.
-6. Ejecuta **Convertir seleccionados** o convierte por fila.
-7. Revisa el terminal inferior para eventos y errores.
-8. Abre **Grupos** para volver a una importacion anterior.
-9. Abre **Todos** para ver el historial global.
+1. Open **File Conversion > File Conversion**.
+2. Use **Folder** or **Files**.
+3. Review the **Current Import** tab.
+4. Select files or use the header checkbox.
+5. Adjust concurrency if needed.
+6. Run **Convert Selected** or convert a single row.
+7. Watch the bottom terminal for events and errors.
+8. Open **Groups** to revisit a previous import.
+9. Open **All** to inspect the global file history.
 
-Elegir carpeta o archivos no encola conversiones automaticamente. Los items quedan en estado `pending` hasta que se pulse una accion de conversion.
+Choosing a folder or files does not enqueue conversion automatically. Items stay `pending` until the user starts a conversion action.
 
-## Salida de archivos
+## Output
 
-Los AIFF se escriben dentro de una carpeta `converted/` ubicada junto al archivo fuente.
+AIFF files are written inside a `converted/` folder next to the source file.
 
 ```text
 /Music/Artist/Track.flac
 /Music/Artist/converted/Track.aiff
 ```
 
-Si el original ya es AIFF/AIF, se marca como `already_aiff` y no se duplica. Si el AIFF convertido ya existe, se marca como `already_converted` y se reutiliza.
+If the source is already AIFF/AIF, it is marked `already_aiff` and not duplicated. If the target AIFF already exists, it is marked `already_converted` and reused.
 
-## Formatos soportados
+## Supported Formats
 
 - FLAC
 - MP3
@@ -46,11 +46,11 @@ Si el original ya es AIFF/AIF, se marca como `already_aiff` y no se duplica. Si 
 - AAC
 - AIFF / AIF
 
-AIFF/AIF se considera formato final.
+AIFF/AIF is considered a final format.
 
-## Conversion
+## Conversion Command
 
-La conversion usa el mismo perfil base del core:
+The conversion uses the same core profile:
 
 ```sh
 ffmpeg \
@@ -68,76 +68,76 @@ ffmpeg \
   output.aiff
 ```
 
-El flag `-n` evita sobrescribir archivos existentes.
+The `-n` flag prevents overwriting existing files.
 
 ## Tabs
 
-### Importacion actual
+### Current Import
 
-Muestra solo la ultima carpeta o seleccion manual abierta. Esta vista se refresca cada vez que se importa una carpeta nueva o se abre un grupo.
+Shows only the latest folder or manual selection. This view refreshes whenever a new folder is imported or a saved group is opened.
 
-### Todos
+### All
 
-Muestra todas las referencias guardadas en SQLite. Sirve como historial global.
+Shows every file reference stored in SQLite. This is the global history.
 
-### Grupos
+### Groups
 
-Lista grupos persistidos:
+Lists persisted import groups:
 
-- `folder`: una carpeta escaneada, con flag recursivo o no recursivo.
-- `files`: una seleccion manual de archivos.
+- `folder`: a scanned folder, recursive or non-recursive;
+- `files`: a manual file selection.
 
-Al abrir un grupo, sus archivos pasan a ser la importacion actual.
+Opening a group makes its files the current import.
 
-## Estados
+## Statuses
 
-| Estado | Significado |
+| Status | Meaning |
 | --- | --- |
-| `pending` | Registrado, aun no enviado a conversion |
-| `queued` | En cola para `ffmpeg` |
-| `running` | Conversion en proceso |
-| `converted` | AIFF generado correctamente |
-| `already_converted` | El AIFF destino ya existia |
-| `already_aiff` | El original ya era AIFF/AIF |
-| `failed` | Conversion o validacion fallida |
+| `pending` | Registered but not sent to conversion |
+| `queued` | Waiting for `ffmpeg` |
+| `running` | Conversion in progress |
+| `converted` | AIFF generated successfully |
+| `already_converted` | Target AIFF already existed |
+| `already_aiff` | Source was already AIFF/AIF |
+| `failed` | Conversion or validation failed |
 
-## Persistencia SQLite
+## SQLite Persistence
 
-Todo se guarda en SQLite local, actualmente en el archivo legacy `aifficator.sqlite3` dentro del directorio de datos de la app.
+Everything is stored in the local SQLite database, currently the legacy `aifficator.sqlite3` file inside the app data directory.
 
-Tablas principales:
+Main tables:
 
-- `local_conversion_items`: una referencia unica por `source_path`.
-- `local_conversion_groups`: grupos de carpeta o seleccion manual.
-- `local_conversion_group_items`: relacion many-to-many entre grupos y archivos.
-- `local_conversion_events`: logs y eventos asociados a conversiones.
+- `local_conversion_items`: one unique reference per `source_path`.
+- `local_conversion_groups`: folder or manual-selection groups.
+- `local_conversion_group_items`: many-to-many relation between groups and files.
+- `local_conversion_events`: logs and conversion events.
 
-La separacion entre items y grupos permite que un archivo exista una sola vez en el historial global, pero aparezca en varias importaciones.
+Separating items from groups lets a file exist once in global history while appearing in multiple imports.
 
-## Terminal y eventos
+## Terminal and Events
 
-El terminal inferior muestra:
+The fixed bottom terminal shows:
 
-- inicio y fin de batches;
-- errores de archivos no encontrados;
-- lineas relevantes de `ffmpeg`;
-- progreso por archivo;
-- reutilizacion de AIFF existentes;
-- fallas de escritura o permisos.
+- batch start and finish;
+- missing-file errors;
+- relevant `ffmpeg` lines;
+- per-file progress;
+- reuse of existing AIFF files;
+- write and permission failures.
 
-El terminal parte contraido y se puede expandir cuando se necesita inspeccionar detalles.
+The terminal starts collapsed and can be expanded for detailed inspection.
 
-## Concurrencia
+## Concurrency
 
-La UI propone una concurrencia default segun cores logicos:
+The UI proposes a default concurrency based on logical CPU cores:
 
 ```text
-default = min(4, max(1, floor(cores_logicos / 2)))
+default = min(4, max(1, floor(logical_cores / 2)))
 ```
 
-El backend tambien limita la concurrencia entre `1` y `4`.
+The backend also clamps concurrency between `1` and `4`.
 
-## Comandos Tauri
+## Tauri Commands
 
 - `local_conversion_list_items`
 - `local_conversion_list_groups`
@@ -147,7 +147,7 @@ El backend tambien limita la concurrencia entre `1` y `4`.
 - `local_conversion_convert_items`
 - `local_conversion_delete_item`
 
-## Archivos relevantes
+## Relevant Files
 
 - `src/FileConversionPage.tsx`
 - `src-tauri/src/local_conversion.rs`

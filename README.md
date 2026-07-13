@@ -1,144 +1,147 @@
 # Rau Studio
 
-Suite nativa local para preparar audio, convertir archivos, trabajar playlists de Rekordbox, generar masters y crear visuales para releases.
+Local native suite for preparing audio, converting files, managing Rekordbox playlists, generating masters, creating release visuals, and building smarter playlists from indexed metadata.
 
-El proyecto usa Tauri 2, Rust, React, TypeScript, SQLite y `ffmpeg`. La app evita modificar archivos originales: los convertidos se escriben en salidas nuevas y el historial queda guardado localmente.
+Rau Studio uses Tauri 2, Rust, React, TypeScript, SQLite, OpenAI-compatible AI features, and `ffmpeg`. The app is local-first: it does not replace original files, it stores operational history in a local SQLite database, and audio processing runs on the user's machine.
 
-<img width="1262" height="783" alt="image" src="https://github.com/user-attachments/assets/6f9d3936-4506-4246-9ddf-35682078e9b7" />
+<img width="1262" height="783" alt="Rau Studio" src="https://github.com/user-attachments/assets/6f9d3936-4506-4246-9ddf-35682078e9b7" />
 
+## Modules
 
-## Modulos
+- [Rekordbox Convert](docs/rekordbox-convert.md): import Rekordbox XML, select playlists, convert tracks to AIFF, and export a safe replacement XML.
+- [File Importer](docs/file-importer.md): import local files or folders, create conversion groups, convert to AIFF, and keep history in SQLite.
+- [Mastering](docs/mastering.md): generate AIFF masters with presets, metadata, cover art, technical analysis, realtime events, and retryable history.
+- [Turn](docs/turn.md): generate MP4 spinning-record mockups from local cover art and audio, with range preview and realtime progress.
+- [Smart Playlists](docs/smart-playlists.md): index Rekordbox XML into SQLite, run lexical/vector search, browse artists/albums, inspect taxonomies, and generate playlist suggestions with Playlist Copilot.
+- [Import Rau Studio XML into Rekordbox](docs/rekordbox-import/README.md): visual guide for importing exported XML back into Rekordbox.
+- [macOS Signing and Notarization](docs/macos-signing.md): distribution notes for unsigned local builds and signed releases.
+- [Architecture](docs/architecture.md): technical notes about the desktop, Rust, SQLite, and UI structure.
 
-- [Rekordbox Convert](docs/rekordbox-convert.md): importa XML de Rekordbox, convierte tracks de playlists a AIFF y exporta un XML seguro.
-- [File Importer](docs/file-importer.md): importa archivos o carpetas locales, crea grupos de trabajo, convierte a AIFF y mantiene historial en SQLite.
-- [Mastering](docs/mastering.md): genera masters AIFF con presets, metadata, cover, analisis tecnico, eventos en tiempo real y reintentos.
-- [Turn](docs/turn.md): genera videos MP4 de discos girando desde cover y audio local, con preview por rango, progreso realtime e historial.
-- [Importar XML en Rekordbox](docs/rekordbox-import/README.md): guia visual para importar el XML exportado por Rau Studio.
-- [Arquitectura](docs/architecture.md): notas tecnicas de la estructura interna.
+## Principles
 
-## Principios
-
-- No reemplaza archivos fuente.
-- No modifica el XML original de Rekordbox.
-- No pisa AIFF existentes por defecto.
-- Guarda estado operativo en SQLite local.
-- Muestra progreso y logs en tiempo real.
-- Usa concurrencia controlada para evitar saturar CPU, disco y memoria.
+- Original source files are never replaced.
+- The original Rekordbox XML is never modified.
+- Existing AIFF files are reused instead of overwritten.
+- Operational state is stored in local SQLite.
+- Long-running work reports realtime progress and terminal logs.
+- Conversion jobs use controlled concurrency to avoid saturating CPU, disk, and memory.
+- AI features are optional and work with local fallbacks when no OpenAI API key is configured.
 
 ## Stack
 
-| Capa | Tecnologia |
+| Layer | Technology |
 | --- | --- |
 | Desktop | Tauri 2 |
 | Core | Rust |
 | UI | React + TypeScript |
-| Estilos | Tailwind + componentes estilo shadcn |
-| Audio | ffmpeg / ffprobe |
-| Persistencia | SQLite |
-| Build frontend | Vite |
+| Styling | Tailwind + shadcn-style components |
+| Audio/video | ffmpeg / ffprobe |
+| Persistence | SQLite |
+| Search | SQLite FTS + optional OpenAI embeddings |
+| Frontend build | Vite |
 
-## Requisitos
+## Requirements
 
-- Rust estable.
-- Node.js y npm.
-- `ffmpeg` y `ffprobe` disponibles en `PATH`.
+- Stable Rust.
+- Node.js and npm.
+- `ffmpeg` and `ffprobe` available in `PATH`, or configured in **Settings**.
 
-En macOS:
+On macOS:
 
 ```sh
 brew install ffmpeg
 ```
 
-## Comandos
+## Commands
 
-Instalar dependencias:
+Install dependencies:
 
 ```sh
 npm install
 ```
 
-Levantar la app nativa en desarrollo:
+Run the native app in development:
 
 ```sh
 npm run tauri:dev
 ```
 
-Levantar solo la UI web:
+Run only the web UI:
 
 ```sh
 npm run dev
 ```
 
-Compilar frontend:
+Build the frontend:
 
 ```sh
 npm run build
 ```
 
-Compilar la app nativa bundleada:
+Build the native bundled app:
 
 ```sh
 npm run tauri:build
 ```
 
-Los bundles quedan bajo:
+Bundles are generated under:
 
 ```text
-target/release/bundle/
+src-tauri/target/release/bundle/
+```
+
+Run the Rust core tests:
+
+```sh
+cargo test -p aifficator-core
 ```
 
 ## Releases
 
-GitHub Actions genera instaladores descargables para macOS, Windows y Linux.
+GitHub Actions builds downloadable installers for macOS, Windows, and Linux.
 
-Opciones:
+Release options:
 
-- Ejecutar manualmente **Build installers** desde la tab **Actions**.
-- Crear un tag `v*` para publicar un GitHub Release con artefactos adjuntos.
+- Run **Build installers** manually from the GitHub **Actions** tab.
+- Push a `v*` tag to publish a GitHub Release with attached artifacts.
 
-Ejemplo:
-
-```sh
-git tag v0.1.7
-git push origin v0.1.7
-```
-
-### macOS no firmado
-
-Los builds de macOS publicados actualmente no estan firmados ni notarizados con Apple Developer ID. Gatekeeper puede mostrar el aviso "Apple could not verify..." al abrir la app descargada.
-
-Para probarla localmente, descomprime el `.app.tar.gz` y quita la marca de quarantine:
+Example:
 
 ```sh
-cd ~/Downloads
-tar -xzf RauStudio_0.1.7_arm64.app.tar.gz
-xattr -dr com.apple.quarantine "Rau Studio.app"
-open "Rau Studio.app"
+git tag v0.1.8
+git push origin v0.1.8
 ```
 
-Si ya la copiaste a `/Applications`:
-
-```sh
-xattr -dr com.apple.quarantine "/Applications/Rau Studio.app"
-open "/Applications/Rau Studio.app"
-```
-
-El bypass es solo para testing local. Para distribuir sin advertencias hay que firmar y notarizar; los detalles estan en [docs/macos-signing.md](docs/macos-signing.md).
-
-Artefactos esperados:
+Expected artifacts:
 
 - macOS Apple Silicon: `_arm64.app.tar.gz`
 - macOS Intel: `_x86_64.app.tar.gz`
 - Windows: `.exe` / `.msi`
 - Linux: `.AppImage` / `.deb`
 
-Probar el core Rust:
+## Unsigned macOS Builds
+
+Current public macOS builds may be unsigned and not notarized. Gatekeeper can show "Apple could not verify..." when opening a downloaded app.
+
+For local testing, extract the `.app.tar.gz` and remove the quarantine attribute:
 
 ```sh
-cargo test -p aifficator-core
+cd ~/Downloads
+tar -xzf RauStudio_0.1.8_arm64.app.tar.gz
+xattr -dr com.apple.quarantine "Rau Studio.app"
+open "Rau Studio.app"
 ```
 
-## Estructura
+If the app was already copied to `/Applications`:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Rau Studio.app"
+open "/Applications/Rau Studio.app"
+```
+
+This bypass is only for local testing. For distribution without warnings, the app must be signed and notarized. Details are in [docs/macos-signing.md](docs/macos-signing.md).
+
+## Project Structure
 
 ```text
 .
@@ -151,23 +154,25 @@ cargo test -p aifficator-core
 `-- README.md
 ```
 
-## Troubleshooting rapido
+## Quick Troubleshooting
 
-Si `ffmpeg` no corre:
+Check `ffmpeg` and `ffprobe`:
 
 ```sh
 ffmpeg -version
 ffprobe -version
 ```
 
-Si el WebSocket de Vite falla en desarrollo, reinicia:
+If the Vite websocket fails during development, restart the native dev server:
 
 ```sh
 npm run tauri:dev
 ```
 
-Si Rekordbox no encuentra archivos luego de importar XML, revisa que los `Location` del XML exportado apunten a archivos reales en disco.
+If Rekordbox cannot find files after importing XML, confirm that each exported `Location` points to an existing local file and that converted files still exist inside `converted/` folders.
 
-## Licencia
+If files live on an external macOS drive and playback/conversion fails, grant Rau Studio access to removable volumes or Full Disk Access, and verify the drive is not mounted read-only.
+
+## License
 
 MIT

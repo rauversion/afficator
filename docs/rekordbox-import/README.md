@@ -1,73 +1,73 @@
-# Importar XML generado en Rekordbox
+# Import Rau Studio XML into Rekordbox
 
-Esta guia resume solo la parte de importacion del HTML adjunto: como abrir en Rekordbox el XML exportado por Rau Studio y traer sus playlists a tu libreria.
+This guide covers only the import part of the attached reference documentation: how to open the XML exported by Rau Studio in Rekordbox and bring its playlists into your library.
 
-El punto clave: el XML no contiene audio embebido. Rekordbox lee las rutas `Location` del XML, por eso los archivos originales y las carpetas `converted/` deben seguir en el mismo lugar.
+Key point: the XML does not contain embedded audio. Rekordbox reads file paths from each track `Location`, so the original files and `converted/` folders must remain in place.
 
-## 1. Activar el panel de rekordbox xml
+## 1. Enable the rekordbox xml Panel
 
-La funcion `rekordbox xml` no siempre viene visible por defecto.
+The `rekordbox xml` browser panel is not always visible by default.
 
-En Rekordbox, abre:
+In Rekordbox, open:
 
 ```text
 Preferences > View > Layout
 ```
 
-Activa el checkbox `rekordbox xml`.
+Enable the `rekordbox xml` checkbox.
 
-![Activar panel rekordbox xml](./rekordbox-xml-display.png)
+![Enable rekordbox xml panel](./rekordbox-xml-display.png)
 
-## 2. Seleccionar el XML exportado por Rau Studio
+## 2. Select the XML Exported by Rau Studio
 
-Sin salir de preferencias, abre:
+Without leaving preferences, open:
 
 ```text
 Advanced > Database
 ```
 
-En la seccion `Imported Library`, pulsa `Browse` y selecciona el XML que exportaste desde Rau Studio.
+In the `Imported Library` section, click `Browse` and select the XML exported from Rau Studio.
 
-![Seleccionar Imported Library](./rekordbox-xml-library.png)
+![Select Imported Library](./rekordbox-xml-library.png)
 
-Cuando Rekordbox pida el archivo, elige el XML exportado y pulsa `Open`. Despues puedes cerrar la ventana de preferencias.
+When Rekordbox asks for the file, choose the exported XML and click `Open`. You can then close the preferences window.
 
-![Abrir archivo XML](./rekordbox-import-xml-file.png)
+![Open XML file](./rekordbox-import-xml-file.png)
 
-## 3. Abrir la libreria XML dentro de Rekordbox
+## 3. Open the XML Library in Rekordbox
 
-En el browser de Rekordbox, abre la categoria `rekordbox xml`.
+In the Rekordbox browser, open the `rekordbox xml` category.
 
-Ahi deberias ver:
+You should see:
 
-- `All Tracks`: todos los tracks incluidos en el XML.
-- `Playlists`: las playlists exportadas.
+- `All Tracks`: every track included in the XML.
+- `Playlists`: the exported playlist structure.
 
-![Panel rekordbox xml](./rekordbox-xml-library-tab.png)
+![rekordbox xml panel](./rekordbox-xml-library-tab.png)
 
-Si vuelves a exportar el XML desde Rau Studio, usa el boton de refrescar junto a `All Tracks` para recargarlo sin configurar todo otra vez.
+If you export the XML again from Rau Studio, use the refresh button next to `All Tracks` to reload it without configuring the XML path again.
 
-![Icono refrescar XML](./rekordbox-refresh-icon.png)
+![Refresh XML icon](./rekordbox-refresh-icon.png)
 
-## 4. Importar playlists o tracks
+## 4. Import Playlists or Tracks
 
-Para importar una playlist:
+To import a playlist:
 
-1. Abre `rekordbox xml`.
-2. Abre `Playlists`.
-3. Haz click derecho sobre la playlist.
-4. Elige `Import Playlist`.
+1. Open `rekordbox xml`.
+2. Open `Playlists`.
+3. Right-click the playlist.
+4. Choose `Import Playlist`.
 
-Rekordbox creara la playlist dentro de tu libreria y analizara los tracks si lo necesita.
+Rekordbox creates the playlist inside your library and analyzes tracks if needed.
 
-Tambien puedes importar tracks sueltos con click derecho y `Import To Collection`.
+You can also import individual tracks by right-clicking and choosing `Import To Collection`.
 
-## Notas para Rau Studio
+## Rau Studio Notes
 
-- El XML exportado por Rau Studio mantiene la coleccion completa.
-- Los tracks no convertidos conservan su `Location` original.
-- Los tracks convertidos apuntan a `converted/*.aiff`.
-- Si mueves la musica o borras una carpeta `converted/`, Rekordbox puede mostrar archivos faltantes.
-- Para probar el flujo, conviene importar primero una playlist chica.
+- The XML exported by Rau Studio keeps the full collection.
+- Tracks that were not converted keep their original `Location`.
+- Converted tracks point to `converted/*.aiff`.
+- If music is moved or a `converted/` folder is deleted, Rekordbox can show missing files.
+- For a first test, import a small playlist before importing a large set.
 
-Referencia original del HTML adjunto: `https://www.djuced.com/kb/djuced-rekordbox-xml/`.
+Original reference from the attached HTML: `https://www.djuced.com/kb/djuced-rekordbox-xml/`.

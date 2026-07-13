@@ -1,162 +1,162 @@
 # Mastering
 
-Mastering genera un AIFF masterizado desde un archivo local. El flujo combina presets, metadata embebida, cover opcional, analisis tecnico con `ffmpeg`/`ffprobe`, feedback del usuario, una receta de procesamiento y un historial explorable guardado en SQLite.
+Mastering generates a mastered AIFF from a local audio file. The workflow combines presets, embedded metadata, optional cover art, technical analysis through `ffmpeg`/`ffprobe`, user feedback, a processing recipe, and an explorable SQLite history.
 
-## Objetivo
+## Goals
 
-- Elegir un archivo de audio local.
-- Seleccionar un preset de destino.
-- Agregar feedback y notas de referencia.
-- Usar AI opcionalmente para interpretar el feedback y construir una politica de mastering.
-- Renderizar un master AIFF.
-- Escribir tags de metadata y cover art opcional.
-- Guardar receta, analisis antes/despues, eventos y resultado.
-- Reabrir cualquier job desde el historial.
-- Reintentar jobs con feedback actualizado.
+- Choose a local audio file.
+- Select a target preset.
+- Add feedback and reference notes.
+- Optionally use AI to interpret feedback and build a mastering policy.
+- Render a mastered AIFF.
+- Write metadata tags and optional cover art.
+- Store the recipe, before/after analysis, events, and output path.
+- Reopen any job from history.
+- Retry jobs with updated feedback.
 
-## Flujo de uso
+## Workflow
 
-1. Entra a **Mastering** desde el sidebar.
-2. Pulsa **Elegir audio**.
-3. Selecciona un preset.
-4. Escribe feedback y notas de referencia si aplica.
-5. Activa o desactiva **AI**.
-6. Pulsa **Generar master**.
-7. Revisa el progreso en la pantalla y en el terminal inferior.
-8. Escucha original y master desde el detalle.
-9. Abre la carpeta del resultado o descarga el AIFF.
-10. Usa **Reintentar** para correr el mismo job con ajustes.
+1. Open **Mastering** from the sidebar.
+2. Click **Choose Audio**.
+3. Select a preset.
+4. Enter feedback and reference notes if needed.
+5. Enable or disable **AI**.
+6. Click **Generate Master**.
+7. Watch progress in the screen and in the fixed bottom terminal.
+8. Listen to the source and the master from the job detail.
+9. Open the result folder or download the AIFF.
+10. Use **Retry** to run the same job again with adjustments.
 
-## Formatos de salida
+## Output Formats
 
-La etapa DSP renderiza un WAV temporal de trabajo. Al final, la app empaqueta el resultado como AIFF y escribe metadata.
+The DSP stage renders a temporary working WAV. The final packaging stage writes the result as AIFF with metadata.
 
-| Formato | Codec | Uso |
+| Format | Codec | Use |
 | --- | --- | --- |
-| AIFF 24-bit | `pcm_s24be` | Master/archive con mas resolucion |
-| AIFF CDJ safe 16-bit | `pcm_s16be`, 44.1 kHz, stereo | Compatibilidad conservadora con Rekordbox/CDJ/XDJ |
+| AIFF 24-bit | `pcm_s24be` | Master/archive with higher resolution |
+| AIFF CDJ safe 16-bit | `pcm_s16be`, 44.1 kHz, stereo | Conservative Rekordbox/CDJ/XDJ compatibility |
 
-Los jobs antiguos que ya existian como WAV se siguen leyendo desde el historial.
+Older jobs that already exist as WAV are still readable from history.
 
-## Metadata y cover
+## Metadata and Cover Art
 
-El formulario permite definir:
+The form supports:
 
-- titulo;
-- artista;
+- title;
+- artist;
 - album;
-- genero;
-- ano;
-- numero de track;
+- genre;
+- year;
+- track number;
 - BPM;
-- tonalidad;
+- key;
 - ISRC;
-- compositor;
+- composer;
 - label;
 - copyright;
-- comentario;
-- cover JPG/PNG.
+- comment;
+- JPG/PNG cover art.
 
-La metadata se guarda en SQLite y se escribe en el AIFF usando ID3v2 dentro del contenedor AIFF. El cover se intenta incrustar como `attached_pic`; si falla, la app genera el AIFF sin cover, deja un warning en el reporte y mantiene el master utilizable.
+Metadata is stored in SQLite and written into the AIFF using ID3v2 inside the AIFF container. Cover art is attempted as `attached_pic`; if that fails, the app still writes a usable AIFF, records a packaging warning, and keeps the master available.
 
 ## Presets
 
-| Preset | Target | True peak | Uso |
+| Preset | Target | True peak | Use |
 | --- | ---: | ---: | --- |
-| Streaming clean | -14 LUFS | -1.0 dB | Limpio, dinamico y seguro para plataformas |
-| Club loud | -9 LUFS | -0.7 dB | Fuerte y energetico, cuidando transientes |
-| Demo balanced | -11.5 LUFS | -1.0 dB | Presentable y balanceado |
-| Vinyl premaster | -15 LUFS | -3.0 dB | Conservador, con headroom y sin hard limiting |
+| Streaming clean | -14 LUFS | -1.0 dB | Clean, dynamic, platform-safe |
+| Club loud | -9 LUFS | -0.7 dB | Loud and energetic while preserving transients |
+| Demo balanced | -11.5 LUFS | -1.0 dB | Presentable and balanced |
+| Vinyl premaster | -15 LUFS | -3.0 dB | Conservative, with headroom and no hard limiting |
 
-`Demo balanced` es el perfil default de la UI.
+`Demo balanced` is the default UI profile.
 
 ## Pipeline
 
-El backend ejecuta un job asincronico con estas etapas:
+The backend runs an asynchronous job with these stages:
 
-1. `queue`: marca el job como `running`.
-2. `source`: valida que el audio fuente exista.
-3. `analysis_before`: analiza loudness, peaks, rango dinamico, clipping, DC offset y metadata.
-4. `recipe`: genera una receta usando preset, feedback, referencia y AI opcional.
-5. `render`: renderiza un WAV temporal 24-bit con la cadena DSP.
-6. `analysis_after`: reanaliza el render temporal.
-7. `loudness_correction`: aplica pasadas adicionales si quedo bajo el target y sigue siendo seguro.
-8. `packaging`: empaqueta AIFF final, escribe metadata y valida tags/cover con `ffprobe`.
-9. `completed`: guarda master final y sidecars JSON.
+1. `queue`: mark the job as `running`.
+2. `source`: validate that the source audio exists.
+3. `analysis_before`: analyze loudness, peaks, dynamic range, clipping, DC offset, and metadata.
+4. `recipe`: generate a recipe from the preset, feedback, reference notes, and optional AI.
+5. `render`: render a temporary 24-bit WAV with the DSP chain.
+6. `analysis_after`: analyze the temporary render.
+7. `loudness_correction`: apply additional passes if the render is below target and still safe.
+8. `packaging`: package the final AIFF, write metadata, and validate tags/cover with `ffprobe`.
+9. `completed`: store the final master and sidecar JSON files.
 
-Si una etapa falla, el job queda en `failed` con `error_message` y el evento se registra en el historial.
+If a stage fails, the job becomes `failed` with an `error_message` and a persisted event.
 
-## Analisis tecnico
+## Technical Analysis
 
-El analisis usa:
+Analysis uses:
 
-- `ffprobe` para duracion, sample rate y canales.
-- `ffmpeg` con `ebur128=peak=true` para LUFS integrado y true peak.
-- `ffmpeg` con `astats` para sample peak, DC offset y crest factor.
+- `ffprobe` for duration, sample rate, and channels.
+- `ffmpeg` with `ebur128=peak=true` for integrated LUFS and true peak.
+- `ffmpeg` with `astats` for sample peak, DC offset, and crest factor.
 
-Los datos se guardan como JSON en:
+Data is saved as JSON in:
 
 - `analysis_before_json`
 - `analysis_after_json`
 
 ## AI
 
-La AI es opcional. Cuando esta activa y hay API key configurada, el backend llama a OpenAI para:
+AI is optional. When enabled and an OpenAI API key is configured, the backend calls OpenAI to:
 
-- interpretar feedback del usuario;
-- transformar notas de referencia en parametros;
-- producir una politica de mastering compatible con el preset.
+- interpret user feedback;
+- turn reference notes into parameters;
+- produce a mastering policy compatible with the selected preset.
 
-Si no se usa AI, el sistema genera una receta deterministica basada en preset y analisis.
+If AI is disabled or unavailable, the system generates a deterministic recipe from the preset and analysis.
 
-La API key se configura en **Settings** y se guarda cifrada en SQLite local.
+The API key is configured in **Settings** and encrypted in local SQLite.
 
-## Salidas
+## Outputs
 
-Cada job crea una carpeta bajo datos de la app:
+Each job creates a folder under app data:
 
 ```text
 <app-data>/mastering/jobs/<job-id>/
 ```
 
-Archivos principales:
+Main files:
 
-- AIFF final masterizado.
-- `recipe.json`
-- `analysis_before.json`
-- `analysis_after.json`
-- `metadata.json`
-- `package_report.json`
+- final mastered AIFF;
+- `recipe.json`;
+- `analysis_before.json`;
+- `analysis_after.json`;
+- `metadata.json`;
+- `package_report.json`.
 
-El path final queda guardado en `mastering_jobs.output_path`.
+The final path is stored in `mastering_jobs.output_path`.
 
-## Historial
+## History
 
-El panel **Historial** permite:
+The **History** tab supports:
 
-- abrir jobs anteriores;
-- ver estado;
-- renderizar de nuevo con **Reintentar**;
-- conservar feedback y notas de referencia;
-- revisar eventos del job;
-- eliminar jobs terminados o fallidos.
+- opening previous jobs;
+- viewing status;
+- retrying with **Retry**;
+- preserving feedback and reference notes;
+- reviewing job events;
+- deleting completed or failed jobs.
 
-El historial se alimenta desde SQLite y no depende de que la app siga abierta durante la misma sesion.
+History is loaded from SQLite and does not depend on the app staying open in the same session.
 
-## Estados
+## Statuses
 
-| Estado | Significado |
+| Status | Meaning |
 | --- | --- |
-| `pending` | Job creado, aun no iniciado por el worker |
-| `running` | Pipeline en ejecucion |
-| `completed` | Master listo y reproducible |
-| `failed` | Pipeline fallido con mensaje de error |
+| `pending` | Job created but not started by the worker |
+| `running` | Pipeline is running |
+| `completed` | Master is ready and playable |
+| `failed` | Pipeline failed with an error message |
 
-## Terminal y eventos
+## Terminal and Events
 
-Los eventos se guardan en `mastering_events` y tambien se emiten en tiempo real como `mastering-progress`.
+Events are stored in `mastering_events` and emitted in realtime as `mastering-progress`.
 
-Cada evento incluye:
+Each event includes:
 
 - `event`
 - `step`
@@ -164,18 +164,18 @@ Cada evento incluye:
 - `message`
 - `progress`
 - `payload_json`
-- snapshot del job
+- job snapshot
 
-El terminal inferior muestra esos eventos para entender en que etapa esta el proceso.
+The fixed bottom terminal shows those events so users can understand the current stage.
 
-## Persistencia SQLite
+## SQLite Persistence
 
-Tablas principales:
+Main tables:
 
-- `mastering_jobs`: estado, source, preset, feedback, output, receta y analisis.
-- `mastering_events`: timeline persistente por job.
+- `mastering_jobs`: state, source, preset, feedback, output, recipe, and analysis.
+- `mastering_events`: persistent per-job timeline.
 
-Campos relevantes de `mastering_jobs`:
+Relevant `mastering_jobs` fields:
 
 - `feedback`
 - `reference_notes`
@@ -189,7 +189,7 @@ Campos relevantes de `mastering_jobs`:
 - `error_message`
 - `output_path`
 
-## Comandos Tauri
+## Tauri Commands
 
 - `mastering_profiles`
 - `mastering_list_jobs`
@@ -199,7 +199,7 @@ Campos relevantes de `mastering_jobs`:
 - `mastering_retry_job`
 - `mastering_delete_job`
 
-## Archivos relevantes
+## Relevant Files
 
 - `src/MasteringPage.tsx`
 - `src-tauri/src/mastering.rs`
