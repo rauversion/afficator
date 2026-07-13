@@ -88,6 +88,62 @@ pub struct PlaylistIndexGroup {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct PlaylistTaxonomyOverview {
+    library: PlaylistIndexLibrary,
+    track_count: usize,
+    playlist_count: usize,
+    genre_count: usize,
+    artist_count: usize,
+    album_count: usize,
+    key_count: usize,
+    bpm_known_count: usize,
+    bpm_missing_count: usize,
+    bpm_average: Option<f64>,
+    bpm_min: Option<f64>,
+    bpm_max: Option<f64>,
+    genre_missing_count: usize,
+    key_missing_count: usize,
+    source_missing_count: usize,
+    genres: Vec<TaxonomyCount>,
+    bpm_buckets: Vec<TaxonomyCount>,
+    keys: Vec<TaxonomyCount>,
+    formats: Vec<TaxonomyCount>,
+    years: Vec<TaxonomyCount>,
+    metadata_gaps: Vec<TaxonomyCount>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaxonomyCount {
+    kind: String,
+    value: String,
+    name: String,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistTaxonomyGraph {
+    nodes: Vec<TaxonomyGraphNode>,
+    edges: Vec<TaxonomyGraphEdge>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaxonomyGraphNode {
+    id: String,
+    kind: String,
+    value: String,
+    label: String,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TaxonomyGraphEdge {
+    id: String,
+    source: String,
+    target: String,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct PlaylistDraft {
     id: String,
     library_id: String,
@@ -831,6 +887,43 @@ pub fn playlist_index_group_tracks(
     let conn = open_db(&app)?;
     let limit = limit.unwrap_or(500).clamp(1, 3000);
     list_group_tracks(&conn, &library_id, &kind, &value, query.as_deref(), limit)
+}
+
+#[tauri::command]
+pub fn playlist_index_taxonomy_overview(
+    app: AppHandle,
+    library_id: String,
+) -> Result<PlaylistTaxonomyOverview, String> {
+    let conn = open_db(&app)?;
+    taxonomy_overview(&conn, &library_id)
+}
+
+#[tauri::command]
+pub fn playlist_index_taxonomy_graph(
+    app: AppHandle,
+    library_id: String,
+    limit: Option<usize>,
+) -> Result<PlaylistTaxonomyGraph, String> {
+    let conn = open_db(&app)?;
+    taxonomy_graph(&conn, &library_id, limit.unwrap_or(12).clamp(4, 30))
+}
+
+#[tauri::command]
+pub fn playlist_index_taxonomy_tracks(
+    app: AppHandle,
+    library_id: String,
+    kind: String,
+    value: String,
+    limit: Option<usize>,
+) -> Result<Vec<PlaylistIndexTrack>, String> {
+    let conn = open_db(&app)?;
+    taxonomy_tracks(
+        &conn,
+        &library_id,
+        &kind,
+        &value,
+        limit.unwrap_or(250).clamp(1, 2000),
+    )
 }
 
 #[tauri::command]
@@ -1636,6 +1729,431 @@ fn list_group_tracks(
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("No se pudieron mapear tracks de {kind}: {error}"))
     }
+}
+
+fn taxonomy_overview(
+    conn: &Connection,
+    library_id: &str,
+) -> Result<PlaylistTaxonomyOverview, String> {
+    let library = get_library(conn, library_id)?
+        .ok_or_else(|| format!("Libreria indexada no encontrada: {library_id}"))?;
+    let tracks = list_taxonomy_tracks(conn, library_id)?;
+
+    let mut genre_counts = BTreeMap::<String, usize>::new();
+    let mut artist_counts = BTreeMap::<String, usize>::new();
+    let mut album_counts = BTreeMap::<String, usize>::new();
+    let mut key_counts = BTreeMap::<String, usize>::new();
+    let mut format_counts = BTreeMap::<String, usize>::new();
+    let mut year_counts = BTreeMap::<String, usize>::new();
+    let mut bpm_bucket_counts = BTreeMap::<String, usize>::new();
+    let mut bpm_known_count = 0_usize;
+    let mut bpm_missing_count = 0_usize;
+    let mut bpm_sum = 0_f64;
+    let mut bpm_min: Option<f64> = None;
+    let mut bpm_max: Option<f64> = None;
+    let mut genre_missing_count = 0_usize;
+    let mut key_missing_count = 0_usize;
+    let mut source_missing_count = 0_usize;
+
+    for track in &tracks {
+        let genre = taxonomy_value(track.genre.as_deref());
+        if genre.is_empty() {
+            genre_missing_count += 1;
+        }
+        increment_count(&mut genre_counts, genre);
+
+        increment_count(&mut artist_counts, taxonomy_value(track.artist.as_deref()));
+        increment_count(&mut album_counts, taxonomy_value(track.album.as_deref()));
+
+        let key = taxonomy_value(track.key.as_deref());
+        if key.is_empty() {
+            key_missing_count += 1;
+        }
+        increment_count(&mut key_counts, key);
+        increment_count(&mut format_counts, taxonomy_value(track.kind.as_deref()));
+        increment_count(&mut year_counts, taxonomy_value(track.year.as_deref()));
+
+        let bpm = track_bpm_value(track);
+        let (bucket, _) = bpm_bucket_for(bpm);
+        increment_count(&mut bpm_bucket_counts, bucket.to_string());
+        if let Some(value) = bpm {
+            bpm_known_count += 1;
+            bpm_sum += value;
+            bpm_min = Some(bpm_min.map_or(value, |current| current.min(value)));
+            bpm_max = Some(bpm_max.map_or(value, |current| current.max(value)));
+        } else {
+            bpm_missing_count += 1;
+        }
+
+        if !track.source_exists {
+            source_missing_count += 1;
+        }
+    }
+
+    Ok(PlaylistTaxonomyOverview {
+        playlist_count: library.playlist_count,
+        track_count: tracks.len(),
+        genre_count: non_empty_count(&genre_counts),
+        artist_count: non_empty_count(&artist_counts),
+        album_count: non_empty_count(&album_counts),
+        key_count: non_empty_count(&key_counts),
+        bpm_known_count,
+        bpm_missing_count,
+        bpm_average: (bpm_known_count > 0).then_some(bpm_sum / bpm_known_count as f64),
+        bpm_min,
+        bpm_max,
+        genre_missing_count,
+        key_missing_count,
+        source_missing_count,
+        genres: counts_to_taxonomy("genre", &genre_counts, "Sin genero", 40, true),
+        bpm_buckets: bpm_counts_to_taxonomy(&bpm_bucket_counts),
+        keys: counts_to_taxonomy("key", &key_counts, "Sin key", 40, true),
+        formats: counts_to_taxonomy("format", &format_counts, "Formato desconocido", 20, true),
+        years: counts_to_taxonomy("year", &year_counts, "Sin ano", 30, true),
+        metadata_gaps: vec![
+            TaxonomyCount {
+                kind: "metadata_gap".to_string(),
+                value: "missing_genre".to_string(),
+                name: "Sin genero".to_string(),
+                count: genre_missing_count,
+            },
+            TaxonomyCount {
+                kind: "metadata_gap".to_string(),
+                value: "missing_bpm".to_string(),
+                name: "Sin BPM".to_string(),
+                count: bpm_missing_count,
+            },
+            TaxonomyCount {
+                kind: "metadata_gap".to_string(),
+                value: "missing_key".to_string(),
+                name: "Sin key".to_string(),
+                count: key_missing_count,
+            },
+            TaxonomyCount {
+                kind: "metadata_gap".to_string(),
+                value: "source_missing".to_string(),
+                name: "Archivo no encontrado".to_string(),
+                count: source_missing_count,
+            },
+        ],
+        library,
+    })
+}
+
+fn taxonomy_graph(
+    conn: &Connection,
+    library_id: &str,
+    limit: usize,
+) -> Result<PlaylistTaxonomyGraph, String> {
+    let tracks = list_taxonomy_tracks(conn, library_id)?;
+
+    let mut genre_counts = BTreeMap::<String, usize>::new();
+    let mut key_counts = BTreeMap::<String, usize>::new();
+    let mut bpm_bucket_counts = BTreeMap::<String, usize>::new();
+
+    for track in &tracks {
+        increment_count(&mut genre_counts, taxonomy_value(track.genre.as_deref()));
+        increment_count(&mut key_counts, taxonomy_value(track.key.as_deref()));
+        let (bucket, _) = bpm_bucket_for(track_bpm_value(track));
+        increment_count(&mut bpm_bucket_counts, bucket.to_string());
+    }
+
+    let top_genres = top_count_values(&genre_counts, limit, true);
+    let top_keys = top_count_values(&key_counts, limit.min(10), true);
+    let top_bpm_buckets = bpm_bucket_counts
+        .iter()
+        .filter(|(value, _)| value.as_str() != "missing")
+        .map(|(value, _)| value.clone())
+        .collect::<BTreeSet<_>>();
+
+    let mut nodes = Vec::<TaxonomyGraphNode>::new();
+    let mut edge_counts = HashMap::<(String, String), usize>::new();
+
+    for value in &top_genres {
+        let count = genre_counts.get(value).copied().unwrap_or_default();
+        nodes.push(taxonomy_node("genre", value, value, count));
+    }
+
+    for bucket in &top_bpm_buckets {
+        let (_, label) = bpm_bucket_for_value(bucket);
+        let count = bpm_bucket_counts.get(bucket).copied().unwrap_or_default();
+        nodes.push(taxonomy_node("bpm", bucket, label, count));
+    }
+
+    for value in &top_keys {
+        let count = key_counts.get(value).copied().unwrap_or_default();
+        nodes.push(taxonomy_node("key", value, value, count));
+    }
+
+    for track in &tracks {
+        let genre = taxonomy_value(track.genre.as_deref());
+        if !top_genres.contains(&genre) {
+            continue;
+        }
+
+        let genre_id = taxonomy_node_id("genre", &genre);
+        let (bucket, _) = bpm_bucket_for(track_bpm_value(track));
+        if top_bpm_buckets.contains(bucket) {
+            increment_edge(
+                &mut edge_counts,
+                genre_id.clone(),
+                taxonomy_node_id("bpm", bucket),
+            );
+        }
+
+        let key = taxonomy_value(track.key.as_deref());
+        if top_keys.contains(&key) {
+            increment_edge(
+                &mut edge_counts,
+                genre_id.clone(),
+                taxonomy_node_id("key", &key),
+            );
+            let (bucket, _) = bpm_bucket_for(track_bpm_value(track));
+            if top_bpm_buckets.contains(bucket) {
+                increment_edge(
+                    &mut edge_counts,
+                    taxonomy_node_id("bpm", bucket),
+                    taxonomy_node_id("key", &key),
+                );
+            }
+        }
+    }
+
+    let min_edge_count = (tracks.len() / 750).max(2);
+    let mut edges = edge_counts
+        .into_iter()
+        .filter(|(_, count)| *count >= min_edge_count)
+        .map(|((source, target), count)| TaxonomyGraphEdge {
+            id: format!("{source}->{target}"),
+            source,
+            target,
+            count,
+        })
+        .collect::<Vec<_>>();
+    edges.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    edges.truncate(140);
+
+    Ok(PlaylistTaxonomyGraph { nodes, edges })
+}
+
+fn taxonomy_tracks(
+    conn: &Connection,
+    library_id: &str,
+    kind: &str,
+    value: &str,
+    limit: usize,
+) -> Result<Vec<PlaylistIndexTrack>, String> {
+    if kind == "playlist" {
+        return list_playlist_tracks(conn, library_id, value)
+            .map(|tracks| tracks.into_iter().take(limit).collect());
+    }
+
+    let tracks = list_taxonomy_tracks(conn, library_id)?;
+    Ok(tracks
+        .into_iter()
+        .filter(|track| taxonomy_track_matches(track, kind, value))
+        .take(limit)
+        .collect())
+}
+
+fn list_taxonomy_tracks(
+    conn: &Connection,
+    library_id: &str,
+) -> Result<Vec<PlaylistIndexTrack>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {}
+             FROM playlist_index_tracks t
+             WHERE t.library_id = ?1
+             ORDER BY COALESCE(t.artist, ''), COALESCE(t.album, ''), COALESCE(t.name, ''), t.track_id",
+            track_select_clause()
+        ))
+        .map_err(|error| format!("No se pudo preparar tracks de taxonomia: {error}"))?;
+    let rows = stmt
+        .query_map(params![library_id], row_to_track)
+        .map_err(|error| format!("No se pudieron leer tracks de taxonomia: {error}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("No se pudieron mapear tracks de taxonomia: {error}"))
+}
+
+fn taxonomy_track_matches(track: &PlaylistIndexTrack, kind: &str, value: &str) -> bool {
+    match kind {
+        "genre" => taxonomy_value(track.genre.as_deref()) == value,
+        "artist" => taxonomy_value(track.artist.as_deref()) == value,
+        "album" => taxonomy_value(track.album.as_deref()) == value,
+        "key" => taxonomy_value(track.key.as_deref()) == value,
+        "format" => taxonomy_value(track.kind.as_deref()) == value,
+        "year" => taxonomy_value(track.year.as_deref()) == value,
+        "bpm" => {
+            let (bucket, _) = bpm_bucket_for(track_bpm_value(track));
+            bucket == value
+        }
+        "metadata_gap" => match value {
+            "missing_genre" => taxonomy_value(track.genre.as_deref()).is_empty(),
+            "missing_bpm" => track_bpm_value(track).is_none(),
+            "missing_key" => taxonomy_value(track.key.as_deref()).is_empty(),
+            "source_missing" => !track.source_exists,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn counts_to_taxonomy(
+    kind: &str,
+    counts: &BTreeMap<String, usize>,
+    missing_name: &str,
+    limit: usize,
+    include_empty: bool,
+) -> Vec<TaxonomyCount> {
+    let mut items = counts
+        .iter()
+        .filter(|(value, _)| include_empty || !value.is_empty())
+        .map(|(value, count)| TaxonomyCount {
+            kind: kind.to_string(),
+            value: value.clone(),
+            name: if value.is_empty() {
+                missing_name.to_string()
+            } else {
+                value.clone()
+            },
+            count: *count,
+        })
+        .collect::<Vec<_>>();
+    sort_taxonomy_counts(&mut items);
+    items.truncate(limit);
+    items
+}
+
+fn bpm_counts_to_taxonomy(counts: &BTreeMap<String, usize>) -> Vec<TaxonomyCount> {
+    bpm_bucket_order()
+        .iter()
+        .filter_map(|(value, name)| {
+            let count = counts.get(*value).copied().unwrap_or_default();
+            (count > 0).then(|| TaxonomyCount {
+                kind: "bpm".to_string(),
+                value: (*value).to_string(),
+                name: (*name).to_string(),
+                count,
+            })
+        })
+        .collect()
+}
+
+fn top_count_values(
+    counts: &BTreeMap<String, usize>,
+    limit: usize,
+    exclude_empty: bool,
+) -> BTreeSet<String> {
+    let mut items = counts
+        .iter()
+        .filter(|(value, _)| !exclude_empty || !value.is_empty())
+        .map(|(value, count)| TaxonomyCount {
+            kind: String::new(),
+            value: value.clone(),
+            name: value.clone(),
+            count: *count,
+        })
+        .collect::<Vec<_>>();
+    sort_taxonomy_counts(&mut items);
+    items
+        .into_iter()
+        .take(limit)
+        .map(|item| item.value)
+        .collect()
+}
+
+fn sort_taxonomy_counts(items: &mut [TaxonomyCount]) {
+    items.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+}
+
+fn taxonomy_node(kind: &str, value: &str, label: &str, count: usize) -> TaxonomyGraphNode {
+    TaxonomyGraphNode {
+        id: taxonomy_node_id(kind, value),
+        kind: kind.to_string(),
+        value: value.to_string(),
+        label: label.to_string(),
+        count,
+    }
+}
+
+fn taxonomy_node_id(kind: &str, value: &str) -> String {
+    format!("{kind}:{}", stable_hash(value))
+}
+
+fn increment_count(counts: &mut BTreeMap<String, usize>, value: String) {
+    *counts.entry(value).or_insert(0) += 1;
+}
+
+fn increment_edge(edges: &mut HashMap<(String, String), usize>, source: String, target: String) {
+    *edges.entry((source, target)).or_insert(0) += 1;
+}
+
+fn non_empty_count(counts: &BTreeMap<String, usize>) -> usize {
+    counts.keys().filter(|value| !value.is_empty()).count()
+}
+
+fn taxonomy_value(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn track_bpm_value(track: &PlaylistIndexTrack) -> Option<f64> {
+    track
+        .bpm
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.replace(',', ".").parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+}
+
+fn bpm_bucket_for(bpm: Option<f64>) -> (&'static str, &'static str) {
+    match bpm {
+        None => ("missing", "Sin BPM"),
+        Some(value) if value < 90.0 => ("lt90", "< 90"),
+        Some(value) if value < 100.0 => ("90_100", "90-100"),
+        Some(value) if value < 110.0 => ("100_110", "100-110"),
+        Some(value) if value < 120.0 => ("110_120", "110-120"),
+        Some(value) if value < 128.0 => ("120_128", "120-128"),
+        Some(value) if value < 135.0 => ("128_135", "128-135"),
+        Some(_) => ("gte135", "135+"),
+    }
+}
+
+fn bpm_bucket_for_value(value: &str) -> (&'static str, &'static str) {
+    bpm_bucket_order()
+        .iter()
+        .find(|(bucket, _)| *bucket == value)
+        .copied()
+        .unwrap_or(("missing", "Sin BPM"))
+}
+
+fn bpm_bucket_order() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("lt90", "< 90"),
+        ("90_100", "90-100"),
+        ("100_110", "100-110"),
+        ("110_120", "110-120"),
+        ("120_128", "120-128"),
+        ("128_135", "128-135"),
+        ("gte135", "135+"),
+        ("missing", "Sin BPM"),
+    ]
 }
 
 fn track_group_column(kind: &str) -> Result<&'static str, String> {

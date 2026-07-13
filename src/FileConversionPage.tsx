@@ -267,10 +267,11 @@ export function FileConversionPage() {
   }
 
   function handleImportResponse(response: LocalConversionImportResponse, label: string) {
+    const group = response.group ?? null;
     setAllItems((current) => upsertItems(current, response.items));
     setCurrentItems(response.items);
-    setActiveGroup(response.group ?? null);
-    if (response.group) setGroups((current) => upsertGroups(current, [response.group]));
+    setActiveGroup(group);
+    if (group) setGroups((current) => upsertGroups(current, [group]));
     setActiveTab("current");
     setSelectedIds(new Set(response.items.map((item) => item.id)));
     setMessage(`${response.items.length} ${label}.`);

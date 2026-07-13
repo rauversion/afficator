@@ -4,7 +4,6 @@ import {
   FolderOpen,
   ListMusic,
   Play,
-  Plus,
   RefreshCcw,
   Search,
   Square,
@@ -14,13 +13,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { PlaylistAddDialog } from "./components/tracks/PlaylistAddDialog";
+import { TrackCover } from "./components/tracks/TrackCover";
 import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
 import { playbackErrorMessage } from "./playback";
 
 type BrowserKind = "artist" | "album";
 type ArtistDetailTab = "tracks" | "albums";
-type PlaylistAddMode = "existing" | "new";
 
 type PlaylistIndexLibrary = {
   id: string;
@@ -73,18 +73,11 @@ type PlayerState = {
   url: string;
 };
 
-const coverPathCache = new Map<string, string | null>();
-const coverPending = new Map<string, Promise<string | null>>();
-const coverQueue: Array<() => void> = [];
-let activeCoverRequests = 0;
-const maxCoverRequests = 2;
-
 export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
   const { locale, t } = useI18n();
   const [libraries, setLibraries] = useState<PlaylistIndexLibrary[]>([]);
   const [activeLibraryId, setActiveLibraryId] = useState("");
   const [drafts, setDrafts] = useState<PlaylistDraft[]>([]);
-  const [targetDraftId, setTargetDraftId] = useState("");
   const [groups, setGroups] = useState<PlaylistIndexGroup[]>([]);
   const [activeGroupValue, setActiveGroupValue] = useState("");
   const [tracks, setTracks] = useState<PlaylistIndexTrack[]>([]);
@@ -97,9 +90,6 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
   const [message, setMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [addPlaylistDialogOpen, setAddPlaylistDialogOpen] = useState(false);
-  const [playlistAddMode, setPlaylistAddMode] = useState<PlaylistAddMode>("existing");
-  const [newDraftName, setNewDraftName] = useState("");
-  const [newDraftDescription, setNewDraftDescription] = useState("");
   const [detailTrack, setDetailTrack] = useState<PlaylistIndexTrack | null>(null);
   const [player, setPlayer] = useState<PlayerState | null>(null);
   const [playerPlaying, setPlayerPlaying] = useState(false);
@@ -119,6 +109,11 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
   const allVisibleSelected = displayedTracks.length > 0 && selectedTracks.length === displayedTracks.length;
   const title = kind === "artist" ? t("Artistas") : t("Albums");
   const groupLabel = kind === "artist" ? t("Artista") : "Album";
+  const activeAlbum = artistAlbums.find((album) => album.value === activeArtistAlbumValue);
+  const playlistDialogDefaultName =
+    kind === "artist" && artistDetailTab === "albums" && activeAlbum
+      ? `${activeGroup?.name ?? ""} - ${activeAlbum.name}`.trim()
+      : activeGroup?.name ?? "";
 
   useEffect(() => {
     setGroups([]);
@@ -158,7 +153,6 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
         ]);
       } else {
         setDrafts([]);
-        setTargetDraftId("");
         setGroups([]);
         setTracks([]);
       }
@@ -191,12 +185,10 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
     }
   }
 
-  async function loadDrafts(libraryId = activeLibraryId, preferredDraftId = targetDraftId) {
+  async function loadDrafts(libraryId = activeLibraryId) {
     if (!libraryId) return;
     const response = await invoke<PlaylistDraft[]>("playlist_index_drafts", { libraryId });
     setDrafts(response);
-    const nextDraftId = response.find((draft) => draft.id === preferredDraftId)?.id ?? response[0]?.id ?? "";
-    setTargetDraftId(nextDraftId);
   }
 
   async function loadGroups(libraryId = activeLibraryId, query = groupQuery, preferredGroupValue = activeGroupValue) {
@@ -301,9 +293,9 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
     });
   }
 
-  async function addSelectedToExistingDraft() {
-    if (!targetDraftId || selectedTracks.length === 0) return;
-    const added = await addTrackIdsToDraft(targetDraftId, selectedTracks.map((track) => track.track_id));
+  async function addSelectedToExistingDraft(draftId: string) {
+    if (!draftId || selectedTracks.length === 0) return;
+    const added = await addTrackIdsToDraft(draftId, selectedTracks.map((track) => track.track_id));
     if (added) setAddPlaylistDialogOpen(false);
   }
 
@@ -316,7 +308,7 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
         draftId,
         trackIds
       });
-      await loadDrafts(activeLibraryId, draftId);
+      await loadDrafts(activeLibraryId);
       setSelectedTrackIds(new Set());
       setMessage(t("{count} tracks en la playlist.", { count: updatedTracks.length }));
       return true;
@@ -329,32 +321,24 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
   }
 
   function openAddPlaylistDialog() {
-    const album = artistAlbums.find((album) => album.value === activeArtistAlbumValue);
-    setNewDraftName(kind === "artist" && artistDetailTab === "albums" && album
-      ? `${activeGroup?.name ?? ""} - ${album.name}`.trim()
-      : activeGroup?.name ?? "");
-    setNewDraftDescription("");
-    setPlaylistAddMode(drafts.length > 0 && targetDraftId ? "existing" : "new");
     setAddPlaylistDialogOpen(true);
   }
 
-  async function createDraftWithSelectedTracks(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!activeLibraryId || selectedTracks.length === 0 || !newDraftName.trim()) return;
+  async function createDraftWithSelectedTracks(name: string, description: string) {
+    if (!activeLibraryId || selectedTracks.length === 0 || !name.trim()) return;
     setBusy(true);
     setErrorMessage("");
 
     try {
       const draft = await invoke<PlaylistDraft>("playlist_index_create_draft", {
         libraryId: activeLibraryId,
-        name: newDraftName,
-        description: newDraftDescription || null
+        name,
+        description: description || null
       });
       const selectedIds = selectedTracks.map((track) => track.track_id);
       const added = await addTrackIdsToDraft(draft.id, selectedIds);
       if (!added) return;
       setAddPlaylistDialogOpen(false);
-      setTargetDraftId(draft.id);
       setMessage(t("Playlist creada: {name} con {count} tracks.", {
         name: draft.name,
         count: selectedIds.length
@@ -628,118 +612,17 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
         onOpenFolder={(track) => void openFolder(track.source_path)}
       />
 
-      {addPlaylistDialogOpen ? (
-        <div className="fixed inset-0 z-[65] flex items-center justify-center p-4" role="dialog" aria-modal="true">
-          <div className="absolute inset-0 bg-black/35 backdrop-blur-[1px]" onClick={() => setAddPlaylistDialogOpen(false)} />
-          <section className="relative z-[70] w-full max-w-lg rounded-md border border-border bg-background text-foreground shadow-2xl">
-            <header className="flex items-start justify-between gap-3 border-b border-border bg-card px-4 py-4">
-              <div className="min-w-0">
-                <h2 className="truncate text-base font-semibold">{t("Agregar a playlist")}</h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {t("Vas a agregar {count} tracks.", { count: selectedTracks.length })}
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => setAddPlaylistDialogOpen(false)}>
-                {t("Cerrar")}
-              </Button>
-            </header>
-
-            <div className="grid gap-4 p-4">
-              <div className="rounded-md border border-border bg-secondary/60 p-3 text-sm">
-                <strong className="block truncate">{activeGroup ? translateMissingGroupName(t, activeGroup.name) : t("Seleccion actual")}</strong>
-                <span className="mt-1 block text-xs text-muted-foreground">
-                  {selectedTracks.length} {t("tracks seleccionados")}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-1 rounded-md border border-border bg-card p-1">
-                <Button
-                  type="button"
-                  variant={playlistAddMode === "existing" ? "default" : "ghost"}
-                  disabled={drafts.length === 0}
-                  onClick={() => setPlaylistAddMode("existing")}
-                >
-                  <ListMusic className="h-4 w-4" />
-                  {t("Existente")}
-                </Button>
-                <Button
-                  type="button"
-                  variant={playlistAddMode === "new" ? "default" : "ghost"}
-                  onClick={() => setPlaylistAddMode("new")}
-                >
-                  <Plus className="h-4 w-4" />
-                  {t("Nueva")}
-                </Button>
-              </div>
-
-              {playlistAddMode === "existing" ? (
-                <form className="grid gap-3" onSubmit={(event) => {
-                  event.preventDefault();
-                  void addSelectedToExistingDraft();
-                }}>
-                  {drafts.length === 0 ? (
-                    <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
-                      {t("No hay playlists nuevas. Crea una playlist para agregar estos tracks.")}
-                    </div>
-                  ) : null}
-                  <label className="grid gap-1 text-sm">
-                    <span className="font-semibold">{t("Playlist")}</span>
-                    <select
-                      className="h-10 rounded-md border border-input bg-background px-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      value={targetDraftId}
-                      onChange={(event) => setTargetDraftId(event.currentTarget.value)}
-                      disabled={drafts.length === 0}
-                    >
-                      {drafts.map((draft) => (
-                        <option key={draft.id} value={draft.id}>
-                          {draft.name} ({draft.track_count})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="flex justify-end gap-2">
-                    <Button type="button" variant="secondary" onClick={() => setAddPlaylistDialogOpen(false)}>
-                      {t("Cancelar")}
-                    </Button>
-                    <Button disabled={busy || !targetDraftId || selectedTracks.length === 0}>
-                      <ListMusic className="h-4 w-4" />
-                      {t("Agregar {count} tracks", { count: selectedTracks.length })}
-                    </Button>
-                  </div>
-                </form>
-              ) : (
-                <form className="grid gap-3" onSubmit={createDraftWithSelectedTracks}>
-                  <label className="grid gap-1 text-sm">
-                    <span className="font-semibold">{t("Nombre")}</span>
-                    <input
-                      className="h-10 rounded-md border border-input bg-background px-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      value={newDraftName}
-                      onChange={(event) => setNewDraftName(event.currentTarget.value)}
-                    />
-                  </label>
-                  <label className="grid gap-1 text-sm">
-                    <span className="font-semibold">{t("Descripcion")}</span>
-                    <textarea
-                      className="min-h-24 rounded-md border border-input bg-background px-3 py-2 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      value={newDraftDescription}
-                      onChange={(event) => setNewDraftDescription(event.currentTarget.value)}
-                    />
-                  </label>
-                  <div className="flex justify-end gap-2">
-                    <Button type="button" variant="secondary" onClick={() => setAddPlaylistDialogOpen(false)}>
-                      {t("Cancelar")}
-                    </Button>
-                    <Button disabled={busy || !newDraftName.trim() || selectedTracks.length === 0}>
-                      <Plus className="h-4 w-4" />
-                      {t("Crear y agregar {count} tracks", { count: selectedTracks.length })}
-                    </Button>
-                  </div>
-                </form>
-              )}
-            </div>
-          </section>
-        </div>
-      ) : null}
+      <PlaylistAddDialog
+        open={addPlaylistDialogOpen}
+        busy={busy}
+        contextLabel={activeGroup ? translateMissingGroupName(t, activeGroup.name) : t("Seleccion actual")}
+        defaultName={playlistDialogDefaultName}
+        drafts={drafts}
+        trackCount={selectedTracks.length}
+        onClose={() => setAddPlaylistDialogOpen(false)}
+        onAddExisting={(draftId) => void addSelectedToExistingDraft(draftId)}
+        onCreate={(name, description) => void createDraftWithSelectedTracks(name, description)}
+      />
     </main>
   );
 }
@@ -809,67 +692,6 @@ function BrowseTrackRow({
         <FolderOpen className="h-3.5 w-3.5" />
       </Button>
     </div>
-  );
-}
-
-function TrackCover({
-  sourcePath,
-  title,
-  className
-}: {
-  sourcePath?: string | null;
-  title: string;
-  className: string;
-}) {
-  const ref = useRef<HTMLSpanElement | null>(null);
-  const [visible, setVisible] = useState(false);
-  const [coverPath, setCoverPath] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    const node = ref.current;
-    if (!node) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setVisible(true);
-      return;
-    }
-
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) {
-        setVisible(true);
-        observer.disconnect();
-      }
-    }, { rootMargin: "160px" });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (!visible || !sourcePath) return;
-    let cancelled = false;
-
-    void loadTrackCover(sourcePath).then((path) => {
-      if (cancelled) return;
-      setCoverPath(path);
-      setLoaded(true);
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [sourcePath, visible]);
-
-  return (
-    <span
-      ref={ref}
-      className={cn("grid shrink-0 place-items-center overflow-hidden rounded-md border border-border bg-secondary text-muted-foreground", className)}
-    >
-      {coverPath ? (
-        <img src={convertFileSrc(coverPath)} alt={title} className="h-full w-full object-cover" />
-      ) : (
-        <Album className={cn("h-4 w-4", !loaded && sourcePath && "opacity-50")} />
-      )}
-    </span>
   );
 }
 
@@ -979,44 +801,6 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
       <span className="min-w-0 break-words">{value}</span>
     </div>
   );
-}
-
-function loadTrackCover(sourcePath: string) {
-  if (coverPathCache.has(sourcePath)) {
-    return Promise.resolve(coverPathCache.get(sourcePath) ?? null);
-  }
-  const pending = coverPending.get(sourcePath);
-  if (pending) return pending;
-
-  const promise = new Promise<string | null>((resolve) => {
-    const run = () => {
-      activeCoverRequests += 1;
-      invoke<string | null>("playlist_index_track_cover", { sourcePath })
-        .then((path) => {
-          const normalized = path ?? null;
-          coverPathCache.set(sourcePath, normalized);
-          resolve(normalized);
-        })
-        .catch(() => {
-          coverPathCache.set(sourcePath, null);
-          resolve(null);
-        })
-        .finally(() => {
-          coverPending.delete(sourcePath);
-          activeCoverRequests = Math.max(0, activeCoverRequests - 1);
-          const next = coverQueue.shift();
-          if (next) next();
-        });
-    };
-
-    if (activeCoverRequests < maxCoverRequests) {
-      run();
-    } else {
-      coverQueue.push(run);
-    }
-  });
-  coverPending.set(sourcePath, promise);
-  return promise;
 }
 
 function EmptyRow({ children }: { children: React.ReactNode }) {

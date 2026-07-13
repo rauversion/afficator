@@ -49,6 +49,7 @@ import { FileConversionPage } from "./FileConversionPage";
 import { MasteringPage } from "./MasteringPage";
 import { PlaylistBrowserPage } from "./PlaylistBrowserPage";
 import { PlaylistIndexPage } from "./PlaylistIndexPage";
+import { TaxonomyPage } from "./TaxonomyPage";
 import { TurnPage } from "./TurnPage";
 import { languageLabel, translate, translateBackendMessage, useI18n, type Locale } from "./i18n";
 import { playbackErrorMessage } from "./playback";
@@ -285,6 +286,7 @@ export default function App() {
           <Route path="/playlists" element={<PlaylistIndexPage />} />
           <Route path="/playlists/artists" element={<PlaylistBrowserPage kind="artist" />} />
           <Route path="/playlists/albums" element={<PlaylistBrowserPage kind="album" />} />
+          <Route path="/playlists/taxonomies" element={<TaxonomyPage />} />
           <Route path="/turn" element={<TurnPage />} />
           <Route path="/mastering" element={<MasteringPage />} />
           <Route
@@ -2162,6 +2164,9 @@ function AppSidebar({
           </SidebarLink>
           <SidebarLink to="/playlists/albums" icon={<Album className="h-4 w-4" />}>
             {t("Albums")}
+          </SidebarLink>
+          <SidebarLink to="/playlists/taxonomies" icon={<Database className="h-4 w-4" />}>
+            {t("Taxonomias")}
           </SidebarLink>
         </SidebarSection>
 
