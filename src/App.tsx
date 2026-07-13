@@ -26,6 +26,7 @@ import {
   Play,
   RefreshCcw,
   Settings,
+  Sparkles,
   Square,
   Sun,
   Trash2,
@@ -48,6 +49,7 @@ import { cn } from "./lib/utils";
 import { FileConversionPage } from "./FileConversionPage";
 import { MasteringPage } from "./MasteringPage";
 import { PlaylistBrowserPage } from "./PlaylistBrowserPage";
+import { PlaylistCopilotPage } from "./PlaylistCopilotPage";
 import { PlaylistIndexPage } from "./PlaylistIndexPage";
 import { TaxonomyPage } from "./TaxonomyPage";
 import { TurnPage } from "./TurnPage";
@@ -284,6 +286,7 @@ export default function App() {
           <Route path="/file-conversion/local" element={<FileConversionPage />} />
           <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
           <Route path="/playlists" element={<PlaylistIndexPage />} />
+          <Route path="/playlists/copilot" element={<PlaylistCopilotPage />} />
           <Route path="/playlists/artists" element={<PlaylistBrowserPage kind="artist" />} />
           <Route path="/playlists/albums" element={<PlaylistBrowserPage kind="album" />} />
           <Route path="/playlists/taxonomies" element={<TaxonomyPage />} />
@@ -2158,6 +2161,9 @@ function AppSidebar({
         <SidebarSection title={t("Playlists")}>
           <SidebarLink to="/playlists" end icon={<ListMusic className="h-4 w-4" />}>
             {t("Playlist Library")}
+          </SidebarLink>
+          <SidebarLink to="/playlists/copilot" icon={<Sparkles className="h-4 w-4" />}>
+            {t("Playlist Copilot")}
           </SidebarLink>
           <SidebarLink to="/playlists/artists" icon={<UserRound className="h-4 w-4" />}>
             {t("Artistas")}

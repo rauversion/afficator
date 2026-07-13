@@ -1414,6 +1414,7 @@ pub fn run() {
             playlist_index::playlist_index_taxonomy_overview,
             playlist_index::playlist_index_taxonomy_graph,
             playlist_index::playlist_index_taxonomy_tracks,
+            playlist_index::playlist_copilot_generate,
             playlist_index::playlist_index_track_cover,
             playlist_index::playlist_index_generate_embeddings,
             playlist_index::playlist_index_drafts,

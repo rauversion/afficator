@@ -194,6 +194,44 @@ pub struct PlaylistExportResult {
     track_count: usize,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistCopilotRequest {
+    library_id: String,
+    prompt: String,
+    target_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistCopilotResponse {
+    message: String,
+    interpreted: PlaylistCopilotInterpretation,
+    questions: Vec<String>,
+    candidates: Vec<PlaylistCopilotCandidate>,
+    used_openai: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistCopilotCandidate {
+    track: PlaylistIndexTrack,
+    score: f64,
+    reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PlaylistCopilotInterpretation {
+    genres: Vec<String>,
+    artists: Vec<String>,
+    keys: Vec<String>,
+    bpm_min: Option<f64>,
+    bpm_max: Option<f64>,
+    mood: Option<String>,
+    energy: Option<String>,
+    exclude_terms: Vec<String>,
+    target_count: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct PlaylistIndexProgressEvent {
     #[serde(rename = "type")]
@@ -924,6 +962,23 @@ pub fn playlist_index_taxonomy_tracks(
         &value,
         limit.unwrap_or(250).clamp(1, 2000),
     )
+}
+
+#[tauri::command]
+pub async fn playlist_copilot_generate(
+    app: AppHandle,
+    request: PlaylistCopilotRequest,
+) -> Result<PlaylistCopilotResponse, String> {
+    let app_for_error = app.clone();
+    tauri::async_runtime::spawn_blocking(move || playlist_copilot_generate_blocking(app, request))
+        .await
+        .map_err(|error| {
+            settings::localized(
+                &app_for_error,
+                &format!("Playlist Copilot fallo inesperadamente: {error}"),
+                &format!("Playlist Copilot failed unexpectedly: {error}"),
+            )
+        })?
 }
 
 #[tauri::command]
@@ -2250,6 +2305,726 @@ fn file_has_content(path: &PathBuf) -> bool {
     fs::metadata(path)
         .map(|metadata| metadata.len() > 0)
         .unwrap_or(false)
+}
+
+#[derive(Debug, Clone)]
+struct PlaylistCopilotProfile {
+    track_count: usize,
+    genres: Vec<String>,
+    artists: Vec<String>,
+    keys: Vec<String>,
+    bpm_min: Option<f64>,
+    bpm_max: Option<f64>,
+}
+
+fn playlist_copilot_generate_blocking(
+    app: AppHandle,
+    request: PlaylistCopilotRequest,
+) -> Result<PlaylistCopilotResponse, String> {
+    let prompt = request.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err("Describe la playlist que quieres generar.".to_string());
+    }
+
+    let target_count = request.target_count.unwrap_or(30).clamp(5, 120);
+    let conn = open_db(&app)?;
+    let library = get_library(&conn, &request.library_id)?
+        .ok_or_else(|| format!("Libreria indexada no encontrada: {}", request.library_id))?;
+    let tracks = list_taxonomy_tracks(&conn, &request.library_id)?;
+    if tracks.is_empty() {
+        return Err("La libreria indexada no tiene tracks para sugerir.".to_string());
+    }
+
+    let profile = playlist_copilot_profile(&tracks);
+    let api_key = settings::load_openai_api_key(&app)?;
+    let mut used_openai = false;
+    let mut openai_error = None;
+    let mut interpreted = if let Some(api_key) = api_key.as_deref() {
+        match request_copilot_interpretation(api_key, &prompt, &profile, target_count) {
+            Ok(interpretation) => {
+                used_openai = true;
+                interpretation
+            }
+            Err(error) => {
+                openai_error = Some(error);
+                local_copilot_interpretation(&prompt, &profile, target_count)
+            }
+        }
+    } else {
+        local_copilot_interpretation(&prompt, &profile, target_count)
+    };
+    interpreted.target_count = Some(target_count);
+    interpreted = normalize_copilot_interpretation(interpreted);
+
+    let semantic_scores = if api_key.is_some() && tracks.iter().any(|track| track.embedding_ready) {
+        playlist_copilot_semantic_scores(&app, &conn, &request.library_id, &prompt)
+    } else {
+        HashMap::new()
+    };
+    let candidates = rank_copilot_candidates(
+        &tracks,
+        &interpreted,
+        &prompt,
+        target_count,
+        &semantic_scores,
+    );
+    let questions = playlist_copilot_questions(&interpreted, candidates.len());
+    let mut message = if used_openai {
+        format!(
+            "Interprete el brief con OpenAI y encontre {} candidato(s) en {}.",
+            candidates.len(),
+            library.source_name
+        )
+    } else {
+        format!(
+            "Use ranking local y encontre {} candidato(s) en {}.",
+            candidates.len(),
+            library.source_name
+        )
+    };
+    if let Some(error) = openai_error {
+        message.push_str(&format!(" OpenAI no respondio correctamente: {error}"));
+    }
+
+    Ok(PlaylistCopilotResponse {
+        message,
+        interpreted,
+        questions,
+        candidates,
+        used_openai,
+    })
+}
+
+fn playlist_copilot_profile(tracks: &[PlaylistIndexTrack]) -> PlaylistCopilotProfile {
+    let mut genre_counts = BTreeMap::<String, usize>::new();
+    let mut artist_counts = BTreeMap::<String, usize>::new();
+    let mut key_counts = BTreeMap::<String, usize>::new();
+    let mut bpm_min: Option<f64> = None;
+    let mut bpm_max: Option<f64> = None;
+
+    for track in tracks {
+        increment_count(&mut genre_counts, taxonomy_value(track.genre.as_deref()));
+        increment_count(&mut artist_counts, taxonomy_value(track.artist.as_deref()));
+        increment_count(&mut key_counts, taxonomy_value(track.key.as_deref()));
+        if let Some(bpm) = track_bpm_value(track) {
+            bpm_min = Some(bpm_min.map_or(bpm, |current| current.min(bpm)));
+            bpm_max = Some(bpm_max.map_or(bpm, |current| current.max(bpm)));
+        }
+    }
+
+    PlaylistCopilotProfile {
+        track_count: tracks.len(),
+        genres: top_profile_values(&genre_counts, 80),
+        artists: top_profile_values(&artist_counts, 160),
+        keys: top_profile_values(&key_counts, 32),
+        bpm_min,
+        bpm_max,
+    }
+}
+
+fn top_profile_values(counts: &BTreeMap<String, usize>, limit: usize) -> Vec<String> {
+    let mut items = counts
+        .iter()
+        .filter(|(value, _)| !value.is_empty())
+        .map(|(value, count)| TaxonomyCount {
+            kind: String::new(),
+            value: value.clone(),
+            name: value.clone(),
+            count: *count,
+        })
+        .collect::<Vec<_>>();
+    sort_taxonomy_counts(&mut items);
+    items
+        .into_iter()
+        .take(limit)
+        .map(|item| item.value)
+        .collect()
+}
+
+fn request_copilot_interpretation(
+    api_key: &str,
+    prompt: &str,
+    profile: &PlaylistCopilotProfile,
+    target_count: usize,
+) -> Result<PlaylistCopilotInterpretation, String> {
+    let system_prompt = [
+        "You are a DJ playlist planning assistant.",
+        "Return only JSON. Do not include markdown.",
+        "Infer filters from the user's brief using the provided local library profile.",
+        "Use this JSON shape:",
+        r#"{"genres":[],"artists":[],"keys":[],"bpm_min":null,"bpm_max":null,"mood":null,"energy":null,"exclude_terms":[],"target_count":30}"#,
+        "Keep arrays short and use values that can match the library profile when possible.",
+    ]
+    .join(" ");
+    let user_prompt = format!(
+        "Library profile:\n{}\n\nTarget track count: {}\nBrief: {}",
+        playlist_copilot_profile_summary(profile),
+        target_count,
+        prompt
+    );
+    let body = json!({
+        "model": "gpt-4o-mini",
+        "temperature": 0.2,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            { "role": "system", "content": system_prompt },
+            { "role": "user", "content": user_prompt }
+        ]
+    });
+    let response = reqwest::blocking::Client::new()
+        .post("https://api.openai.com/v1/chat/completions")
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .map_err(|error| format!("OpenAI chat request fallo: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("OpenAI chat retorno error: {error}"))?
+        .json::<Value>()
+        .map_err(|error| format!("OpenAI chat retorno JSON invalido: {error}"))?;
+    let content = response
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "OpenAI no retorno contenido para el Copilot.".to_string())?;
+
+    parse_copilot_interpretation_json(content)
+}
+
+fn playlist_copilot_profile_summary(profile: &PlaylistCopilotProfile) -> String {
+    format!(
+        "tracks: {}\ngenres: {}\nartists: {}\nkeys: {}\nbpm_range: {}-{}",
+        profile.track_count,
+        profile
+            .genres
+            .iter()
+            .take(32)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        profile
+            .artists
+            .iter()
+            .take(48)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        profile
+            .keys
+            .iter()
+            .take(20)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
+        profile
+            .bpm_min
+            .map(|value| format!("{value:.0}"))
+            .unwrap_or_else(|| "unknown".to_string()),
+        profile
+            .bpm_max
+            .map(|value| format!("{value:.0}"))
+            .unwrap_or_else(|| "unknown".to_string())
+    )
+}
+
+fn parse_copilot_interpretation_json(
+    content: &str,
+) -> Result<PlaylistCopilotInterpretation, String> {
+    let value = serde_json::from_str::<Value>(content)
+        .map_err(|error| format!("OpenAI retorno interpretacion invalida: {error}"))?;
+    let interpretation_value = value
+        .get("interpretation")
+        .or_else(|| value.get("interpreted"))
+        .unwrap_or(&value)
+        .clone();
+    let interpretation =
+        serde_json::from_value::<PlaylistCopilotInterpretation>(interpretation_value)
+            .map_err(|error| format!("OpenAI retorno campos invalidos: {error}"))?;
+    Ok(normalize_copilot_interpretation(interpretation))
+}
+
+fn local_copilot_interpretation(
+    prompt: &str,
+    profile: &PlaylistCopilotProfile,
+    target_count: usize,
+) -> PlaylistCopilotInterpretation {
+    let normalized_prompt = normalize_for_match(prompt);
+    let bpm_values = prompt_numbers(prompt)
+        .into_iter()
+        .filter(|value| (50.0..=220.0).contains(value))
+        .collect::<Vec<_>>();
+    let (bpm_min, bpm_max) = match bpm_values.as_slice() {
+        [single] if normalized_prompt.contains("bpm") => {
+            let value = *single;
+            (Some((value - 4.0).max(50.0)), Some(value + 4.0))
+        }
+        [first, second, ..] => (Some((*first).min(*second)), Some((*first).max(*second))),
+        _ => (None, None),
+    };
+
+    normalize_copilot_interpretation(PlaylistCopilotInterpretation {
+        genres: profile_matches(&normalized_prompt, &profile.genres, 6),
+        artists: profile_matches(&normalized_prompt, &profile.artists, 8),
+        keys: profile_matches(&normalized_prompt, &profile.keys, 6),
+        bpm_min,
+        bpm_max,
+        mood: prompt_mood(&normalized_prompt),
+        energy: prompt_energy(&normalized_prompt),
+        exclude_terms: prompt_exclude_terms(prompt),
+        target_count: Some(target_count),
+    })
+}
+
+fn normalize_copilot_interpretation(
+    mut interpretation: PlaylistCopilotInterpretation,
+) -> PlaylistCopilotInterpretation {
+    interpretation.genres = clean_copilot_terms(interpretation.genres, 8);
+    interpretation.artists = clean_copilot_terms(interpretation.artists, 10);
+    interpretation.keys = clean_copilot_terms(interpretation.keys, 8);
+    interpretation.exclude_terms = clean_copilot_terms(interpretation.exclude_terms, 12);
+    interpretation.mood = clean_optional_string(interpretation.mood);
+    interpretation.energy = clean_optional_string(interpretation.energy);
+    interpretation.bpm_min = clean_bpm_filter(interpretation.bpm_min);
+    interpretation.bpm_max = clean_bpm_filter(interpretation.bpm_max);
+    if let (Some(min), Some(max)) = (interpretation.bpm_min, interpretation.bpm_max) {
+        if min > max {
+            interpretation.bpm_min = Some(max);
+            interpretation.bpm_max = Some(min);
+        }
+    }
+    interpretation.target_count = interpretation.target_count.map(|value| value.clamp(5, 120));
+    interpretation
+}
+
+fn clean_copilot_terms(values: Vec<String>, limit: usize) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| seen.insert(normalize_for_match(value)))
+        .take(limit)
+        .collect()
+}
+
+fn clean_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn clean_bpm_filter(value: Option<f64>) -> Option<f64> {
+    value.filter(|value| value.is_finite() && (50.0..=220.0).contains(value))
+}
+
+fn profile_matches(prompt: &str, values: &[String], limit: usize) -> Vec<String> {
+    values
+        .iter()
+        .filter(|value| normalized_contains_phrase(prompt, &normalize_for_match(value)))
+        .take(limit)
+        .cloned()
+        .collect()
+}
+
+fn prompt_numbers(prompt: &str) -> Vec<f64> {
+    let mut numbers = Vec::new();
+    let mut current = String::new();
+    for character in prompt.chars() {
+        if character.is_ascii_digit() || character == '.' || character == ',' {
+            current.push(if character == ',' { '.' } else { character });
+        } else if !current.is_empty() {
+            if let Ok(value) = current.parse::<f64>() {
+                numbers.push(value);
+            }
+            current.clear();
+        }
+    }
+    if !current.is_empty() {
+        if let Ok(value) = current.parse::<f64>() {
+            numbers.push(value);
+        }
+    }
+    numbers
+}
+
+fn prompt_mood(prompt: &str) -> Option<String> {
+    let moods = [
+        ("dark", "dark"),
+        ("oscuro", "oscuro"),
+        ("melodic", "melodic"),
+        ("melodico", "melodico"),
+        ("warm", "warm"),
+        ("calido", "calido"),
+        ("vocal", "vocal"),
+        ("funk", "funk"),
+        ("deep", "deep"),
+        ("groove", "groove"),
+        ("hypnotic", "hypnotic"),
+        ("hipnotico", "hipnotico"),
+    ];
+    moods
+        .iter()
+        .find(|(needle, _)| normalized_contains_phrase(prompt, needle))
+        .map(|(_, mood)| (*mood).to_string())
+}
+
+fn prompt_energy(prompt: &str) -> Option<String> {
+    if ["warmup", "opening", "abrir", "inicio", "suave"]
+        .iter()
+        .any(|needle| normalized_contains_phrase(prompt, needle))
+    {
+        return Some("warmup".to_string());
+    }
+    if ["peak", "alto", "alta", "fuerte", "club", "main"]
+        .iter()
+        .any(|needle| normalized_contains_phrase(prompt, needle))
+    {
+        return Some("peak".to_string());
+    }
+    if ["closing", "cierre", "after", "late"]
+        .iter()
+        .any(|needle| normalized_contains_phrase(prompt, needle))
+    {
+        return Some("closing".to_string());
+    }
+    None
+}
+
+fn prompt_exclude_terms(prompt: &str) -> Vec<String> {
+    let tokens = prompt
+        .split_whitespace()
+        .map(|value| value.trim_matches(|character: char| !character.is_alphanumeric()))
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let mut excludes = Vec::new();
+    for pair in tokens.windows(2) {
+        let marker = pair[0].to_lowercase();
+        if matches!(marker.as_str(), "sin" | "no" | "without" | "exclude") {
+            excludes.push(pair[1].to_string());
+        }
+    }
+    clean_copilot_terms(excludes, 8)
+}
+
+fn playlist_copilot_semantic_scores(
+    app: &AppHandle,
+    conn: &Connection,
+    library_id: &str,
+    prompt: &str,
+) -> HashMap<String, f64> {
+    semantic_search(app, conn, Some(library_id), prompt, 220)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|result| (result.track.track_id, result.score))
+        .collect()
+}
+
+fn rank_copilot_candidates(
+    tracks: &[PlaylistIndexTrack],
+    interpreted: &PlaylistCopilotInterpretation,
+    prompt: &str,
+    target_count: usize,
+    semantic_scores: &HashMap<String, f64>,
+) -> Vec<PlaylistCopilotCandidate> {
+    let prompt_terms = copilot_prompt_terms(prompt);
+    let normalized_excludes = interpreted
+        .exclude_terms
+        .iter()
+        .map(|value| normalize_for_match(value))
+        .collect::<Vec<_>>();
+    let mut candidates = tracks
+        .iter()
+        .filter_map(|track| {
+            let normalized_text = normalize_for_match(&track.search_text);
+            if normalized_excludes
+                .iter()
+                .any(|term| !term.is_empty() && normalized_contains_phrase(&normalized_text, term))
+            {
+                return None;
+            }
+
+            let mut score = 0.0_f64;
+            let mut reasons = Vec::<String>::new();
+
+            if let Some(semantic_score) = semantic_scores.get(&track.track_id).copied() {
+                let boost = ((semantic_score - 0.45).max(0.0) * 80.0).min(36.0);
+                if boost > 2.0 {
+                    score += boost;
+                    reasons.push("Match semantico con el brief".to_string());
+                }
+            }
+
+            score += score_terms(
+                "Genero",
+                track.genre.as_deref(),
+                &interpreted.genres,
+                34.0,
+                &mut reasons,
+            );
+            score += score_terms(
+                "Artista",
+                track.artist.as_deref(),
+                &interpreted.artists,
+                26.0,
+                &mut reasons,
+            );
+            score += score_terms(
+                "Key",
+                track.key.as_deref(),
+                &interpreted.keys,
+                14.0,
+                &mut reasons,
+            );
+            score += score_bpm(track, interpreted, &mut reasons);
+
+            let matched_terms = prompt_terms
+                .iter()
+                .filter(|term| normalized_contains_phrase(&normalized_text, term))
+                .take(8)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !matched_terms.is_empty() {
+                score += (matched_terms.len() as f64 * 2.0).min(14.0);
+                reasons.push(format!("Coincide con: {}", matched_terms.join(", ")));
+            }
+
+            if let Some(mood) = interpreted.mood.as_deref() {
+                let normalized_mood = normalize_for_match(mood);
+                if normalized_contains_phrase(&normalized_text, &normalized_mood) {
+                    score += 8.0;
+                    reasons.push(format!("Mood: {mood}"));
+                }
+            }
+            if let Some(energy) = interpreted.energy.as_deref() {
+                if energy == "peak" && track_bpm_value(track).is_some_and(|bpm| bpm >= 124.0) {
+                    score += 5.0;
+                    reasons.push("Energia alta por BPM".to_string());
+                } else if energy == "warmup"
+                    && track_bpm_value(track).is_some_and(|bpm| bpm <= 124.0)
+                {
+                    score += 5.0;
+                    reasons.push("Apto para warmup".to_string());
+                }
+            }
+
+            score += metadata_quality_score(track);
+            if !track.source_exists {
+                score -= 25.0;
+                reasons.push("Archivo no encontrado".to_string());
+            }
+            if reasons.is_empty() {
+                reasons.push("Buen fit general por metadata disponible".to_string());
+            }
+
+            Some(PlaylistCopilotCandidate {
+                track: track.clone(),
+                score: (score * 10.0).round() / 10.0,
+                reasons,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                left.track
+                    .artist
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .cmp(
+                        &right
+                            .track
+                            .artist
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase(),
+                    )
+            })
+            .then_with(|| {
+                left.track
+                    .name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .cmp(
+                        &right
+                            .track
+                            .name
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_lowercase(),
+                    )
+            })
+    });
+
+    diversify_copilot_candidates(candidates, target_count)
+}
+
+fn score_terms(
+    label: &str,
+    value: Option<&str>,
+    terms: &[String],
+    points: f64,
+    reasons: &mut Vec<String>,
+) -> f64 {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return 0.0;
+    };
+    let normalized_value = normalize_for_match(value);
+    if terms
+        .iter()
+        .map(|term| normalize_for_match(term))
+        .any(|term| {
+            normalized_contains_phrase(&normalized_value, &term)
+                || normalized_contains_phrase(&term, &normalized_value)
+        })
+    {
+        reasons.push(format!("{label}: {value}"));
+        return points;
+    }
+    0.0
+}
+
+fn score_bpm(
+    track: &PlaylistIndexTrack,
+    interpreted: &PlaylistCopilotInterpretation,
+    reasons: &mut Vec<String>,
+) -> f64 {
+    let Some(bpm) = track_bpm_value(track) else {
+        return 0.0;
+    };
+    let min = interpreted.bpm_min.unwrap_or(50.0);
+    let max = interpreted.bpm_max.unwrap_or(220.0);
+    if interpreted.bpm_min.is_none() && interpreted.bpm_max.is_none() {
+        return 0.0;
+    }
+    if bpm >= min && bpm <= max {
+        reasons.push(format!("BPM {bpm:.0} dentro del rango"));
+        return 24.0;
+    }
+    let distance = if bpm < min { min - bpm } else { bpm - max };
+    if distance <= 5.0 {
+        reasons.push(format!("BPM {bpm:.0} cerca del rango"));
+        return 8.0;
+    }
+    -distance.min(18.0) * 0.45
+}
+
+fn metadata_quality_score(track: &PlaylistIndexTrack) -> f64 {
+    [
+        track.name.as_ref(),
+        track.artist.as_ref(),
+        track.album.as_ref(),
+        track.genre.as_ref(),
+        track.bpm.as_ref(),
+        track.key.as_ref(),
+    ]
+    .into_iter()
+    .filter(|value| value.is_some_and(|value| !value.trim().is_empty()))
+    .count() as f64
+}
+
+fn diversify_copilot_candidates(
+    candidates: Vec<PlaylistCopilotCandidate>,
+    target_count: usize,
+) -> Vec<PlaylistCopilotCandidate> {
+    let artist_soft_limit = if target_count <= 20 { 2 } else { 3 };
+    let mut artist_counts = HashMap::<String, usize>::new();
+    let mut selected = Vec::new();
+    let mut deferred = Vec::new();
+
+    for candidate in candidates {
+        let artist = normalize_for_match(candidate.track.artist.as_deref().unwrap_or("unknown"));
+        let count = artist_counts.get(&artist).copied().unwrap_or_default();
+        if selected.len() < target_count && (artist == "unknown" || count < artist_soft_limit) {
+            *artist_counts.entry(artist).or_insert(0) += 1;
+            selected.push(candidate);
+        } else {
+            deferred.push(candidate);
+        }
+    }
+
+    for candidate in deferred {
+        if selected.len() >= target_count {
+            break;
+        }
+        selected.push(candidate);
+    }
+
+    selected
+}
+
+fn copilot_prompt_terms(prompt: &str) -> Vec<String> {
+    let stopwords = [
+        "para", "con", "sin", "que", "una", "uno", "los", "las", "the", "and", "for", "from",
+        "playlist", "lista", "temas", "tracks", "quiero", "generar", "crear", "algo", "entre",
+        "bpm", "del", "por", "como",
+    ];
+    let normalized = normalize_for_match(prompt);
+    let mut seen = BTreeSet::new();
+    normalized
+        .split_whitespace()
+        .filter(|term| term.len() >= 3 && !stopwords.contains(term))
+        .filter(|term| seen.insert((*term).to_string()))
+        .take(24)
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn playlist_copilot_questions(
+    interpreted: &PlaylistCopilotInterpretation,
+    candidate_count: usize,
+) -> Vec<String> {
+    let mut questions = Vec::new();
+    if interpreted.genres.is_empty() {
+        questions.push("Quieres priorizar algun genero o subgenero?".to_string());
+    }
+    if interpreted.bpm_min.is_none() && interpreted.bpm_max.is_none() {
+        questions.push("Quieres acotar un rango BPM?".to_string());
+    }
+    if interpreted.keys.is_empty() {
+        questions.push("Mantengo compatibilidad armonica por key?".to_string());
+    }
+    if candidate_count < interpreted.target_count.unwrap_or(30).min(30) {
+        questions
+            .push("Quieres abrir criterios o incluir tracks con metadata incompleta?".to_string());
+    }
+    questions.truncate(4);
+    questions
+}
+
+fn normalize_for_match(value: &str) -> String {
+    value
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn normalized_contains_phrase(haystack: &str, needle: &str) -> bool {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return false;
+    }
+    if needle.len() <= 2 {
+        return haystack.split_whitespace().any(|token| token == needle);
+    }
+    haystack.contains(needle)
 }
 
 fn semantic_search(
