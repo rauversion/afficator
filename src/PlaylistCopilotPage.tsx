@@ -117,16 +117,23 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
-  kind?: "text" | "thinking" | "steps" | "choices" | "findings" | "titles";
+  kind?: "text" | "thinking" | "steps" | "choices" | "findings" | "titles" | "inference";
   steps?: PlaylistCopilotStep[];
   questions?: PlaylistCopilotQuestion[];
   reasoning?: string[];
   coverage?: PlaylistCopilotCoverage;
+  interpreted?: PlaylistCopilotInterpretation;
   titleSuggestions?: PlaylistCopilotTitleSuggestion[];
 };
 
 type CopilotResultTab = "candidates" | "interpretation";
 type CopilotMode = "auto" | "guided";
+
+type GenerateSuggestionsOptions = {
+  appendUserMessage?: boolean;
+  requestMode?: CopilotMode;
+  thinkingText?: string;
+};
 
 const copilotExamples = [
   "Warm up house 118-124 BPM con voces suaves",
@@ -237,10 +244,22 @@ export function PlaylistCopilotPage() {
     setDrafts(response);
   }
 
+  function handleCopilotSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const currentPrompt = prompt.trim();
+    if (!currentPrompt) {
+      setErrorMessage(t("Describe la playlist que quieres generar."));
+      return;
+    }
+
+    void generateSuggestions(undefined, currentPrompt);
+  }
+
   async function generateSuggestions(
     event?: React.FormEvent<HTMLFormElement>,
     overridePrompt?: string,
-    answeredOverride?: Set<string>
+    answeredOverride?: Set<string>,
+    options: GenerateSuggestionsOptions = {}
   ) {
     event?.preventDefault();
     const currentPrompt = (overridePrompt ?? prompt).trim();
@@ -253,6 +272,8 @@ export function PlaylistCopilotPage() {
       return;
     }
     const answeredForResponse = answeredOverride ?? answeredQuestionIds;
+    const requestMode = options.requestMode ?? copilotMode;
+    const appendUserMessage = options.appendUserMessage !== false;
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -263,11 +284,11 @@ export function PlaylistCopilotPage() {
       id: crypto.randomUUID(),
       role: "assistant",
       kind: "thinking",
-      text: copilotMode === "guided"
+      text: options.thinkingText ?? (requestMode === "guided"
         ? "Thinking through the next step..."
-        : "Building a complete pass..."
+        : "Building a complete pass...")
     };
-    setMessages((current) => [...current, userMessage, thinkingMessage]);
+    setMessages((current) => appendUserMessage ? [...current, userMessage, thinkingMessage] : [...current, thinkingMessage]);
     setLoading(true);
     setErrorMessage("");
     setMessage("");
@@ -277,9 +298,9 @@ export function PlaylistCopilotPage() {
         copilotLanguageInstruction(locale),
         conversationContext(messages),
         currentPrompt,
-        copilotMode === "guided"
+        requestMode === "guided"
           ? "Conversation mode: ask exactly one clarifying question at a time. Continue only after the user answers. Explain the current step briefly in the chat."
-          : "Conversation mode: make a complete playlist pass, then offer optional refinements."
+          : "Conversation mode: make a complete playlist pass from the provided brief. Do not restart the setup questions unless the brief is impossible to interpret."
       ].filter(Boolean).join("\n\n");
       const result = await invoke<PlaylistCopilotResponse>("playlist_copilot_generate", {
         request: {
@@ -287,7 +308,7 @@ export function PlaylistCopilotPage() {
           prompt: backendPrompt,
           targetCount,
           sessionId: sessionId || null,
-          mode: copilotMode,
+          mode: requestMode,
           language: locale,
           answeredQuestionIds: Array.from(answeredForResponse)
         }
@@ -299,7 +320,7 @@ export function PlaylistCopilotPage() {
       setSelectedTrackIds(new Set(result.candidates.map((candidate) => candidate.track.track_id)));
       setMessages((current) => [
         ...current.filter((item) => item.id !== thinkingMessage.id),
-        ...copilotResponseMessages(result, copilotMode, answeredForResponse)
+        ...copilotResponseMessages(result, requestMode, answeredForResponse)
       ]);
       setPrompt("");
     } catch (error) {
@@ -515,7 +536,13 @@ export function PlaylistCopilotPage() {
                   </div>
                 ) : null}
 
-                <form className="grid gap-2" onSubmit={generateSuggestions}>
+                <form className="grid gap-2" onSubmit={handleCopilotSubmit}>
+                  {copilotMode === "guided" ? (
+                    <div className="rounded-md border border-border bg-secondary px-3 py-2 text-xs text-muted-foreground">
+                      <strong className="text-foreground">{t("Brief guiado")}</strong>{" "}
+                      {t("El Copilot interpreta tu mensaje, infiere lo que ya respondiste y pregunta solo el siguiente dato util.")}
+                    </div>
+                  ) : null}
                   <textarea
                     className="min-h-28 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     value={prompt}
@@ -827,14 +854,28 @@ function copilotResponseMessages(
     }
   ];
 
+  messages.push({
+    id: crypto.randomUUID(),
+    role: "assistant",
+    kind: "inference",
+    text: isCollectingBrief
+      ? "Esto inferi del brief antes de hacer la siguiente pregunta."
+      : "Esto inferi del brief antes de rankear candidatos.",
+    interpreted: result.interpreted,
+    reasoning: result.reasoning_summary
+  });
+
+  messages.push({
+    id: crypto.randomUUID(),
+    role: "assistant",
+    kind: "steps",
+    text: isCollectingBrief
+      ? "Estoy razonando el brief por pasos antes de buscar."
+      : "I worked through it in steps.",
+    steps: result.steps
+  });
+
   if (!isCollectingBrief) {
-    messages.push({
-      id: crypto.randomUUID(),
-      role: "assistant",
-      kind: "steps",
-      text: "I worked through it in steps.",
-      steps: result.steps
-    });
     messages.push({
       id: crypto.randomUUID(),
       role: "assistant",
@@ -915,6 +956,13 @@ function CopilotChatBubble({
 
       {!message.kind || message.kind === "text" ? <span className="whitespace-pre-wrap">{t(message.text)}</span> : null}
 
+      {message.kind === "inference" ? (
+        <div className="grid gap-2">
+          <strong>{t(message.text)}</strong>
+          <CopilotInferencePanel interpreted={message.interpreted ?? null} reasoning={message.reasoning ?? []} />
+        </div>
+      ) : null}
+
       {message.kind === "steps" ? (
         <div className="grid gap-2">
           <strong>{t(message.text)}</strong>
@@ -977,12 +1025,19 @@ function CopilotChatBubble({
                       type="button"
                       variant="secondary"
                       size="sm"
-                      className="h-auto whitespace-normal py-1.5 text-left text-xs"
+                      className="h-auto items-start whitespace-normal py-1.5 text-left text-xs"
                       disabled={loading}
                       onClick={() => onApplyOption(question, option)}
                     >
                       {isPendingOption ? <RefreshCcw className="h-3 w-3 animate-spin" /> : null}
-                      {isPendingOption ? t("Continuando") : t(option.label)}
+                      <span className="grid gap-0.5">
+                        <span className="font-semibold">{isPendingOption ? t("Continuando") : t(option.label)}</span>
+                        {option.description ? (
+                          <span className="text-[11px] font-normal text-muted-foreground">
+                            {t(option.description)}
+                          </span>
+                        ) : null}
+                      </span>
                     </Button>
                   );
                 })}
@@ -1019,6 +1074,58 @@ function CopilotMetricChip({ label, value }: { label: string; value: React.React
     <span className="rounded-md border border-border bg-secondary px-2 py-1 text-[11px]">
       <strong>{label}:</strong> {value}
     </span>
+  );
+}
+
+function CopilotInferencePanel({
+  interpreted,
+  reasoning
+}: {
+  interpreted: PlaylistCopilotInterpretation | null;
+  reasoning: string[];
+}) {
+  const { t } = useI18n();
+
+  if (!interpreted) {
+    return <span className="text-xs text-muted-foreground">{t("Sin datos para mostrar.")}</span>;
+  }
+
+  const bpmRange = [interpreted.bpm_min, interpreted.bpm_max]
+    .filter((value) => typeof value === "number")
+    .map((value) => Math.round(Number(value)))
+    .join("-");
+  const signals = [
+    { label: t("Generos"), values: interpreted.genres },
+    { label: t("Artistas"), values: interpreted.artists },
+    { label: "Key", values: interpreted.keys },
+    { label: "BPM", values: bpmRange ? [bpmRange] : [] },
+    { label: "Mood", values: interpreted.mood ? [interpreted.mood] : [] },
+    { label: t("Energia"), values: interpreted.energy ? [interpreted.energy] : [] },
+    { label: t("Excluir"), values: interpreted.exclude_terms }
+  ].filter((signal) => signal.values.length > 0);
+
+  return (
+    <div className="grid gap-2 rounded-md bg-background/70 p-2">
+      {signals.length ? (
+        <div className="flex flex-wrap gap-1.5">
+          {signals.map((signal) => (
+            <span key={signal.label} className="rounded-md border border-border bg-secondary px-2 py-1 text-[11px]">
+              <strong>{signal.label}:</strong> {signal.values.slice(0, 4).join(", ")}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <span className="text-xs text-muted-foreground">
+          {t("Todavia no hay senales fuertes; por eso pregunto el siguiente dato.")}
+        </span>
+      )}
+
+      {reasoning.slice(0, 2).map((item) => (
+        <p key={item} className="m-0 text-xs text-muted-foreground">
+          {t(item)}
+        </p>
+      ))}
+    </div>
   );
 }
 
