@@ -1,9 +1,10 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   Album,
   AlertTriangle,
+  ChevronDown,
   ChevronRight,
   ClipboardList,
   Clock3,
@@ -22,7 +23,6 @@ import {
   Monitor,
   Moon,
   MoreHorizontal,
-  Pause,
   Play,
   RefreshCcw,
   Settings,
@@ -38,6 +38,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { HashRouter, Navigate, NavLink, Outlet, Route, Routes, useOutletContext } from "react-router-dom";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { GlobalAudioPlayerProvider, SidebarAudioPlayer, useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -54,7 +55,6 @@ import { PlaylistIndexPage } from "./PlaylistIndexPage";
 import { TaxonomyPage } from "./TaxonomyPage";
 import { TurnPage } from "./TurnPage";
 import { languageLabel, translate, translateBackendMessage, useI18n, type Locale } from "./i18n";
-import { playbackErrorMessage } from "./playback";
 import packageMetadata from "../package.json";
 import type * as React from "react";
 
@@ -202,12 +202,6 @@ type ExportXmlResult = {
   replaced_track_total: number;
 };
 
-type PlayerState = {
-  label: string;
-  path: string;
-  url: string;
-};
-
 type DetailTab = "playlist" | "converted" | "plan" | "report";
 
 type AppShellContext = {
@@ -245,12 +239,14 @@ type AudioToolSettings = {
 };
 
 type EventBridgeStatus = "checking" | "connected" | "error";
+type StatusTone = "ok" | "pending" | "error";
 
 const maxConcurrencyLimit = 4;
 const appVersion = packageMetadata.version;
 const themeModeKey = "aifficator.themeMode";
 const savedXmlPathKey = "aifficator.savedXmlPath";
 const recentXmlPathsKey = "aifficator.recentXmlPaths";
+const sidebarStatusCollapsedKey = "rau-studio.sidebarStatusCollapsed";
 
 function detectLogicalCores() {
   if (typeof navigator === "undefined") return 1;
@@ -277,29 +273,31 @@ function detectInitialDarkMode() {
 
 export default function App() {
   return (
-    <HashRouter>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route path="/" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-          <Route path="/rekordbox-convert" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-          <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-          <Route path="/file-conversion/local" element={<FileConversionPage />} />
-          <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
-          <Route path="/playlists" element={<PlaylistIndexPage />} />
-          <Route path="/playlists/copilot" element={<PlaylistCopilotPage />} />
-          <Route path="/playlists/artists" element={<PlaylistBrowserPage kind="artist" />} />
-          <Route path="/playlists/albums" element={<PlaylistBrowserPage kind="album" />} />
-          <Route path="/playlists/taxonomies" element={<TaxonomyPage />} />
-          <Route path="/turn" element={<TurnPage />} />
-          <Route path="/mastering" element={<MasteringPage />} />
-          <Route
-            path="/settings"
-            element={<SettingsPage />}
-          />
-          <Route path="*" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
-        </Route>
-      </Routes>
-    </HashRouter>
+    <GlobalAudioPlayerProvider>
+      <HashRouter>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="/" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+            <Route path="/rekordbox-convert" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+            <Route path="/file-conversion" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+            <Route path="/file-conversion/local" element={<FileConversionPage />} />
+            <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
+            <Route path="/playlists" element={<PlaylistIndexPage />} />
+            <Route path="/playlists/copilot" element={<PlaylistCopilotPage />} />
+            <Route path="/playlists/artists" element={<PlaylistBrowserPage kind="artist" />} />
+            <Route path="/playlists/albums" element={<PlaylistBrowserPage kind="album" />} />
+            <Route path="/playlists/taxonomies" element={<TaxonomyPage />} />
+            <Route path="/turn" element={<TurnPage />} />
+            <Route path="/mastering" element={<MasteringPage />} />
+            <Route
+              path="/settings"
+              element={<SettingsPage />}
+            />
+            <Route path="*" element={<Navigate to="/file-conversion/rekordbox-convert" replace />} />
+          </Route>
+        </Routes>
+      </HashRouter>
+    </GlobalAudioPlayerProvider>
   );
 }
 
@@ -807,6 +805,7 @@ function SettingsPage() {
 
 function RekordboxConvertPage() {
   const { locale, t } = useI18n();
+  const audioPlayer = useGlobalAudioPlayer();
   const [detectedLogicalCores] = useState(() => detectLogicalCores());
   const [xmlPath, setXmlPath] = useState("");
   const [recentXmlPaths, setRecentXmlPaths] = useState<string[]>([]);
@@ -830,14 +829,9 @@ function RekordboxConvertPage() {
   const [activeDetailTab, setActiveDetailTab] = useState<DetailTab>("playlist");
   const [selectedTrackFile, setSelectedTrackFile] = useState<PlaylistTrackFile | null>(null);
   const [metadataSheetOpen, setMetadataSheetOpen] = useState(false);
-  const [player, setPlayer] = useState<PlayerState | null>(null);
-  const [playerPlaying, setPlayerPlaying] = useState(false);
-  const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
-  const [playerDuration, setPlayerDuration] = useState(0);
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
-  const audioElement = useRef<HTMLAudioElement | null>(null);
   const terminalElement = useRef<HTMLDivElement | null>(null);
   const nextTerminalLogId = useRef(1);
   const terminalProgressBuckets = useRef(new Map<string, number>());
@@ -926,8 +920,6 @@ function RekordboxConvertPage() {
     }
   }, [recommendedConcurrency]);
 
-  const playerProgress =
-    playerDuration > 0 ? Math.min(100, (playerCurrentTime / playerDuration) * 100) : 0;
   const activeConvertibleTrackIds = playlistFiles.filter(canConvertPlaylistFile).map((file) => file.track_id);
   const processingTrackIds = useMemo(() => {
     const trackIds = new Set<string>();
@@ -1023,7 +1015,6 @@ function RekordboxConvertPage() {
   async function chooseXml() {
     setErrorMessage("");
     setPlan(null);
-    setPlayer(null);
 
     const selected = await open({
       multiple: false,
@@ -1043,7 +1034,6 @@ function RekordboxConvertPage() {
     setBusy(true);
     setErrorMessage("");
     setPlan(null);
-    setPlayer(null);
     setConvertedFiles([]);
     setConversionProgress(new Map());
     conversionProgressRef.current = new Map();
@@ -1500,86 +1490,12 @@ function RekordboxConvertPage() {
     }
   }
 
-  async function playPath(path: string, label: string) {
-    setPlayer({
-      label,
-      path,
-      url: convertFileSrc(path)
-    });
-    setPlayerPlaying(false);
-    setPlayerCurrentTime(0);
-    setPlayerDuration(0);
-
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-
-    try {
-      audioElement.current?.load();
-      await audioElement.current?.play();
-      setPlayerPlaying(true);
-    } catch (error) {
-      setErrorMessage(playbackErrorMessage(t, label, path, error));
-    }
-  }
-
-  async function togglePlayer() {
-    if (!audioElement.current || !player) return;
-
-    try {
-      if (audioElement.current.paused) {
-        await audioElement.current.play();
-        setPlayerPlaying(true);
-      } else {
-        audioElement.current.pause();
-        setPlayerPlaying(false);
-      }
-    } catch (error) {
-      setErrorMessage(`No se pudo controlar el player: ${String(error)}`);
-    }
-  }
-
   async function togglePathPlayback(path: string, label: string) {
-    if (player?.path === path && playerPlaying) {
-      stopPlayer();
-      return;
-    }
-
-    if (player?.path === path) {
-      await togglePlayer();
-      return;
-    }
-
-    await playPath(path, label);
-  }
-
-  function stopPlayer() {
-    if (audioElement.current) {
-      audioElement.current.pause();
-      audioElement.current.currentTime = 0;
-    }
-    setPlayerPlaying(false);
-    setPlayerCurrentTime(0);
+    await audioPlayer.togglePathPlayback(path, label, setErrorMessage);
   }
 
   function playbackIcon(path?: string) {
-    return path && player?.path === path && playerPlaying ? "stop" : "play";
-  }
-
-  function syncPlayerTime(audio: HTMLAudioElement | null = audioElement.current) {
-    if (!audio) return;
-    setPlayerCurrentTime(audio.currentTime || 0);
-    setPlayerDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
-  }
-
-  function finishPlayback() {
-    setPlayerPlaying(false);
-    syncPlayerTime();
-  }
-
-  function formatTime(seconds: number) {
-    if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = Math.floor(seconds % 60).toString().padStart(2, "0");
-    return `${minutes}:${remainingSeconds}`;
+    return audioPlayer.isPlaying(path) ? "stop" : "play";
   }
 
   async function reveal(path: string) {
@@ -1715,42 +1631,6 @@ function RekordboxConvertPage() {
           <PlanMetric danger={plan.blocked_total > 0}>{t("{count} bloqueados", { count: plan.blocked_total })}</PlanMetric>
         </section>
       ) : null}
-
-      <Card className="mb-3 grid grid-cols-[74px_minmax(180px,320px)_minmax(220px,1fr)_84px] items-center gap-3 p-3 max-lg:grid-cols-1">
-        <Button disabled={!player} onClick={() => void togglePlayer()} className="w-[74px] px-0">
-          {playerPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-            {playerPlaying ? t("Pause") : t("Play")}
-        </Button>
-        <div className="min-w-0">
-          <span className="block text-xs text-muted-foreground">Player</span>
-          <strong className="block truncate text-sm" title={player?.path ?? ""}>
-            {player?.label ?? t("Sin archivo cargado")}
-          </strong>
-        </div>
-        <div className="min-w-0">
-          <div className="mb-1 flex justify-between text-xs text-muted-foreground">
-            <span>{formatTime(playerCurrentTime)}</span>
-            <span>{formatTime(playerDuration)}</span>
-          </div>
-          <Progress value={playerProgress} />
-        </div>
-        {player ? (
-          <audio
-            className="hidden"
-            ref={audioElement}
-            src={player.url}
-            onLoadedMetadata={(event) => syncPlayerTime(event.currentTarget)}
-            onTimeUpdate={(event) => syncPlayerTime(event.currentTarget)}
-            onPlay={() => setPlayerPlaying(true)}
-            onPause={() => setPlayerPlaying(false)}
-            onEnded={finishPlayback}
-            onError={() => setErrorMessage(playbackErrorMessage(t, player.label, player.path))}
-          />
-        ) : null}
-        <Button variant="secondary" disabled={!player} onClick={() => player && void reveal(player.path)}>
-          Finder
-        </Button>
-      </Card>
 
       {importResult ? (
         <section className="grid min-h-0 grid-cols-[minmax(240px,300px)_minmax(0,1fr)] gap-3 max-lg:grid-cols-1">
@@ -1921,7 +1801,7 @@ function RekordboxConvertPage() {
                   >
                     <span className="flex justify-center">
                       <Button
-                        variant={file.source_path && player?.path === file.source_path && playerPlaying ? "default" : "secondary"}
+                        variant={audioPlayer.isPlaying(file.source_path) ? "default" : "secondary"}
                         size="icon"
                         title={playbackIcon(file.source_path) === "stop" ? "Detener original" : "Escuchar original"}
                         disabled={!file.source_exists || !file.source_path}
@@ -2097,6 +1977,11 @@ function AppSidebar({
 }) {
   const { t } = useI18n();
   const [creatorOpen, setCreatorOpen] = useState(false);
+  const [statusCollapsed, setStatusCollapsedState] = useState(() => {
+    if (typeof window === "undefined") return true;
+    const saved = localStorage.getItem(sidebarStatusCollapsedKey);
+    return saved === null ? true : saved === "true";
+  });
   const creatorRef = useRef<HTMLDivElement | null>(null);
   const ffmpegInstalled = systemStatus?.ffmpeg.installed ?? false;
   const ffprobeInstalled = systemStatus?.ffprobe.installed ?? false;
@@ -2114,6 +1999,62 @@ function AppSidebar({
       : ffprobeInstalled
         ? t("Disponible")
         : t("No instalado");
+  const websocketTone: StatusTone = eventBridgeStatus === "connected" ? "ok" : eventBridgeStatus === "checking" ? "pending" : "error";
+  const ffmpegTone: StatusTone = ffmpegInstalled ? "ok" : systemStatusLoading ? "pending" : "error";
+  const ffprobeTone: StatusTone = ffprobeInstalled ? "ok" : systemStatusLoading ? "pending" : "error";
+  const statusTones = [websocketTone, ffmpegTone, ffprobeTone];
+  const statusTone: StatusTone = statusTones.includes("error")
+    ? "error"
+    : statusTones.includes("pending")
+      ? "pending"
+      : "ok";
+
+  function setStatusCollapsed(next: boolean) {
+    setStatusCollapsedState(next);
+    localStorage.setItem(sidebarStatusCollapsedKey, String(next));
+  }
+
+  function renderStatusDetails() {
+    return (
+      <>
+        <div className="grid gap-1.5 text-xs">
+          <StatusLine
+            label={t("WebSocket")}
+            value={eventBridgeStatus === "connected" ? t("Eventos OK") : eventBridgeStatus === "checking" ? t("Conectando") : t("Error")}
+            detail={lastRealtimeEventAt ? `${t("ultimo")} ${lastRealtimeEventAt}` : t("listeners Tauri")}
+            tone={websocketTone}
+          />
+          <StatusLine
+            label={t("FFmpeg")}
+            value={ffmpegLabel}
+            detail={systemStatus?.ffmpeg.path ?? systemStatus?.ffmpeg.version ?? systemStatus?.ffmpeg.message ?? systemStatusError ?? t("conversion engine")}
+            tone={ffmpegTone}
+          />
+          <StatusLine
+            label={t("FFprobe")}
+            value={ffprobeLabel}
+            detail={systemStatus?.ffprobe.path ?? systemStatus?.ffprobe.version ?? systemStatus?.ffprobe.message ?? systemStatusError ?? t("metadata probe")}
+            tone={ffprobeTone}
+          />
+        </div>
+
+        {(!ffmpegInstalled || !ffprobeInstalled) && !systemStatusLoading ? (
+          <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
+            <div className="mb-1 flex items-center gap-1.5 font-semibold">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              {t("Instala ffmpeg")}
+            </div>
+            <code className="block rounded bg-background/70 px-1.5 py-1 font-mono text-[10px]">
+              brew install ffmpeg
+            </code>
+            <span className="mt-1 block text-amber-800 dark:text-amber-200">
+              {t("Incluye ffprobe. Puedes ajustar rutas en Settings.")}
+            </span>
+          </div>
+        ) : null}
+      </>
+    );
+  }
 
   useEffect(() => {
     if (!creatorOpen) return;
@@ -2130,7 +2071,7 @@ function AppSidebar({
 
   return (
     <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-border bg-card px-3 py-4 max-lg:static max-lg:h-auto max-lg:w-full max-lg:border-b max-lg:border-r-0">
-      <div className="mb-5 flex items-center gap-3 px-2 max-lg:mb-3">
+      <div className="mb-5 flex shrink-0 items-center gap-3 px-2 max-lg:mb-3">
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
           <img src="/rau-logo.png" alt="" className="h-8 w-8 object-contain" />
         </span>
@@ -2142,7 +2083,7 @@ function AppSidebar({
         </div>
       </div>
 
-      <nav className="grid gap-5 max-lg:flex max-lg:gap-3 max-lg:overflow-x-auto">
+      <nav className="grid min-h-0 flex-1 gap-5 overflow-y-auto pr-1 max-lg:flex max-lg:max-h-40 max-lg:flex-none max-lg:gap-3 max-lg:overflow-x-auto max-lg:overflow-y-hidden max-lg:pr-0">
         <SidebarSection title={t("File Conversion")}>
           <SidebarLink to="/file-conversion/local" icon={<Upload className="h-4 w-4" />}>
             {t("File Conversion")}
@@ -2189,13 +2130,44 @@ function AppSidebar({
         </SidebarSection>
       </nav>
 
-      <div className="mt-auto grid gap-2 border-t border-border pt-3 max-lg:mt-3 max-lg:border-t-0 max-lg:pt-0">
+      <div className="mt-3 grid shrink-0 gap-2 border-t border-border pt-3 max-lg:border-t max-lg:pt-3">
+        <SidebarAudioPlayer />
+
         <div className="rounded-md border border-border bg-background p-2">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="flex min-w-0 items-center gap-2 text-xs font-semibold">
+          <div className={cn("flex items-center justify-between gap-2", !statusCollapsed && "mb-2")}>
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-semibold text-foreground"
+              aria-expanded={!statusCollapsed}
+              aria-label={statusCollapsed ? t("Expandir status") : t("Contraer status")}
+              onClick={() => setStatusCollapsed(!statusCollapsed)}
+            >
               <Monitor className="h-3.5 w-3.5 text-muted-foreground" />
-              {t("Status")}
-            </span>
+              <span className="truncate">{t("Status")}</span>
+              <ChevronDown className={cn("ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", statusCollapsed && "-rotate-90")} />
+            </button>
+            {statusCollapsed ? (
+              <div className="group relative shrink-0">
+                <button
+                  type="button"
+                  className="flex h-6 items-center gap-1 rounded-md px-1.5 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  title={t("Ver status")}
+                  aria-label={t("Ver status")}
+                >
+                  <StatusDot tone={statusTone} label={t("Status")} />
+                </button>
+                <div
+                  role="tooltip"
+                  className="absolute bottom-0 left-full z-50 ml-2 hidden w-72 rounded-md border border-border bg-card p-3 text-card-foreground shadow-xl group-hover:block group-focus-within:block max-lg:bottom-8 max-lg:left-auto max-lg:right-0 max-lg:ml-0"
+                >
+                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold">
+                    <Monitor className="h-3.5 w-3.5 text-muted-foreground" />
+                    {t("Status")}
+                  </div>
+                  {renderStatusDetails()}
+                </div>
+              </div>
+            ) : null}
             <Button
               type="button"
               variant="ghost"
@@ -2209,41 +2181,7 @@ function AppSidebar({
             </Button>
           </div>
 
-          <div className="grid gap-1.5 text-xs">
-            <StatusLine
-              label={t("WebSocket")}
-              value={eventBridgeStatus === "connected" ? t("Eventos OK") : eventBridgeStatus === "checking" ? t("Conectando") : t("Error")}
-              detail={lastRealtimeEventAt ? `${t("ultimo")} ${lastRealtimeEventAt}` : t("listeners Tauri")}
-              tone={eventBridgeStatus === "connected" ? "ok" : eventBridgeStatus === "checking" ? "pending" : "error"}
-            />
-            <StatusLine
-              label={t("FFmpeg")}
-              value={ffmpegLabel}
-              detail={systemStatus?.ffmpeg.path ?? systemStatus?.ffmpeg.version ?? systemStatus?.ffmpeg.message ?? systemStatusError ?? t("conversion engine")}
-              tone={ffmpegInstalled ? "ok" : systemStatusLoading ? "pending" : "error"}
-            />
-            <StatusLine
-              label={t("FFprobe")}
-              value={ffprobeLabel}
-              detail={systemStatus?.ffprobe.path ?? systemStatus?.ffprobe.version ?? systemStatus?.ffprobe.message ?? systemStatusError ?? t("metadata probe")}
-              tone={ffprobeInstalled ? "ok" : systemStatusLoading ? "pending" : "error"}
-            />
-          </div>
-
-          {(!ffmpegInstalled || !ffprobeInstalled) && !systemStatusLoading ? (
-            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
-              <div className="mb-1 flex items-center gap-1.5 font-semibold">
-                <AlertTriangle className="h-3.5 w-3.5" />
-                {t("Instala ffmpeg")}
-              </div>
-              <code className="block rounded bg-background/70 px-1.5 py-1 font-mono text-[10px]">
-                brew install ffmpeg
-              </code>
-              <span className="mt-1 block text-amber-800 dark:text-amber-200">
-                {t("Incluye ffprobe. Puedes ajustar rutas en Settings.")}
-              </span>
-            </div>
-          ) : null}
+          {!statusCollapsed ? renderStatusDetails() : null}
         </div>
 
         <div ref={creatorRef} className="relative flex items-center justify-between gap-2 px-1">
@@ -2307,7 +2245,7 @@ function StatusLine({
   label: string;
   value: string;
   detail: string;
-  tone: "ok" | "pending" | "error";
+  tone: StatusTone;
 }) {
   return (
     <div className="grid grid-cols-[10px_minmax(0,1fr)] gap-2">
@@ -2329,6 +2267,21 @@ function StatusLine({
         </span>
       </div>
     </div>
+  );
+}
+
+function StatusDot({ tone, label }: { tone: StatusTone; label: string }) {
+  return (
+    <span
+      aria-label={label}
+      title={label}
+      className={cn(
+        "h-2.5 w-2.5 rounded-full ring-1 ring-background",
+        tone === "ok" && "bg-emerald-500",
+        tone === "pending" && "bg-amber-400",
+        tone === "error" && "bg-red-500"
+      )}
+    />
   );
 }
 

@@ -1,52 +1,24 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { useCallback, useRef, useState } from "react";
-import { playbackErrorMessage } from "../../playback";
+import { useCallback } from "react";
+import { useGlobalAudioPlayer } from "../audio/GlobalAudioPlayer";
 import type { TrackListItem } from "./types";
 
-type PlayerState = {
-  label: string;
-  path: string;
-  url: string;
-};
-
 export function useTrackPlayer({
-  onError,
-  t
+  onError
 }: {
   onError: (message: string) => void;
   t: (key: string, values?: Record<string, string | number | null | undefined>) => string;
 }) {
-  const audioElement = useRef<HTMLAudioElement | null>(null);
-  const [player, setPlayer] = useState<PlayerState | null>(null);
-  const [playing, setPlaying] = useState(false);
+  const globalPlayer = useGlobalAudioPlayer();
 
   const stop = useCallback(() => {
-    audioElement.current?.pause();
-    if (audioElement.current) {
-      audioElement.current.currentTime = 0;
-    }
-    setPlaying(false);
-  }, []);
+    globalPlayer.stop();
+  }, [globalPlayer]);
 
   const togglePathPlayback = useCallback(
     async (path?: string | null, label?: string | null) => {
-      if (!path) return;
-      const nextLabel = label || path;
-
-      if (player?.path === path && playing) {
-        audioElement.current?.pause();
-        setPlaying(false);
-        return;
-      }
-
-      setPlayer({ path, label: nextLabel, url: convertFileSrc(path) });
-      window.setTimeout(() => {
-        void audioElement.current?.play().catch((error) => {
-          onError(playbackErrorMessage(t, nextLabel, path, error));
-        });
-      }, 30);
+      await globalPlayer.togglePathPlayback(path, label, onError);
     },
-    [onError, player?.path, playing, t]
+    [globalPlayer, onError]
   );
 
   const toggleTrackPlayback = useCallback(
@@ -56,29 +28,16 @@ export function useTrackPlayer({
 
   const isPlaying = useCallback(
     (trackOrPath?: TrackListItem | string | null) => {
-      const path = typeof trackOrPath === "string" ? trackOrPath : trackOrPath?.source_path;
-      return Boolean(path && player?.path === path && playing);
+      return globalPlayer.isPlaying(trackOrPath);
     },
-    [player?.path, playing]
+    [globalPlayer]
   );
 
-  const audio = player ? (
-    <audio
-      className="hidden"
-      ref={audioElement}
-      src={player.url}
-      onPlay={() => setPlaying(true)}
-      onPause={() => setPlaying(false)}
-      onEnded={() => setPlaying(false)}
-      onError={() => onError(playbackErrorMessage(t, player.label, player.path))}
-    />
-  ) : null;
-
   return {
-    audio,
+    audio: null,
     isPlaying,
-    player,
-    playing,
+    player: globalPlayer.player,
+    playing: globalPlayer.playing,
     stop,
     togglePathPlayback,
     toggleTrackPlayback

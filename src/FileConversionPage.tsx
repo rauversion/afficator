@@ -1,9 +1,8 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   CheckCircle2,
-  Download,
   FileAudio2,
   FolderOpen,
   Loader2,
@@ -15,10 +14,10 @@ import {
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
 import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
-import { playbackErrorMessage } from "./playback";
 
 type LocalConversionState =
   | "pending"
@@ -95,16 +94,11 @@ type LocalConversionBatchResult = {
   failed_total: number;
 };
 
-type PlayerState = {
-  label: string;
-  path: string;
-  url: string;
-};
-
 const maxConcurrencyLimit = 4;
 
 export function FileConversionPage() {
   const { locale, t } = useI18n();
+  const audioPlayer = useGlobalAudioPlayer();
   const [allItems, setAllItems] = useState<LocalConversionItem[]>([]);
   const [currentItems, setCurrentItems] = useState<LocalConversionItem[]>([]);
   const [groups, setGroups] = useState<LocalConversionGroup[]>([]);
@@ -118,7 +112,6 @@ export function FileConversionPage() {
   const [busy, setBusy] = useState(false);
   const [terminalExpanded, setTerminalExpanded] = useState(false);
   const [terminalLogs, setTerminalLogs] = useState<TerminalLogEntry[]>([]);
-  const [player, setPlayer] = useState<PlayerState | null>(null);
   const [message, setMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const terminalElement = useRef<HTMLDivElement | null>(null);
@@ -407,11 +400,7 @@ export function FileConversionPage() {
   }
 
   function playPath(path: string, label: string) {
-    setPlayer({
-      label,
-      path,
-      url: convertFileSrc(path)
-    });
+    void audioPlayer.togglePathPlayback(path, label, setErrorMessage);
   }
 
   function appendTerminalLog(log: LocalConversionLogEvent) {
@@ -675,44 +664,11 @@ export function FileConversionPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Player</CardTitle>
-            </CardHeader>
-            <CardContent className="grid gap-2 p-3">
-              {player ? (
-                <>
-                  <div className="truncate text-sm font-semibold" title={player.path}>{player.label}</div>
-                  <audio
-                    className="w-full"
-                    controls
-                    autoPlay
-                    src={player.url}
-                    onError={() => setErrorMessage(playbackErrorMessage(t, player.label, player.path))}
-                  />
-                  <div className="break-words font-mono text-[11px] text-muted-foreground">{player.path}</div>
-                  <Button variant="secondary" onClick={() => void openFolderFor(player.path)}>
-                    <FolderOpen className="h-4 w-4" />
-                    {t("Abrir carpeta")}
-                  </Button>
-                </>
-              ) : (
-                <div className="text-sm text-muted-foreground">{t("Selecciona play en una fila.")}</div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
               <CardTitle>{t("Destino")}</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-2 p-3 text-sm text-muted-foreground">
               <p>{t("Los AIFF se guardan al lado del original, dentro de una carpeta llamada converted.")}</p>
               <p>{t("No se reemplazan archivos fuente.")}</p>
-              <Button asChild variant="secondary" disabled={!player?.path}>
-                <a href={player ? convertFileSrc(player.path) : "#"} download>
-                  <Download className="h-4 w-4" />
-                  {t("Descargar actual")}
-                </a>
-              </Button>
             </CardContent>
           </Card>
         </aside>

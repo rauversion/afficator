@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Album,
   FolderOpen,
@@ -9,15 +9,15 @@ import {
   Square,
   UserRound
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type * as React from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
 import { PlaylistAddDialog } from "./components/tracks/PlaylistAddDialog";
 import { TrackCover } from "./components/tracks/TrackCover";
 import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
-import { playbackErrorMessage } from "./playback";
 
 type BrowserKind = "artist" | "album";
 type ArtistDetailTab = "tracks" | "albums";
@@ -67,14 +67,9 @@ type PlaylistDraft = {
   track_count: number;
 };
 
-type PlayerState = {
-  label: string;
-  path: string;
-  url: string;
-};
-
 export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
   const { locale, t } = useI18n();
+  const audioPlayer = useGlobalAudioPlayer();
   const [libraries, setLibraries] = useState<PlaylistIndexLibrary[]>([]);
   const [activeLibraryId, setActiveLibraryId] = useState("");
   const [drafts, setDrafts] = useState<PlaylistDraft[]>([]);
@@ -91,9 +86,6 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
   const [errorMessage, setErrorMessage] = useState("");
   const [addPlaylistDialogOpen, setAddPlaylistDialogOpen] = useState(false);
   const [detailTrack, setDetailTrack] = useState<PlaylistIndexTrack | null>(null);
-  const [player, setPlayer] = useState<PlayerState | null>(null);
-  const [playerPlaying, setPlayerPlaying] = useState(false);
-  const audioElement = useRef<HTMLAudioElement | null>(null);
 
   const activeLibrary = libraries.find((library) => library.id === activeLibraryId) ?? null;
   const activeGroup = groups.find((group) => group.value === activeGroupValue) ?? null;
@@ -350,18 +342,7 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
   }
 
   async function togglePathPlayback(path: string, label: string) {
-    if (player?.path === path && playerPlaying) {
-      audioElement.current?.pause();
-      setPlayerPlaying(false);
-      return;
-    }
-
-    setPlayer({ path, label, url: convertFileSrc(path) });
-    window.setTimeout(() => {
-      void audioElement.current?.play().catch((error) => {
-        setErrorMessage(playbackErrorMessage(t, label, path, error));
-      });
-    }, 30);
+    await audioPlayer.togglePathPlayback(path, label, setErrorMessage);
   }
 
   async function openFolder(path?: string | null) {
@@ -416,37 +397,6 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
           {message}
         </div>
       ) : null}
-
-      <Card className="mb-3 grid grid-cols-[74px_minmax(180px,320px)_minmax(0,1fr)_96px] items-center gap-3 p-3 max-lg:grid-cols-1">
-        <Button disabled={!player} onClick={() => audioElement.current?.pause()} className="w-[74px] px-0">
-          {playerPlaying ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-          {playerPlaying ? t("Stop") : t("Play")}
-        </Button>
-        <div className="min-w-0">
-          <span className="block text-xs text-muted-foreground">Player</span>
-          <strong className="block truncate text-sm" title={player?.path ?? ""}>
-            {player?.label ?? t("Sin archivo cargado")}
-          </strong>
-        </div>
-        <div className="min-w-0 text-xs text-muted-foreground">
-          {activeGroup ? `${groupLabel}: ${activeGroup.name}` : t("Selecciona un grupo")}
-        </div>
-        <Button variant="secondary" disabled={!player} onClick={() => player && void openFolder(player.path)}>
-          <FolderOpen className="h-4 w-4" />
-          {t("Carpeta")}
-        </Button>
-        {player ? (
-          <audio
-            className="hidden"
-            ref={audioElement}
-            src={player.url}
-            onPlay={() => setPlayerPlaying(true)}
-            onPause={() => setPlayerPlaying(false)}
-            onEnded={() => setPlayerPlaying(false)}
-            onError={() => setErrorMessage(playbackErrorMessage(t, player.label, player.path))}
-          />
-        ) : null}
-      </Card>
 
       <section className="grid h-[calc(100vh-350px)] min-h-[560px] grid-cols-[320px_minmax(0,1fr)] gap-3 max-lg:h-[640px] max-lg:grid-cols-1">
         <Card className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -578,7 +528,7 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
                       key={track.track_id}
                       track={track}
                       selected={selectedTrackIds.has(track.track_id)}
-                      playing={Boolean(track.source_path && player?.path === track.source_path && playerPlaying)}
+                      playing={audioPlayer.isPlaying(track.source_path)}
                       onToggle={() => toggleTrack(track.track_id)}
                       onDetails={() => setDetailTrack(track)}
                       onPlay={() => track.source_path && void togglePathPlayback(track.source_path, track.name ?? track.source_path)}
@@ -593,7 +543,7 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
                   key={track.track_id}
                   track={track}
                   selected={selectedTrackIds.has(track.track_id)}
-                  playing={Boolean(track.source_path && player?.path === track.source_path && playerPlaying)}
+                  playing={audioPlayer.isPlaying(track.source_path)}
                   onToggle={() => toggleTrack(track.track_id)}
                   onDetails={() => setDetailTrack(track)}
                   onPlay={() => track.source_path && void togglePathPlayback(track.source_path, track.name ?? track.source_path)}

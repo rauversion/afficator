@@ -1,4 +1,4 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -20,6 +20,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type * as React from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,7 +30,6 @@ import {
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
 import { cn } from "./lib/utils";
 import { translateBackendMessage, useI18n } from "./i18n";
-import { playbackErrorMessage } from "./playback";
 
 type PlaylistIndexLibrary = {
   id: string;
@@ -147,12 +147,6 @@ type PlaylistIndexProgressEvent = {
   timestamp: string;
 };
 
-type PlayerState = {
-  label: string;
-  path: string;
-  url: string;
-};
-
 type PlaylistIndexTab = "index" | "search" | "playlist";
 type PlaylistIndexPlaylistStatus = "pending" | "queued" | "indexing" | "indexed";
 type TrackEmbeddingStatus = "pending" | "queued" | "embedding" | "embedded";
@@ -179,6 +173,7 @@ const trackTableColumns: Array<{ key: TrackTableColumnKey; label: string; width:
 
 export function PlaylistIndexPage() {
   const { locale, t } = useI18n();
+  const audioPlayer = useGlobalAudioPlayer();
   const [libraries, setLibraries] = useState<PlaylistIndexLibrary[]>([]);
   const [activeLibraryId, setActiveLibraryId] = useState("");
   const [xmlPath, setXmlPath] = useState("");
@@ -204,10 +199,6 @@ export function PlaylistIndexPage() {
   const [indexProgress, setIndexProgress] = useState<PlaylistIndexProgressEvent | null>(null);
   const [playlistIndexStatuses, setPlaylistIndexStatuses] = useState<Record<string, PlaylistIndexPlaylistStatus>>({});
   const [trackEmbeddingStatuses, setTrackEmbeddingStatuses] = useState<Record<string, TrackEmbeddingStatus>>({});
-  const [player, setPlayer] = useState<PlayerState | null>(null);
-  const [playerPlaying, setPlayerPlaying] = useState(false);
-  const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
-  const [playerDuration, setPlayerDuration] = useState(0);
   const [activeTab, setActiveTab] = useState<PlaylistIndexTab>("index");
   const [createDraftSheetOpen, setCreateDraftSheetOpen] = useState(false);
   const [createDraftSeedTrackIds, setCreateDraftSeedTrackIds] = useState<string[]>([]);
@@ -216,7 +207,6 @@ export function PlaylistIndexPage() {
   const [deleteIndexDialog, setDeleteIndexDialog] = useState<DeleteIndexDialogState | null>(null);
   const [visibleTrackTableColumns, setVisibleTrackTableColumns] = useState<Set<TrackTableColumnKey>>(() => readTrackTableColumns());
 
-  const audioElement = useRef<HTMLAudioElement | null>(null);
   const terminalElement = useRef<HTMLDivElement | null>(null);
   const nextTerminalLogId = useRef(1);
 
@@ -271,9 +261,6 @@ export function PlaylistIndexPage() {
   const missingEmbeddingCount = activeLibrary
     ? Math.max(0, activeLibrary.track_count - activeLibrary.embedded_track_count)
     : 0;
-  const playerProgress =
-    playerDuration > 0 ? Math.min(100, (playerCurrentTime / playerDuration) * 100) : 0;
-
   useEffect(() => {
     void loadLibraries();
 
@@ -927,56 +914,7 @@ export function PlaylistIndexPage() {
   }
 
   async function togglePathPlayback(path: string, label: string) {
-    if (player?.path === path && playerPlaying) {
-      stopPlayer();
-      return;
-    }
-
-    setPlayer({ path, label, url: convertFileSrc(path) });
-    setPlayerPlaying(false);
-    setPlayerCurrentTime(0);
-    setPlayerDuration(0);
-
-    await new Promise((resolve) => window.requestAnimationFrame(resolve));
-
-    try {
-      audioElement.current?.load();
-      await audioElement.current?.play();
-      setPlayerPlaying(true);
-    } catch (error) {
-      setErrorMessage(playbackErrorMessage(t, label, path, error));
-    }
-  }
-
-  async function togglePlayer() {
-    if (!audioElement.current || !player) return;
-
-    try {
-      if (audioElement.current.paused) {
-        await audioElement.current.play();
-        setPlayerPlaying(true);
-      } else {
-        audioElement.current.pause();
-        setPlayerPlaying(false);
-      }
-    } catch (error) {
-      setErrorMessage(`${t("No se pudo controlar el player")}: ${String(error)}`);
-    }
-  }
-
-  function stopPlayer() {
-    if (audioElement.current) {
-      audioElement.current.pause();
-      audioElement.current.currentTime = 0;
-    }
-    setPlayerPlaying(false);
-    setPlayerCurrentTime(0);
-  }
-
-  function syncPlayerTime(audio: HTMLAudioElement | null = audioElement.current) {
-    if (!audio) return;
-    setPlayerCurrentTime(audio.currentTime || 0);
-    setPlayerDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+    await audioPlayer.togglePathPlayback(path, label, setErrorMessage);
   }
 
   function appendTerminalLog(log: Omit<TerminalLogEntry, "id" | "time">) {
@@ -1086,42 +1024,6 @@ export function PlaylistIndexPage() {
           <IndexMetric label={t("No encontrados")} value={activeLibrary.missing_file_count} danger={activeLibrary.missing_file_count > 0} />
         </section>
       ) : null}
-
-      <Card className="mb-3 grid grid-cols-[74px_minmax(180px,320px)_minmax(220px,1fr)_84px] items-center gap-3 p-3 max-lg:grid-cols-1">
-        <Button disabled={!player} onClick={() => void togglePlayer()} className="w-[74px] px-0">
-          {playerPlaying ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-          {playerPlaying ? t("Stop") : t("Play")}
-        </Button>
-        <div className="min-w-0">
-          <span className="block text-xs text-muted-foreground">Player</span>
-          <strong className="block truncate text-sm" title={player?.path ?? ""}>
-            {player?.label ?? t("Sin archivo cargado")}
-          </strong>
-        </div>
-        <div className="min-w-0">
-          <div className="mb-1 flex justify-between text-xs text-muted-foreground">
-            <span>{formatTime(playerCurrentTime)}</span>
-            <span>{formatTime(playerDuration)}</span>
-          </div>
-          <Progress value={playerProgress} />
-        </div>
-        {player ? (
-          <audio
-            className="hidden"
-            ref={audioElement}
-            src={player.url}
-            onLoadedMetadata={(event) => syncPlayerTime(event.currentTarget)}
-            onTimeUpdate={(event) => syncPlayerTime(event.currentTarget)}
-            onPlay={() => setPlayerPlaying(true)}
-            onPause={() => setPlayerPlaying(false)}
-            onEnded={() => setPlayerPlaying(false)}
-            onError={() => setErrorMessage(playbackErrorMessage(t, player.label, player.path))}
-          />
-        ) : null}
-        <Button variant="secondary" disabled={!player} onClick={() => player && void reveal(player.path)}>
-          Finder
-        </Button>
-      </Card>
 
       <div className="mb-3 flex min-w-0 flex-wrap items-center gap-1 rounded-md border border-border bg-card p-1">
         <PlaylistTabButton active={activeTab === "index"} onClick={() => setActiveTab("index")}>
@@ -1435,7 +1337,7 @@ export function PlaylistIndexPage() {
                       onVector={() => void generateEmbeddings([result.track.track_id])}
                       onDelete={() => requestDeleteIndexedTracks([result.track])}
                       embeddingStatus={trackEmbeddingStatus(result.track)}
-                      playing={Boolean(result.track.source_path && player?.path === result.track.source_path && playerPlaying)}
+                      playing={audioPlayer.isPlaying(result.track.source_path)}
                     />
                   ))}
                 </CardContent>
@@ -1539,7 +1441,7 @@ export function PlaylistIndexPage() {
                         key={`${track.track_id}-${track.source_path ?? ""}`}
                         track={track}
                         onPlay={() => track.source_path && void togglePathPlayback(track.source_path, track.name ?? track.source_path)}
-                        playing={Boolean(track.source_path && player?.path === track.source_path && playerPlaying)}
+                        playing={audioPlayer.isPlaying(track.source_path)}
                       />
                     ))}
                   </CardContent>
