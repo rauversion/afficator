@@ -71,6 +71,32 @@ The frontend owns:
 - presenting realtime events from Tauri;
 - user-facing validation messages.
 
+## Playback Queue
+
+Audio playback is coordinated in the frontend by the global audio player provider. The provider owns the current
+track, the current playback queue, the queue index, progress state, and the hidden browser audio element.
+
+Track list surfaces pass their visible ordered tracks as playback context when a user starts a track. The player
+normalizes that context into a playable queue by filtering out missing files, stores the clicked track as the current
+index, and automatically advances to the next playable item when the current audio ends. Direct previews that do not
+come from a track list continue to use single-path playback and do not create a queue.
+
+This keeps ordering behavior local to the UI context that the user is seeing while preserving one global player across
+navigation, detail sheets, the sidebar, and playlist tools.
+
+The provider publishes stable playback controls separately from sidebar-only progress and preference state. Track
+lists therefore update when playback identity changes, but not for every audio `timeupdate` or volume slider change.
+
+## Track Cover Pipeline
+
+Track covers are requested only when a row approaches the visible viewport. A shared intersection observer and a
+two-request scheduler deduplicate paths, bound concurrent extraction, and cancel work that has not started when its
+last visible consumer disappears.
+
+The Tauri cover command runs blocking filesystem and `ffmpeg` work on the async runtime's blocking pool. Cache misses
+produce a versioned JPEG thumbnail no larger than 256 by 256 pixels through a temporary file; cache hits and known
+missing covers return immediately. The UI lets WebKit defer and asynchronously decode the resulting local image.
+
 ## Realtime Events
 
 Long-running tasks emit Tauri events:

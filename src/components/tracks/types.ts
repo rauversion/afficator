@@ -22,3 +22,9 @@ export type TrackListItem = {
 };
 
 export type TrackListColumn = "artist" | "album" | "genre" | "bpm" | "key" | "year" | "kind";
+
+export type TrackPlaybackContext = {
+  id: string;
+  label?: string | null;
+  tracks: TrackListItem[];
+};

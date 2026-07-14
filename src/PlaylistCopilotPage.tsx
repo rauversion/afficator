@@ -749,6 +749,10 @@ export function PlaylistCopilotPage() {
                       <TrackTable
                         tracks={candidateTracks}
                         columns={["artist", "genre", "bpm", "key"]}
+                        playbackContext={{
+                          id: `copilot:${sessionId || activeLibraryId || "current"}`,
+                          label: selectedTitle || t("Playlist Copilot")
+                        }}
                         selectedTrackIds={selectedTrackIds}
                         isPlaying={trackPlayer.isPlaying}
                         onDetails={(track) => setDetailTrack(track)}

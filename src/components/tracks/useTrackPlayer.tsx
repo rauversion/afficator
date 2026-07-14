@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { useGlobalAudioPlayer } from "../audio/GlobalAudioPlayer";
-import type { TrackListItem } from "./types";
+import type { TrackListItem, TrackPlaybackContext } from "./types";
 
 export function useTrackPlayer({
   onError
@@ -22,8 +22,19 @@ export function useTrackPlayer({
   );
 
   const toggleTrackPlayback = useCallback(
-    (track: TrackListItem) => togglePathPlayback(track.source_path, track.name ?? track.source_path),
-    [togglePathPlayback]
+    (track: TrackListItem, context?: TrackPlaybackContext) => {
+      if (context) {
+        return globalPlayer.toggleTrackListPlayback(
+          context.tracks,
+          track,
+          { id: context.id, label: context.label },
+          onError
+        );
+      }
+
+      return togglePathPlayback(track.source_path, track.name ?? track.source_path);
+    },
+    [globalPlayer, onError, togglePathPlayback]
   );
 
   const isPlaying = useCallback(

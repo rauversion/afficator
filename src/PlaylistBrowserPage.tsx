@@ -106,6 +106,13 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
     kind === "artist" && artistDetailTab === "albums" && activeAlbum
       ? `${activeGroup?.name ?? ""} - ${activeAlbum.name}`.trim()
       : activeGroup?.name ?? "";
+  const playbackContext = useMemo(
+    () => ({
+      id: `browser:${kind}:${activeLibraryId}:${activeGroupValue || "none"}:${artistDetailTab}:${activeArtistAlbumValue || "all"}`,
+      label: playlistDialogDefaultName || title
+    }),
+    [activeArtistAlbumValue, activeGroupValue, activeLibraryId, artistDetailTab, kind, playlistDialogDefaultName, title]
+  );
 
   useEffect(() => {
     setGroups([]);
@@ -341,8 +348,8 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
     }
   }
 
-  async function togglePathPlayback(path: string, label: string) {
-    await audioPlayer.togglePathPlayback(path, label, setErrorMessage);
+  async function toggleDisplayedTrackPlayback(track: PlaylistIndexTrack) {
+    await audioPlayer.toggleTrackListPlayback(displayedTracks, track, playbackContext, setErrorMessage);
   }
 
   async function openFolder(path?: string | null) {
@@ -531,7 +538,7 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
                       playing={audioPlayer.isPlaying(track.source_path)}
                       onToggle={() => toggleTrack(track.track_id)}
                       onDetails={() => setDetailTrack(track)}
-                      onPlay={() => track.source_path && void togglePathPlayback(track.source_path, track.name ?? track.source_path)}
+                      onPlay={() => void toggleDisplayedTrackPlayback(track)}
                       onOpenFolder={() => void openFolder(track.source_path)}
                     />
                   ))}
@@ -546,7 +553,7 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
                   playing={audioPlayer.isPlaying(track.source_path)}
                   onToggle={() => toggleTrack(track.track_id)}
                   onDetails={() => setDetailTrack(track)}
-                  onPlay={() => track.source_path && void togglePathPlayback(track.source_path, track.name ?? track.source_path)}
+                  onPlay={() => void toggleDisplayedTrackPlayback(track)}
                   onOpenFolder={() => void openFolder(track.source_path)}
                 />
               ))
@@ -558,7 +565,7 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
       <BrowseTrackDetailSheet
         track={detailTrack}
         onClose={() => setDetailTrack(null)}
-        onPlay={(track) => track.source_path && void togglePathPlayback(track.source_path, track.name ?? track.source_path)}
+        onPlay={(track) => void toggleDisplayedTrackPlayback(track)}
         onOpenFolder={(track) => void openFolder(track.source_path)}
       />
 

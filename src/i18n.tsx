@@ -25,6 +25,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Actualizar status": "Refresh status",
     "API key": "API key",
     "Apariencia": "Appearance",
+    "Anterior": "Previous",
     "Audio tools": "Audio tools",
     "Ano": "Year",
     "Atributos XML": "XML attributes",
@@ -82,6 +83,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Rutas de herramientas guardadas.": "Tool paths saved.",
     "Rutas de herramientas restauradas a autodeteccion.": "Tool paths restored to autodetection.",
     "Settings": "Settings",
+    "Siguiente": "Next",
     "Sin eventos todavia.": "No events yet.",
     "Source file not found": "Source file not found",
     "Status": "Status",
@@ -89,6 +91,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Turn": "Turn",
     "Usar defaults": "Use defaults",
     "Ver status": "View status",
+    "Volumen": "Volume",
     "WebSocket": "WebSocket",
     "Esta seccion ya esta registrada en el router y lista para recibir su flujo.":
       "This section is already registered in the router and ready for its workflow.",

@@ -27,6 +27,9 @@ const EMBEDDING_DIMENSIONS: usize = 512;
 const EMBEDDING_BATCH_SIZE: usize = 32;
 const COPILOT_RANKER_VERSION: &str = "multi-probe-sequence-v2";
 const COPILOT_PROBE_RESULT_LIMIT: usize = 160;
+const TRACK_COVER_CACHE_VERSION: &str = "v2";
+const TRACK_COVER_FILTER: &str =
+    "scale=256:256:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=fast_bilinear";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaylistIndexLibrary {
@@ -1146,11 +1149,20 @@ pub async fn playlist_copilot_generate(
 }
 
 #[tauri::command]
-pub fn playlist_index_track_cover(
+pub async fn playlist_index_track_cover(
     app: AppHandle,
     source_path: String,
 ) -> Result<Option<String>, String> {
-    extract_track_cover(&app, &source_path)
+    let app_for_error = app.clone();
+    tauri::async_runtime::spawn_blocking(move || extract_track_cover(&app, &source_path))
+        .await
+        .map_err(|error| {
+            settings::localized(
+                &app_for_error,
+                &format!("La portada fallo inesperadamente: {error}"),
+                &format!("The cover extraction failed unexpectedly: {error}"),
+            )
+        })?
 }
 
 #[tauri::command]
@@ -2619,7 +2631,8 @@ fn extract_track_cover(app: &AppHandle, source_path: &str) -> Result<Option<Stri
         .path()
         .app_data_dir()
         .map_err(|error| format!("No se pudo resolver app data dir: {error}"))?
-        .join("cover-cache");
+        .join("cover-cache")
+        .join(TRACK_COVER_CACHE_VERSION);
     fs::create_dir_all(&cache_dir)
         .map_err(|error| format!("No se pudo crear cache de portadas: {error}"))?;
 
@@ -2632,29 +2645,47 @@ fn extract_track_cover(app: &AppHandle, source_path: &str) -> Result<Option<Stri
         return Ok(None);
     }
 
+    let temporary_cover_path = cache_dir.join(format!("{cache_key}.{}.tmp.jpg", Uuid::new_v4()));
     let output = system::ffmpeg_command(app)
         .arg("-y")
+        .arg("-nostdin")
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
         .arg("-i")
         .arg(&source)
+        .arg("-map")
+        .arg("0:v:0?")
         .arg("-an")
+        .arg("-vf")
+        .arg(TRACK_COVER_FILTER)
+        .arg("-filter_threads")
+        .arg("1")
         .arg("-frames:v")
         .arg("1")
+        .arg("-threads")
+        .arg("1")
         .arg("-q:v")
-        .arg("2")
-        .arg(&cover_path)
+        .arg("4")
+        .arg(&temporary_cover_path)
         .output();
 
     match output {
-        Ok(output)
-            if output.status.success() && cover_path.is_file() && file_has_content(&cover_path) =>
-        {
+        Ok(output) if output.status.success() && file_has_content(&temporary_cover_path) => {
+            if !cover_path.is_file() {
+                if let Err(error) = fs::rename(&temporary_cover_path, &cover_path) {
+                    let _ = fs::remove_file(&temporary_cover_path);
+                    if !cover_path.is_file() {
+                        return Err(format!("No se pudo guardar thumbnail de portada: {error}"));
+                    }
+                }
+            } else {
+                let _ = fs::remove_file(&temporary_cover_path);
+            }
             Ok(Some(cover_path.to_string_lossy().into_owned()))
         }
         _ => {
-            let _ = fs::remove_file(&cover_path);
+            let _ = fs::remove_file(&temporary_cover_path);
             let _ = fs::write(&miss_path, b"");
             Ok(None)
         }

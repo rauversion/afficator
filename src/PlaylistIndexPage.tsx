@@ -29,6 +29,7 @@ import {
 } from "./components/ui/dropdown-menu";
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
 import { TrackTable } from "./components/tracks/TrackList";
+import type { TrackListItem } from "./components/tracks/types";
 import { cn } from "./lib/utils";
 import { translateBackendMessage, useI18n } from "./i18n";
 
@@ -250,6 +251,28 @@ export function PlaylistIndexPage() {
       .map((result) => result.track)
       .filter((track) => selectedIds.has(track.track_id));
   }, [searchResults, selectedTrackIds]);
+  const searchQueueTracks = useMemo(() => searchResults.map((result) => result.track), [searchResults]);
+  const searchPlaybackContext = useMemo(
+    () => ({
+      id: `search:${activeLibraryId}:${semanticSearch ? "semantic" : "lexical"}:${searchQuery.trim()}`,
+      label: searchQuery.trim() ? `${t("Resultados")}: ${searchQuery.trim()}` : t("Playlist Library")
+    }),
+    [activeLibraryId, searchQuery, semanticSearch, t]
+  );
+  const draftPlaybackContext = useMemo(
+    () => ({
+      id: `draft:${activeDraftId || "none"}`,
+      label: activeDraft?.name ?? t("Playlist nueva")
+    }),
+    [activeDraft?.name, activeDraftId, t]
+  );
+  const sourcePlaylistPlaybackContext = useMemo(
+    () => ({
+      id: `playlist:${activeLibraryId}:${activePlaylistPath || "none"}`,
+      label: activePlaylist?.path ?? t("Playlist origen")
+    }),
+    [activeLibraryId, activePlaylist?.path, activePlaylistPath, t]
+  );
   const visibleTrackColumns = useMemo(
     () => trackTableColumns.filter((column) => visibleTrackTableColumns.has(column.key)),
     [visibleTrackTableColumns]
@@ -918,6 +941,14 @@ export function PlaylistIndexPage() {
     await audioPlayer.togglePathPlayback(path, label, setErrorMessage);
   }
 
+  async function toggleTrackListPlayback(
+    tracks: TrackListItem[],
+    track: TrackListItem,
+    context: { id: string; label?: string | null }
+  ) {
+    await audioPlayer.toggleTrackListPlayback(tracks, track, context, setErrorMessage);
+  }
+
   function appendTerminalLog(log: Omit<TerminalLogEntry, "id" | "time">) {
     const nextLog: TerminalLogEntry = {
       ...log,
@@ -1331,7 +1362,7 @@ export function PlaylistIndexPage() {
                       selected={selectedTrackIds.has(result.track.track_id)}
                       score={scoreLabel(result)}
                       onToggle={() => toggleSearchTrack(result.track.track_id)}
-                      onPlay={() => result.track.source_path && void togglePathPlayback(result.track.source_path, result.track.name ?? result.track.source_path)}
+                      onPlay={() => void toggleTrackListPlayback(searchQueueTracks, result.track, searchPlaybackContext)}
                       onDetails={() => openTrackDetail(result.track)}
                       onReveal={() => void reveal(result.track.source_path)}
                       onOpenFolder={() => void openFolder(result.track.source_path)}
@@ -1405,11 +1436,9 @@ export function PlaylistIndexPage() {
                         tracks={draftTracks}
                         columns={["artist", "album", "kind"]}
                         showPosition
+                        playbackContext={draftPlaybackContext}
                         isPlaying={(track) => audioPlayer.isPlaying(track.source_path)}
-                        onPlay={(track) =>
-                          track.source_path &&
-                          void togglePathPlayback(track.source_path, track.name ?? track.source_path)
-                        }
+                        onPlay={(track, context) => void toggleTrackListPlayback(context.tracks, track, context)}
                         onDetails={(track) => openTrackDetail(track as PlaylistIndexTrack)}
                         renderTitleAccessory={(track) => <TrackIndexBadges track={track} />}
                         renderActions={(track) => (
@@ -1448,11 +1477,9 @@ export function PlaylistIndexPage() {
                         tracks={playlistTracks}
                         columns={["artist", "album", "kind"]}
                         showPosition
+                        playbackContext={sourcePlaylistPlaybackContext}
                         isPlaying={(track) => audioPlayer.isPlaying(track.source_path)}
-                        onPlay={(track) =>
-                          track.source_path &&
-                          void togglePathPlayback(track.source_path, track.name ?? track.source_path)
-                        }
+                        onPlay={(track, context) => void toggleTrackListPlayback(context.tracks, track, context)}
                         onDetails={(track) => openTrackDetail(track as PlaylistIndexTrack)}
                         onOpenFolder={(track) => void openFolder(track.source_path)}
                         renderTitleAccessory={(track) => <TrackIndexBadges track={track} />}

@@ -4,7 +4,7 @@ import { useI18n } from "../../i18n";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { TrackCover } from "./TrackCover";
-import type { TrackListColumn, TrackListItem } from "./types";
+import type { TrackListColumn, TrackListItem, TrackPlaybackContext } from "./types";
 
 const defaultColumns: TrackListColumn[] = ["artist", "album", "genre", "bpm", "key"];
 
@@ -17,6 +17,7 @@ export function TrackTable({
   onDetails,
   onOpenFolder,
   onPlay,
+  playbackContext,
   onToggleTrack,
   renderActions,
   renderTitleAccessory,
@@ -29,7 +30,11 @@ export function TrackTable({
   isPlaying?: (track: TrackListItem) => boolean;
   onDetails?: (track: TrackListItem) => void;
   onOpenFolder?: (track: TrackListItem) => void;
-  onPlay?: (track: TrackListItem) => void;
+  onPlay?: (track: TrackListItem, context: TrackPlaybackContext) => void;
+  playbackContext?: {
+    id: string;
+    label?: string | null;
+  };
   onToggleTrack?: (track: TrackListItem) => void;
   renderActions?: (track: TrackListItem, index: number) => React.ReactNode;
   renderTitleAccessory?: (track: TrackListItem) => React.ReactNode;
@@ -38,6 +43,11 @@ export function TrackTable({
   const { t } = useI18n();
   const hasActions = Boolean(onOpenFolder || renderActions);
   const template = trackGridTemplate(columns, Boolean(onToggleTrack), hasActions, showPosition);
+  const trackPlaybackContext: TrackPlaybackContext = {
+    id: playbackContext?.id ?? "track-table",
+    label: playbackContext?.label,
+    tracks
+  };
 
   if (tracks.length === 0) {
     return <>{empty}</>;
@@ -77,7 +87,7 @@ export function TrackTable({
             titleAccessory={renderTitleAccessory?.(track)}
             onDetails={onDetails ? () => onDetails(track) : undefined}
             onOpenFolder={onOpenFolder ? () => onOpenFolder(track) : undefined}
-            onPlay={onPlay ? () => onPlay(track) : undefined}
+            onPlay={onPlay ? () => onPlay(track, trackPlaybackContext) : undefined}
             onToggle={onToggleTrack ? () => onToggleTrack(track) : undefined}
           />
         ))}
