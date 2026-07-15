@@ -207,6 +207,12 @@ function trackColumnWidth(column: TrackListColumn) {
     case "key":
     case "year":
       return "78px";
+    case "rating":
+      return "96px";
+    case "label":
+      return "minmax(130px,0.75fr)";
+    case "comments":
+      return "minmax(180px,1fr)";
     case "kind":
       return "minmax(120px,0.7fr)";
   }
@@ -224,8 +230,14 @@ function trackColumnLabel(t: (key: string) => string, column: TrackListColumn) {
       return "BPM";
     case "key":
       return "Key";
+    case "rating":
+      return "Rating";
     case "year":
       return t("Ano");
+    case "label":
+      return "Label";
+    case "comments":
+      return t("Comentarios");
     case "kind":
       return t("Formato");
   }
@@ -243,11 +255,28 @@ function trackColumnValue(track: TrackListItem, column: TrackListColumn) {
       return track.bpm ?? "";
     case "key":
       return track.key ?? "";
+    case "rating": {
+      const rating = trackRating(track);
+      return rating > 0 ? `${"★".repeat(rating)}${"☆".repeat(5 - rating)}` : "—";
+    }
     case "year":
       return track.year ?? "";
+    case "label":
+      return track.label ?? "";
+    case "comments":
+      return track.comments ?? "";
     case "kind":
       return track.kind ?? "";
   }
+}
+
+function trackRating(track: TrackListItem) {
+  if (track.user_rating !== undefined && track.user_rating !== null) {
+    return Math.max(0, Math.min(5, Math.round(track.user_rating)));
+  }
+  const raw = Number.parseFloat(track.rating ?? "");
+  if (!Number.isFinite(raw)) return 0;
+  return Math.max(0, Math.min(5, Math.round(raw <= 5 ? raw : raw / 51)));
 }
 
 function trackMetadataSummary(track: TrackListItem) {

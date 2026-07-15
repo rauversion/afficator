@@ -4,24 +4,13 @@ Rau Studio can build macOS bundles without an Apple Developer certificate, but u
 
 ## Current State
 
-- macOS artifacts are published as `.app.tar.gz`.
-- They may not be signed with Developer ID.
-- They may not be notarized.
-- Local users may need to remove `com.apple.quarantine` after downloading.
-
-```sh
-cd ~/Downloads
-tar -xzf RauStudio_0.1.9_arm64.app.tar.gz
-xattr -dr com.apple.quarantine "Rau Studio.app"
-open "Rau Studio.app"
-```
-
-If the app was already copied to `/Applications`:
-
-```sh
-xattr -dr com.apple.quarantine "/Applications/Rau Studio.app"
-open "/Applications/Rau Studio.app"
-```
+- The release workflow builds separate Apple Silicon and Intel artifacts.
+- Each macOS app is signed with **Developer ID Application** and notarized.
+- The workflow creates a signed `.dmg`, submits it to Apple, staples the ticket,
+  and verifies it with Gatekeeper before uploading it.
+- macOS jobs fail before building when a required repository secret is missing.
+- GitHub Actions does not read the local `.env`; the values must be configured as
+  repository secrets.
 
 ## Requirements for Gatekeeper-Friendly Distribution
 
@@ -40,7 +29,7 @@ KEYCHAIN_PASSWORD          # temporary keychain password for the runner
 APPLE_ID                   # Apple ID email
 APPLE_PASSWORD             # app-specific password
 APPLE_TEAM_ID              # Apple Developer Team ID
-APPLE_SIGNING_IDENTITY     # optional: "Developer ID Application: Name (TEAMID)"
+APPLE_SIGNING_IDENTITY     # "Developer ID Application: Name (TEAMID)"
 ```
 
 Generate `APPLE_CERTIFICATE`:
@@ -52,13 +41,14 @@ openssl base64 -A -in DeveloperIDApplication.p12 -out apple_certificate_base64.t
 ## Recommended Flow
 
 1. Create a **Developer ID Application** certificate in Apple Developer.
-2. Export it from Keychain as `.p12`.
-3. Store the base64 `.p12` in `APPLE_CERTIFICATE`.
-4. Configure Apple secrets in GitHub.
-5. Update the release workflow to sign with `APPLE_SIGNING_IDENTITY`.
-6. Notarize the bundle with Apple before publishing.
+2. Export it from Keychain as a password-protected `.p12`.
+3. Store the base64 `.p12` in the `APPLE_CERTIFICATE` repository secret.
+4. Configure all Apple repository secrets listed above.
+5. Run the workflow manually or push a `v*` tag.
+6. Confirm both macOS jobs report `Accepted` from `notarytool` and upload `.dmg`
+   artifacts.
 
-Once this is active, the recommended user-facing macOS artifact should be a signed and notarized `.dmg`.
+The user-facing macOS artifacts are signed and notarized `.dmg` files.
 
 ## Services That Simplify the Process
 

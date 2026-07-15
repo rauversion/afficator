@@ -135,6 +135,98 @@ pub struct TaxonomyCount {
     count: usize,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlaylistCatalogFilters {
+    genres: Vec<String>,
+    artists: Vec<String>,
+    albums: Vec<String>,
+    keys: Vec<String>,
+    years: Vec<String>,
+    formats: Vec<String>,
+    bpm_min: Option<f64>,
+    bpm_max: Option<f64>,
+    rating_min: Option<u8>,
+    metadata_gaps: Vec<String>,
+    availability: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistCatalogRequest {
+    library_id: String,
+    query: Option<String>,
+    filters: Option<PlaylistCatalogFilters>,
+    sort: Option<String>,
+    page: Option<usize>,
+    page_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistCatalogFacetValue {
+    value: String,
+    name: String,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistCatalogFacets {
+    genres: Vec<PlaylistCatalogFacetValue>,
+    artists: Vec<PlaylistCatalogFacetValue>,
+    albums: Vec<PlaylistCatalogFacetValue>,
+    keys: Vec<PlaylistCatalogFacetValue>,
+    years: Vec<PlaylistCatalogFacetValue>,
+    formats: Vec<PlaylistCatalogFacetValue>,
+    ratings: Vec<PlaylistCatalogFacetValue>,
+    metadata_gaps: Vec<PlaylistCatalogFacetValue>,
+    availability: Vec<PlaylistCatalogFacetValue>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistCatalogResponse {
+    items: Vec<PlaylistIndexTrack>,
+    total: usize,
+    page: usize,
+    page_size: usize,
+    total_pages: usize,
+    facets: PlaylistCatalogFacets,
+    query_terms: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistCatalogSavedSearch {
+    id: String,
+    library_id: String,
+    name: String,
+    description: Option<String>,
+    query: String,
+    filters: PlaylistCatalogFilters,
+    sort: String,
+    result_count: usize,
+    last_evaluated_at: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistCatalogSaveRequest {
+    id: Option<String>,
+    library_id: String,
+    name: String,
+    description: Option<String>,
+    query: Option<String>,
+    filters: Option<PlaylistCatalogFilters>,
+    sort: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistCatalogSelectionResponse {
+    items: Vec<PlaylistIndexTrack>,
+    total: usize,
+    truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaylistTaxonomyGraph {
     nodes: Vec<TaxonomyGraphNode>,
@@ -1134,6 +1226,64 @@ pub fn playlist_index_taxonomy_tracks(
 }
 
 #[tauri::command]
+pub fn playlist_catalog_search(
+    app: AppHandle,
+    request: PlaylistCatalogRequest,
+) -> Result<PlaylistCatalogResponse, String> {
+    let conn = open_db(&app)?;
+    catalog_search(&conn, request)
+}
+
+#[tauri::command]
+pub fn playlist_catalog_select_all(
+    app: AppHandle,
+    request: PlaylistCatalogRequest,
+    limit: Option<usize>,
+) -> Result<PlaylistCatalogSelectionResponse, String> {
+    let conn = open_db(&app)?;
+    catalog_select_all(&conn, request, limit.unwrap_or(5_000).clamp(1, 5_000))
+}
+
+#[tauri::command]
+pub fn playlist_catalog_saved_searches(
+    app: AppHandle,
+    library_id: String,
+) -> Result<Vec<PlaylistCatalogSavedSearch>, String> {
+    let conn = open_db(&app)?;
+    list_catalog_saved_searches(&conn, &library_id)
+}
+
+#[tauri::command]
+pub fn playlist_catalog_save_search(
+    app: AppHandle,
+    request: PlaylistCatalogSaveRequest,
+) -> Result<PlaylistCatalogSavedSearch, String> {
+    let conn = open_db(&app)?;
+    save_catalog_search(&conn, request)
+}
+
+#[tauri::command]
+pub fn playlist_catalog_delete_saved_search(
+    app: AppHandle,
+    library_id: String,
+    saved_search_id: String,
+) -> Result<String, String> {
+    let conn = open_db(&app)?;
+    delete_catalog_saved_search(&conn, &library_id, &saved_search_id)
+}
+
+#[tauri::command]
+pub fn playlist_catalog_set_rating(
+    app: AppHandle,
+    library_id: String,
+    track_ids: Vec<String>,
+    rating: u8,
+) -> Result<usize, String> {
+    let mut conn = open_db(&app)?;
+    set_catalog_tracks_rating(&mut conn, &library_id, track_ids, rating)
+}
+
+#[tauri::command]
 pub async fn playlist_copilot_generate(
     app: AppHandle,
     request: PlaylistCopilotRequest,
@@ -1660,6 +1810,24 @@ fn init_db(conn: &Connection) -> Result<(), String> {
         );
         CREATE INDEX IF NOT EXISTS idx_playlist_enrichment_observations_track
           ON playlist_enrichment_observations(library_id, track_id, field, observed_at DESC);
+
+        CREATE TABLE IF NOT EXISTS playlist_catalog_saved_searches (
+          id TEXT PRIMARY KEY,
+          library_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          description TEXT,
+          query TEXT NOT NULL DEFAULT '',
+          filters_json TEXT NOT NULL DEFAULT '{}',
+          sort TEXT NOT NULL DEFAULT 'relevance',
+          result_count INTEGER NOT NULL DEFAULT 0,
+          last_evaluated_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(library_id, name),
+          FOREIGN KEY(library_id) REFERENCES playlist_index_libraries(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_playlist_catalog_saved_searches_library
+          ON playlist_catalog_saved_searches(library_id, updated_at DESC);
 
         CREATE TABLE IF NOT EXISTS playlist_drafts (
           id TEXT PRIMARY KEY,
@@ -2501,6 +2669,809 @@ fn list_taxonomy_tracks(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("No se pudieron mapear tracks de taxonomia: {error}"))
+}
+
+#[derive(Debug, Clone)]
+struct CatalogCriteria {
+    filters: PlaylistCatalogFilters,
+    query_terms: Vec<String>,
+}
+
+fn catalog_search(
+    conn: &Connection,
+    request: PlaylistCatalogRequest,
+) -> Result<PlaylistCatalogResponse, String> {
+    if request.library_id.trim().is_empty() {
+        return Err("Selecciona una libreria para buscar tracks.".to_string());
+    }
+
+    let tracks = list_taxonomy_tracks(conn, request.library_id.trim())?;
+    let mut filters = request.filters.unwrap_or_default();
+    let query_terms =
+        parse_catalog_query(request.query.as_deref().unwrap_or_default(), &mut filters);
+    let criteria = CatalogCriteria {
+        filters,
+        query_terms,
+    };
+
+    let facets = catalog_facets(&tracks, &criteria);
+    let mut matches = tracks
+        .iter()
+        .filter(|track| catalog_track_matches(track, &criteria, None))
+        .cloned()
+        .collect::<Vec<_>>();
+    sort_catalog_tracks(
+        &mut matches,
+        request.sort.as_deref().unwrap_or("relevance"),
+        &criteria.query_terms,
+    );
+
+    let total = matches.len();
+    let page_size = request.page_size.unwrap_or(50).clamp(10, 100);
+    let total_pages = total.div_ceil(page_size).max(1);
+    let page = request.page.unwrap_or(1).max(1).min(total_pages);
+    let offset = (page - 1) * page_size;
+    let items = matches.into_iter().skip(offset).take(page_size).collect();
+
+    Ok(PlaylistCatalogResponse {
+        items,
+        total,
+        page,
+        page_size,
+        total_pages,
+        facets,
+        query_terms: criteria.query_terms,
+    })
+}
+
+fn catalog_select_all(
+    conn: &Connection,
+    request: PlaylistCatalogRequest,
+    limit: usize,
+) -> Result<PlaylistCatalogSelectionResponse, String> {
+    if request.library_id.trim().is_empty() {
+        return Err("Selecciona una libreria para buscar tracks.".to_string());
+    }
+
+    let tracks = list_taxonomy_tracks(conn, request.library_id.trim())?;
+    let mut filters = request.filters.unwrap_or_default();
+    let query_terms =
+        parse_catalog_query(request.query.as_deref().unwrap_or_default(), &mut filters);
+    let criteria = CatalogCriteria {
+        filters,
+        query_terms,
+    };
+    let mut matches = tracks
+        .into_iter()
+        .filter(|track| catalog_track_matches(track, &criteria, None))
+        .collect::<Vec<_>>();
+    sort_catalog_tracks(
+        &mut matches,
+        request.sort.as_deref().unwrap_or("relevance"),
+        &criteria.query_terms,
+    );
+    let total = matches.len();
+    matches.truncate(limit);
+
+    Ok(PlaylistCatalogSelectionResponse {
+        truncated: matches.len() < total,
+        items: matches,
+        total,
+    })
+}
+
+fn list_catalog_saved_searches(
+    conn: &Connection,
+    library_id: &str,
+) -> Result<Vec<PlaylistCatalogSavedSearch>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, library_id, name, description, query, filters_json, sort,
+                    result_count, last_evaluated_at, created_at, updated_at
+             FROM playlist_catalog_saved_searches
+             WHERE library_id = ?1
+             ORDER BY updated_at DESC, name COLLATE NOCASE",
+        )
+        .map_err(|error| format!("No se pudieron preparar las busquedas guardadas: {error}"))?;
+    let rows = stmt
+        .query_map(params![library_id], row_to_catalog_saved_search)
+        .map_err(|error| format!("No se pudieron leer las busquedas guardadas: {error}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("No se pudieron mapear las busquedas guardadas: {error}"))
+}
+
+fn save_catalog_search(
+    conn: &Connection,
+    request: PlaylistCatalogSaveRequest,
+) -> Result<PlaylistCatalogSavedSearch, String> {
+    let library_id = request.library_id.trim();
+    if library_id.is_empty() || get_library(conn, library_id)?.is_none() {
+        return Err("La libreria de la busqueda guardada no existe.".to_string());
+    }
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err("Escribe un nombre para la busqueda guardada.".to_string());
+    }
+    if name.chars().count() > 100 {
+        return Err("El nombre de la busqueda no puede superar 100 caracteres.".to_string());
+    }
+
+    let query = request.query.unwrap_or_default().trim().to_string();
+    let filters = request.filters.unwrap_or_default();
+    let sort = normalize_catalog_sort(request.sort.as_deref());
+    let tracks = list_taxonomy_tracks(conn, library_id)?;
+    let mut evaluated_filters = filters.clone();
+    let query_terms = parse_catalog_query(&query, &mut evaluated_filters);
+    let criteria = CatalogCriteria {
+        filters: evaluated_filters,
+        query_terms,
+    };
+    let result_count = tracks
+        .iter()
+        .filter(|track| catalog_track_matches(track, &criteria, None))
+        .count();
+    let filters_json = serde_json::to_string(&filters)
+        .map_err(|error| format!("No se pudieron serializar los filtros: {error}"))?;
+    let description = request
+        .description
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let now = timestamp();
+    let updating = request.id.is_some();
+    let id = request.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    let existing = conn
+        .query_row(
+            "SELECT 1 FROM playlist_catalog_saved_searches WHERE id = ?1 AND library_id = ?2",
+            params![&id, library_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| format!("No se pudo validar la busqueda guardada: {error}"))?
+        .is_some();
+    if updating && !existing {
+        return Err("Busqueda guardada no encontrada.".to_string());
+    }
+
+    let result = if existing {
+        conn.execute(
+            "UPDATE playlist_catalog_saved_searches
+             SET name = ?3, description = ?4, query = ?5, filters_json = ?6,
+                 sort = ?7, result_count = ?8, last_evaluated_at = ?9, updated_at = ?9
+             WHERE id = ?1 AND library_id = ?2",
+            params![
+                &id,
+                library_id,
+                name,
+                description,
+                query,
+                filters_json,
+                sort,
+                result_count as i64,
+                now
+            ],
+        )
+    } else {
+        conn.execute(
+            "INSERT INTO playlist_catalog_saved_searches (
+               id, library_id, name, description, query, filters_json, sort,
+               result_count, last_evaluated_at, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?9)",
+            params![
+                &id,
+                library_id,
+                name,
+                description,
+                query,
+                filters_json,
+                sort,
+                result_count as i64,
+                now
+            ],
+        )
+    };
+    result.map_err(|error| {
+        if error.to_string().contains("UNIQUE constraint failed") {
+            format!("Ya existe una busqueda guardada llamada '{name}'.")
+        } else {
+            format!("No se pudo guardar la busqueda: {error}")
+        }
+    })?;
+
+    get_catalog_saved_search(conn, library_id, &id)?
+        .ok_or_else(|| "No se pudo recargar la busqueda guardada.".to_string())
+}
+
+fn delete_catalog_saved_search(
+    conn: &Connection,
+    library_id: &str,
+    saved_search_id: &str,
+) -> Result<String, String> {
+    let deleted = conn
+        .execute(
+            "DELETE FROM playlist_catalog_saved_searches WHERE id = ?1 AND library_id = ?2",
+            params![saved_search_id, library_id],
+        )
+        .map_err(|error| format!("No se pudo borrar la busqueda guardada: {error}"))?;
+    if deleted == 0 {
+        return Err("Busqueda guardada no encontrada.".to_string());
+    }
+    Ok(saved_search_id.to_string())
+}
+
+fn get_catalog_saved_search(
+    conn: &Connection,
+    library_id: &str,
+    saved_search_id: &str,
+) -> Result<Option<PlaylistCatalogSavedSearch>, String> {
+    conn.query_row(
+        "SELECT id, library_id, name, description, query, filters_json, sort,
+                result_count, last_evaluated_at, created_at, updated_at
+         FROM playlist_catalog_saved_searches
+         WHERE id = ?1 AND library_id = ?2",
+        params![saved_search_id, library_id],
+        row_to_catalog_saved_search,
+    )
+    .optional()
+    .map_err(|error| format!("No se pudo leer la busqueda guardada: {error}"))
+}
+
+fn row_to_catalog_saved_search(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<PlaylistCatalogSavedSearch> {
+    let filters_json = row.get::<_, String>(5)?;
+    Ok(PlaylistCatalogSavedSearch {
+        id: row.get(0)?,
+        library_id: row.get(1)?,
+        name: row.get(2)?,
+        description: row.get(3)?,
+        query: row.get(4)?,
+        filters: serde_json::from_str(&filters_json).unwrap_or_default(),
+        sort: row.get(6)?,
+        result_count: i64_to_usize(row.get(7)?),
+        last_evaluated_at: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn normalize_catalog_sort(sort: Option<&str>) -> String {
+    match sort.unwrap_or("relevance") {
+        "recent" | "rating" | "bpm" | "title" => sort.unwrap_or_default().to_string(),
+        _ => "relevance".to_string(),
+    }
+}
+
+fn set_catalog_tracks_rating(
+    conn: &mut Connection,
+    library_id: &str,
+    track_ids: Vec<String>,
+    rating: u8,
+) -> Result<usize, String> {
+    if rating > 5 {
+        return Err("El rating debe estar entre 0 y 5 estrellas.".to_string());
+    }
+    let track_ids = track_ids
+        .into_iter()
+        .filter(|track_id| !track_id.trim().is_empty())
+        .collect::<BTreeSet<_>>();
+    if track_ids.len() > 5_000 {
+        return Err("Puedes actualizar hasta 5000 tracks por operacion.".to_string());
+    }
+    let now = timestamp();
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("No se pudo iniciar el rating masivo: {error}"))?;
+    let mut updated = 0;
+    for track_id in track_ids {
+        updated += tx
+            .execute(
+                "UPDATE playlist_index_tracks
+                 SET user_rating = ?3, updated_at = ?4
+                 WHERE library_id = ?1 AND track_id = ?2",
+                params![library_id, track_id, i64::from(rating), &now],
+            )
+            .map_err(|error| format!("No se pudo actualizar el rating masivo: {error}"))?;
+    }
+    tx.commit()
+        .map_err(|error| format!("No se pudo confirmar el rating masivo: {error}"))?;
+    Ok(updated)
+}
+
+fn parse_catalog_query(query: &str, filters: &mut PlaylistCatalogFilters) -> Vec<String> {
+    let mut query_terms = Vec::new();
+
+    for token in catalog_query_tokens(query) {
+        let Some((field, raw_value)) = token.split_once(':') else {
+            push_catalog_filter_value(&mut query_terms, &token);
+            continue;
+        };
+        let value = raw_value.trim();
+        if value.is_empty() {
+            push_catalog_filter_value(&mut query_terms, &token);
+            continue;
+        }
+
+        match field.trim().to_ascii_lowercase().as_str() {
+            "genre" | "genero" | "género" => {
+                push_catalog_filter_values(&mut filters.genres, value)
+            }
+            "artist" | "artista" => push_catalog_filter_values(&mut filters.artists, value),
+            "album" | "álbum" => push_catalog_filter_values(&mut filters.albums, value),
+            "key" | "tonality" | "tonalidad" => {
+                push_catalog_filter_values(&mut filters.keys, value)
+            }
+            "year" | "ano" | "año" => push_catalog_filter_values(&mut filters.years, value),
+            "format" | "formato" | "kind" => {
+                push_catalog_filter_values(&mut filters.formats, value)
+            }
+            "bpm" => apply_catalog_number_range(value, &mut filters.bpm_min, &mut filters.bpm_max),
+            "rating" | "stars" | "estrellas" => {
+                if let Some(rating) = parse_catalog_minimum(value) {
+                    filters.rating_min = Some(
+                        filters
+                            .rating_min
+                            .unwrap_or_default()
+                            .max(rating.round() as u8),
+                    );
+                }
+            }
+            "missing" | "falta" => {
+                for missing in value.split([',', '|']) {
+                    let normalized = match missing.trim().to_ascii_lowercase().as_str() {
+                        "genre" | "genero" | "género" => "missing_genre",
+                        "bpm" => "missing_bpm",
+                        "key" | "tonality" | "tonalidad" => "missing_key",
+                        "label" | "sello" => "missing_label",
+                        "year" | "ano" | "año" => "missing_year",
+                        "artist" | "artista" => "missing_artist",
+                        "album" | "álbum" => "missing_album",
+                        _ => missing.trim(),
+                    };
+                    push_catalog_filter_value(&mut filters.metadata_gaps, normalized);
+                }
+            }
+            "source" | "archivo" => {
+                for source in value.split([',', '|']) {
+                    let normalized = match source.trim().to_ascii_lowercase().as_str() {
+                        "available" | "disponible" | "ok" => "available",
+                        "missing" | "faltante" | "no" => "missing",
+                        _ => source.trim(),
+                    };
+                    push_catalog_filter_value(&mut filters.availability, normalized);
+                }
+            }
+            _ => push_catalog_filter_value(&mut query_terms, &token),
+        }
+    }
+
+    query_terms
+}
+
+fn catalog_query_tokens(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+
+    for character in query.chars() {
+        match character {
+            '"' => quoted = !quoted,
+            value if value.is_whitespace() && !quoted => {
+                if !current.trim().is_empty() {
+                    tokens.push(current.trim().to_string());
+                    current.clear();
+                }
+            }
+            value => current.push(value),
+        }
+    }
+    if !current.trim().is_empty() {
+        tokens.push(current.trim().to_string());
+    }
+    tokens
+}
+
+fn push_catalog_filter_values(target: &mut Vec<String>, raw_values: &str) {
+    for value in raw_values.split([',', '|']) {
+        push_catalog_filter_value(target, value);
+    }
+}
+
+fn push_catalog_filter_value(target: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if value.is_empty() || target.iter().any(|item| item.eq_ignore_ascii_case(value)) {
+        return;
+    }
+    target.push(value.to_string());
+}
+
+fn apply_catalog_number_range(value: &str, min: &mut Option<f64>, max: &mut Option<f64>) {
+    let value = value.trim().replace(',', ".");
+    if let Some((start, end)) = value.split_once("..") {
+        if let Ok(parsed) = start.trim().parse::<f64>() {
+            *min = Some(min.unwrap_or(parsed).max(parsed));
+        }
+        if let Ok(parsed) = end.trim().parse::<f64>() {
+            *max = Some(max.unwrap_or(parsed).min(parsed));
+        }
+        return;
+    }
+
+    if let Some(parsed) = parse_catalog_minimum(&value) {
+        if value.starts_with('>') {
+            *min = Some(min.unwrap_or(parsed).max(parsed));
+        } else if value.starts_with('<') {
+            *max = Some(max.unwrap_or(parsed).min(parsed));
+        } else {
+            *min = Some(min.unwrap_or(parsed).max(parsed));
+            *max = Some(max.unwrap_or(parsed).min(parsed));
+        }
+    }
+}
+
+fn parse_catalog_minimum(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .trim_start_matches(['>', '<', '='])
+        .trim()
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+}
+
+fn catalog_track_matches(
+    track: &PlaylistIndexTrack,
+    criteria: &CatalogCriteria,
+    skip_facet: Option<&str>,
+) -> bool {
+    let filters = &criteria.filters;
+    if !criteria
+        .query_terms
+        .iter()
+        .all(|term| catalog_track_contains(track, term))
+    {
+        return false;
+    }
+    if skip_facet != Some("genres")
+        && !catalog_value_matches(track.genre.as_deref(), &filters.genres)
+    {
+        return false;
+    }
+    if skip_facet != Some("artists")
+        && !catalog_value_matches(track.artist.as_deref(), &filters.artists)
+    {
+        return false;
+    }
+    if skip_facet != Some("albums")
+        && !catalog_value_matches(track.album.as_deref(), &filters.albums)
+    {
+        return false;
+    }
+    if skip_facet != Some("keys") && !catalog_value_matches(track.key.as_deref(), &filters.keys) {
+        return false;
+    }
+    if skip_facet != Some("years") && !catalog_value_matches(track.year.as_deref(), &filters.years)
+    {
+        return false;
+    }
+    if skip_facet != Some("formats")
+        && !catalog_value_matches(track.kind.as_deref(), &filters.formats)
+    {
+        return false;
+    }
+
+    if skip_facet != Some("bpm") && (filters.bpm_min.is_some() || filters.bpm_max.is_some()) {
+        let Some(bpm) = track_bpm_value(track) else {
+            return false;
+        };
+        if filters.bpm_min.is_some_and(|min| bpm < min)
+            || filters.bpm_max.is_some_and(|max| bpm > max)
+        {
+            return false;
+        }
+    }
+    if skip_facet != Some("ratings")
+        && filters
+            .rating_min
+            .is_some_and(|minimum| catalog_track_rating(track) < minimum)
+    {
+        return false;
+    }
+    if skip_facet != Some("metadata_gaps")
+        && !filters.metadata_gaps.is_empty()
+        && !filters
+            .metadata_gaps
+            .iter()
+            .any(|gap| catalog_track_has_gap(track, gap))
+    {
+        return false;
+    }
+    if skip_facet != Some("availability")
+        && !filters.availability.is_empty()
+        && !filters
+            .availability
+            .iter()
+            .any(|availability| match availability.as_str() {
+                "available" => track.source_exists,
+                "missing" => !track.source_exists,
+                _ => false,
+            })
+    {
+        return false;
+    }
+
+    true
+}
+
+fn catalog_track_contains(track: &PlaylistIndexTrack, term: &str) -> bool {
+    let needle = term.trim().to_lowercase();
+    if needle.is_empty() {
+        return true;
+    }
+    let values = [
+        Some(track.track_id.as_str()),
+        track.name.as_deref(),
+        track.artist.as_deref(),
+        track.album.as_deref(),
+        track.genre.as_deref(),
+        track.comments.as_deref(),
+        track.bpm.as_deref(),
+        track.key.as_deref(),
+        track.year.as_deref(),
+        track.label.as_deref(),
+        track.kind.as_deref(),
+        Some(track.search_text.as_str()),
+    ];
+    values
+        .into_iter()
+        .flatten()
+        .any(|value| value.to_lowercase().contains(&needle))
+        || track.attributes.iter().any(|(name, value)| {
+            name.to_lowercase().contains(&needle) || value.to_lowercase().contains(&needle)
+        })
+}
+
+fn catalog_value_matches(value: Option<&str>, selected: &[String]) -> bool {
+    selected.is_empty()
+        || value.is_some_and(|value| {
+            selected
+                .iter()
+                .any(|selected| selected.trim().eq_ignore_ascii_case(value.trim()))
+        })
+}
+
+fn catalog_track_rating(track: &PlaylistIndexTrack) -> u8 {
+    if let Some(rating) = track.user_rating {
+        return rating.min(5);
+    }
+    track
+        .rating
+        .as_deref()
+        .and_then(|rating| rating.trim().parse::<f64>().ok())
+        .map(|rating| {
+            if rating <= 5.0 {
+                rating.round() as u8
+            } else {
+                (rating / 51.0).round() as u8
+            }
+        })
+        .unwrap_or_default()
+        .min(5)
+}
+
+fn catalog_track_has_gap(track: &PlaylistIndexTrack, gap: &str) -> bool {
+    match gap {
+        "missing_genre" => taxonomy_value(track.genre.as_deref()).is_empty(),
+        "missing_bpm" => track_bpm_value(track).is_none(),
+        "missing_key" => taxonomy_value(track.key.as_deref()).is_empty(),
+        "missing_label" => taxonomy_value(track.label.as_deref()).is_empty(),
+        "missing_year" => taxonomy_value(track.year.as_deref()).is_empty(),
+        "missing_artist" => taxonomy_value(track.artist.as_deref()).is_empty(),
+        "missing_album" => taxonomy_value(track.album.as_deref()).is_empty(),
+        _ => false,
+    }
+}
+
+fn catalog_facets(
+    tracks: &[PlaylistIndexTrack],
+    criteria: &CatalogCriteria,
+) -> PlaylistCatalogFacets {
+    PlaylistCatalogFacets {
+        genres: catalog_value_facets(tracks, criteria, "genres", 18),
+        artists: catalog_value_facets(tracks, criteria, "artists", 12),
+        albums: catalog_value_facets(tracks, criteria, "albums", 12),
+        keys: catalog_value_facets(tracks, criteria, "keys", 24),
+        years: catalog_value_facets(tracks, criteria, "years", 16),
+        formats: catalog_value_facets(tracks, criteria, "formats", 12),
+        ratings: (1..=5)
+            .rev()
+            .map(|rating| PlaylistCatalogFacetValue {
+                value: rating.to_string(),
+                name: format!("{rating} estrellas o mas"),
+                count: tracks
+                    .iter()
+                    .filter(|track| {
+                        catalog_track_matches(track, criteria, Some("ratings"))
+                            && catalog_track_rating(track) >= rating
+                    })
+                    .count(),
+            })
+            .collect(),
+        metadata_gaps: [
+            ("missing_genre", "Sin genero"),
+            ("missing_bpm", "Sin BPM"),
+            ("missing_key", "Sin tonalidad"),
+            ("missing_label", "Sin label"),
+            ("missing_year", "Sin ano"),
+            ("missing_artist", "Sin artista"),
+            ("missing_album", "Sin album"),
+        ]
+        .into_iter()
+        .map(|(value, name)| PlaylistCatalogFacetValue {
+            value: value.to_string(),
+            name: name.to_string(),
+            count: tracks
+                .iter()
+                .filter(|track| {
+                    catalog_track_matches(track, criteria, Some("metadata_gaps"))
+                        && catalog_track_has_gap(track, value)
+                })
+                .count(),
+        })
+        .collect(),
+        availability: [
+            ("available", "Disponible"),
+            ("missing", "Archivo no encontrado"),
+        ]
+        .into_iter()
+        .map(|(value, name)| PlaylistCatalogFacetValue {
+            value: value.to_string(),
+            name: name.to_string(),
+            count: tracks
+                .iter()
+                .filter(|track| {
+                    catalog_track_matches(track, criteria, Some("availability"))
+                        && if value == "available" {
+                            track.source_exists
+                        } else {
+                            !track.source_exists
+                        }
+                })
+                .count(),
+        })
+        .collect(),
+    }
+}
+
+fn catalog_value_facets(
+    tracks: &[PlaylistIndexTrack],
+    criteria: &CatalogCriteria,
+    facet: &str,
+    limit: usize,
+) -> Vec<PlaylistCatalogFacetValue> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for track in tracks {
+        if !catalog_track_matches(track, criteria, Some(facet)) {
+            continue;
+        }
+        let value = match facet {
+            "genres" => track.genre.as_deref(),
+            "artists" => track.artist.as_deref(),
+            "albums" => track.album.as_deref(),
+            "keys" => track.key.as_deref(),
+            "years" => track.year.as_deref(),
+            "formats" => track.kind.as_deref(),
+            _ => None,
+        }
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+        if let Some(value) = value {
+            increment_count(&mut counts, value.to_string());
+        }
+    }
+
+    let mut values = counts
+        .into_iter()
+        .map(|(value, count)| PlaylistCatalogFacetValue {
+            name: value.clone(),
+            value,
+            count,
+        })
+        .collect::<Vec<_>>();
+    values.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    let selected = match facet {
+        "genres" => &criteria.filters.genres,
+        "artists" => &criteria.filters.artists,
+        "albums" => &criteria.filters.albums,
+        "keys" => &criteria.filters.keys,
+        "years" => &criteria.filters.years,
+        "formats" => &criteria.filters.formats,
+        _ => &criteria.filters.genres,
+    };
+    let mut result = values
+        .iter()
+        .filter(|item| {
+            selected
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(&item.value))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for item in values {
+        if result.len() >= limit {
+            break;
+        }
+        if !result.iter().any(|existing| existing.value == item.value) {
+            result.push(item);
+        }
+    }
+    result
+}
+
+fn sort_catalog_tracks(tracks: &mut [PlaylistIndexTrack], sort: &str, query_terms: &[String]) {
+    tracks.sort_by(|left, right| match sort {
+        "recent" => catalog_text(right.date_added.as_deref())
+            .cmp(&catalog_text(left.date_added.as_deref()))
+            .then_with(|| catalog_track_title(left).cmp(&catalog_track_title(right))),
+        "rating" => catalog_track_rating(right)
+            .cmp(&catalog_track_rating(left))
+            .then_with(|| catalog_track_title(left).cmp(&catalog_track_title(right))),
+        "bpm" => track_bpm_value(left)
+            .unwrap_or(f64::MAX)
+            .total_cmp(&track_bpm_value(right).unwrap_or(f64::MAX))
+            .then_with(|| catalog_track_title(left).cmp(&catalog_track_title(right))),
+        "title" => catalog_track_title(left).cmp(&catalog_track_title(right)),
+        _ => catalog_relevance_score(right, query_terms)
+            .cmp(&catalog_relevance_score(left, query_terms))
+            .then_with(|| {
+                catalog_text(left.artist.as_deref()).cmp(&catalog_text(right.artist.as_deref()))
+            })
+            .then_with(|| {
+                catalog_text(left.album.as_deref()).cmp(&catalog_text(right.album.as_deref()))
+            })
+            .then_with(|| catalog_track_title(left).cmp(&catalog_track_title(right))),
+    });
+}
+
+fn catalog_text(value: Option<&str>) -> String {
+    value.unwrap_or_default().trim().to_lowercase()
+}
+
+fn catalog_track_title(track: &PlaylistIndexTrack) -> String {
+    catalog_text(track.name.as_deref()).to_string()
+}
+
+fn catalog_relevance_score(track: &PlaylistIndexTrack, query_terms: &[String]) -> usize {
+    query_terms
+        .iter()
+        .map(|term| {
+            let term = term.trim().to_lowercase();
+            let title = catalog_text(track.name.as_deref());
+            let artist = catalog_text(track.artist.as_deref());
+            let album = catalog_text(track.album.as_deref());
+            if title == term {
+                100
+            } else if title.starts_with(&term) {
+                60
+            } else if artist == term {
+                50
+            } else if artist.starts_with(&term) {
+                35
+            } else if title.contains(&term) {
+                25
+            } else if artist.contains(&term) || album.contains(&term) {
+                15
+            } else {
+                5
+            }
+        })
+        .sum()
 }
 
 fn taxonomy_track_matches(track: &PlaylistIndexTrack, kind: &str, value: &str) -> bool {
@@ -7034,7 +8005,7 @@ mod playlist_index_tests {
 
     #[test]
     fn track_rating_is_validated_and_persisted() {
-        let conn = Connection::open_in_memory().expect("open sqlite");
+        let mut conn = Connection::open_in_memory().expect("open sqlite");
         init_db(&conn).expect("initialize schema");
         let now = timestamp();
         conn.execute(
@@ -7061,6 +8032,150 @@ mod playlist_index_tests {
         let cleared = set_track_rating(&conn, "library-1", "track-1", 0).expect("clear rating");
         assert_eq!(cleared.user_rating, Some(0));
         assert!(set_track_rating(&conn, "library-1", "track-1", 6).is_err());
+
+        let updated = set_catalog_tracks_rating(
+            &mut conn,
+            "library-1",
+            vec!["track-1".to_string(), "track-1".to_string()],
+            3,
+        )
+        .expect("bulk rating");
+        assert_eq!(updated, 1);
+        assert_eq!(
+            get_index_track(&conn, "library-1", "track-1")
+                .unwrap()
+                .unwrap()
+                .user_rating,
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn catalog_query_parses_operators_and_quoted_values() {
+        let mut filters = PlaylistCatalogFilters::default();
+        let terms = parse_catalog_query(
+            "dance genre:\"Deep House\" bpm:120..130 key:8A|9A rating:>=4 missing:label",
+            &mut filters,
+        );
+
+        assert_eq!(terms, vec!["dance"]);
+        assert_eq!(filters.genres, vec!["Deep House"]);
+        assert_eq!(filters.keys, vec!["8A", "9A"]);
+        assert_eq!(filters.bpm_min, Some(120.0));
+        assert_eq!(filters.bpm_max, Some(130.0));
+        assert_eq!(filters.rating_min, Some(4));
+        assert_eq!(filters.metadata_gaps, vec!["missing_label"]);
+    }
+
+    #[test]
+    fn catalog_filters_combine_facets_with_and_semantics() {
+        let mut track = test_track();
+        track.user_rating = Some(4);
+        let mut filters = PlaylistCatalogFilters::default();
+        let query_terms = parse_catalog_query(
+            "Test genre:House bpm:120..130 key:8A rating:>=4 missing:label source:available",
+            &mut filters,
+        );
+        let criteria = CatalogCriteria {
+            filters,
+            query_terms,
+        };
+
+        assert!(catalog_track_matches(&track, &criteria, None));
+        track.key = Some("2B".to_string());
+        assert!(!catalog_track_matches(&track, &criteria, None));
+    }
+
+    #[test]
+    fn catalog_saved_searches_persist_definitions_and_recalculate_results() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_db(&conn).expect("initialize schema");
+        let now = timestamp();
+        conn.execute(
+            "INSERT INTO playlist_index_libraries (
+               id, source_path, source_name, indexed_at, updated_at
+             ) VALUES ('library-1', '/tmp/library.xml', 'library.xml', ?1, ?1)",
+            params![&now],
+        )
+        .expect("insert library");
+        conn.execute(
+            "INSERT INTO playlist_index_tracks (
+               library_id, track_id, name, artist, source_exists, search_text,
+               attributes_json, created_at, updated_at
+             ) VALUES ('library-1', 'track-1', 'First', 'Artist', 1, 'First Artist House',
+                       '{\"Genre\":\"House\",\"AverageBpm\":\"124\"}', ?1, ?1)",
+            params![&now],
+        )
+        .expect("insert first track");
+
+        let saved = save_catalog_search(
+            &conn,
+            PlaylistCatalogSaveRequest {
+                id: None,
+                library_id: "library-1".to_string(),
+                name: "House ready".to_string(),
+                description: Some("Dynamic house selection".to_string()),
+                query: Some("genre:House".to_string()),
+                filters: Some(PlaylistCatalogFilters::default()),
+                sort: Some("bpm".to_string()),
+            },
+        )
+        .expect("save catalog search");
+        assert_eq!(saved.result_count, 1);
+
+        conn.execute(
+            "INSERT INTO playlist_index_tracks (
+               library_id, track_id, name, artist, source_exists, search_text,
+               attributes_json, created_at, updated_at
+             ) VALUES ('library-1', 'track-2', 'Second', 'Artist', 1, 'Second Artist House',
+                       '{\"Genre\":\"House\",\"AverageBpm\":\"126\"}', ?1, ?1)",
+            params![&now],
+        )
+        .expect("insert second track");
+
+        let selection = catalog_select_all(
+            &conn,
+            PlaylistCatalogRequest {
+                library_id: saved.library_id.clone(),
+                query: Some(saved.query.clone()),
+                filters: Some(saved.filters.clone()),
+                sort: Some(saved.sort.clone()),
+                page: None,
+                page_size: None,
+            },
+            100,
+        )
+        .expect("recalculate saved search");
+        assert_eq!(selection.total, 2);
+        assert!(!selection.truncated);
+
+        let updated = save_catalog_search(
+            &conn,
+            PlaylistCatalogSaveRequest {
+                id: Some(saved.id.clone()),
+                library_id: saved.library_id.clone(),
+                name: saved.name.clone(),
+                description: saved.description.clone(),
+                query: Some(saved.query.clone()),
+                filters: Some(saved.filters.clone()),
+                sort: Some(saved.sort.clone()),
+            },
+        )
+        .expect("update saved search count");
+        assert_eq!(updated.result_count, 2);
+        assert_eq!(
+            list_catalog_saved_searches(&conn, "library-1")
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            delete_catalog_saved_search(&conn, "library-1", &saved.id).unwrap(),
+            saved.id
+        );
+        assert!(list_catalog_saved_searches(&conn, "library-1")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

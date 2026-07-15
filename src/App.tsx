@@ -25,6 +25,7 @@ import {
   MoreHorizontal,
   Play,
   RefreshCcw,
+  Search,
   Settings,
   Sparkles,
   Square,
@@ -38,6 +39,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { HashRouter, Navigate, NavLink, Outlet, Route, Routes, useOutletContext } from "react-router-dom";
 import { Button } from "./components/ui/button";
+import { CatalogPage } from "./CatalogPage";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { GlobalAudioPlayerProvider, SidebarAudioPlayer, useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
 import {
@@ -289,6 +291,7 @@ export default function App() {
             <Route path="/file-conversion/local" element={<FileConversionPage />} />
             <Route path="/file-conversion/rekordbox-convert" element={<RekordboxConvertPage />} />
             <Route path="/playlists" element={<PlaylistIndexPage />} />
+            <Route path="/playlists/catalog" element={<CatalogPage />} />
             <Route path="/playlists/copilot" element={<PlaylistCopilotPage />} />
             <Route path="/playlists/artists" element={<PlaylistBrowserPage kind="artist" />} />
             <Route path="/playlists/albums" element={<PlaylistBrowserPage kind="album" />} />
@@ -2282,6 +2285,9 @@ function AppSidebar({
         <SidebarSection title={t("Playlists")}>
           <SidebarLink to="/playlists" end icon={<ListMusic className="h-4 w-4" />}>
             {t("Playlist Library")}
+          </SidebarLink>
+          <SidebarLink to="/playlists/catalog" icon={<Search className="h-4 w-4" />}>
+            {t("Catalogo")}
           </SidebarLink>
           <SidebarLink to="/playlists/copilot" icon={<Sparkles className="h-4 w-4" />}>
             {t("Playlist Copilot")}

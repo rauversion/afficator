@@ -30,8 +30,7 @@ jobs:
             bundle_dir: target/release/bundle
             mac_artifact_arch: arm64
             artifact_paths: |
-              target/release/bundle/*.app.tar.gz
-              target/release/bundle/**/*.app.tar.gz
+              target/release/bundle/dmg/*.dmg
           - label: macOS Intel
             os: macos-latest
             artifact: rau-studio-macos-intel
@@ -41,8 +40,7 @@ jobs:
             bundle_dir: target/x86_64-apple-darwin/release/bundle
             mac_artifact_arch: x86_64
             artifact_paths: |
-              target/x86_64-apple-darwin/release/bundle/*.app.tar.gz
-              target/x86_64-apple-darwin/release/bundle/**/*.app.tar.gz
+              target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - label: Windows
             os: windows-latest
             artifact: rau-studio-windows
@@ -102,27 +100,156 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build installers
+      - name: Validate Apple secrets
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          for name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            KEYCHAIN_PASSWORD \
+            APPLE_ID \
+            APPLE_PASSWORD \
+            APPLE_TEAM_ID \
+            APPLE_SIGNING_IDENTITY
+          do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required repository secret: $name"
+              exit 1
+            fi
+          done
+
+      - name: Import Apple Developer certificate
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          keychain_path="$RUNNER_TEMP/rau-studio-build.keychain-db"
+
+          printf '%s' "$APPLE_CERTIFICATE" | \
+            openssl base64 -d -A -out "$certificate_path"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+
+          rm -f "$certificate_path"
+          echo "APPLE_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+
+      - name: Build non-macOS installers
+        if: runner.os != 'macOS'
         shell: bash
         run: npm run tauri:build -- ${{ matrix.build_target_arg }} ${{ matrix.tauri_args }}
 
-      - name: Ad-hoc sign macOS app bundle
+      - name: Build signed and notarized macOS app
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          xattr -cr "${{ matrix.bundle_dir }}/macos/Rau Studio.app"
-          codesign --force --deep --sign - "${{ matrix.bundle_dir }}/macos/Rau Studio.app"
-          codesign --verify --deep --strict --verbose=2 "${{ matrix.bundle_dir }}/macos/Rau Studio.app"
+          npm run tauri:build -- \
+            ${{ matrix.build_target_arg }} \
+            --bundles app
 
-      - name: Archive macOS app bundle
+          app="${{ matrix.bundle_dir }}/macos/Rau Studio.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute -vv "$app"
+
+      - name: Create, sign, and notarize macOS DMG
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           version="$(node -p "require('./package.json').version")"
           arch="${{ matrix.mac_artifact_arch }}"
-          tar -C "${{ matrix.bundle_dir }}/macos" \
-            -czf "${{ matrix.bundle_dir }}/RauStudio_${version}_${arch}.app.tar.gz" \
-            "Rau Studio.app"
+          app="${{ matrix.bundle_dir }}/macos/Rau Studio.app"
+          dmg_dir="${{ matrix.bundle_dir }}/dmg"
+          dmg="$dmg_dir/Rau Studio_${version}_${arch}.dmg"
+          staging="$(mktemp -d "$RUNNER_TEMP/rau-studio-dmg.XXXXXX")"
+
+          cleanup() {
+            rm -rf "$staging"
+          }
+          trap cleanup EXIT
+
+          mkdir -p "$dmg_dir"
+          ditto "$app" "$staging/Rau Studio.app"
+          ln -s /Applications "$staging/Applications"
+
+          hdiutil create \
+            -volname "Rau Studio" \
+            -srcfolder "$staging" \
+            -ov \
+            -format UDZO \
+            "$dmg"
+
+          codesign \
+            --force \
+            --timestamp \
+            --keychain "$APPLE_KEYCHAIN_PATH" \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            "$dmg"
+          codesign --verify --strict --verbose=2 "$dmg"
+
+          xcrun notarytool store-credentials "rau-studio-notary" \
+            --keychain "$APPLE_KEYCHAIN_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_PASSWORD"
+          xcrun notarytool submit "$dmg" \
+            --keychain-profile "rau-studio-notary" \
+            --keychain "$APPLE_KEYCHAIN_PATH" \
+            --wait \
+            --timeout 30m
+
+          xcrun stapler staple "$dmg"
+          xcrun stapler validate "$dmg"
+          spctl --assess \
+            --type open \
+            --context context:primary-signature \
+            -vv \
+            "$dmg"
+          hdiutil verify "$dmg"
+
+      - name: Delete temporary Apple keychain
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [[ -n "${APPLE_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$APPLE_KEYCHAIN_PATH" || true
+          fi
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
@@ -154,7 +281,7 @@ jobs:
         shell: bash
         run: |
           mapfile -t files < <(find release-artifacts -type f \( \
-            -name '*.app.tar.gz' -o \
+            -name '*.dmg' -o \
             -name '*.msi' -o \
             -name '*.exe' -o \
             -name '*.AppImage' -o \

@@ -22,7 +22,17 @@ export type TrackListItem = {
   embedding_ready?: boolean;
 };
 
-export type TrackListColumn = "artist" | "album" | "genre" | "bpm" | "key" | "year" | "kind";
+export type TrackListColumn =
+  | "artist"
+  | "album"
+  | "genre"
+  | "bpm"
+  | "key"
+  | "rating"
+  | "year"
+  | "label"
+  | "comments"
+  | "kind";
 
 export type TrackPlaybackContext = {
   id: string;
