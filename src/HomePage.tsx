@@ -4,7 +4,9 @@ import {
   FileAudio2,
   Gauge,
   ListMusic,
+  Radio,
   Search,
+  Share2,
   Sparkles,
   Tags,
   Upload
@@ -61,6 +63,22 @@ const homeModules = [
     icon: Disc3,
     accent: "from-indigo-500/22 via-blue-500/10 to-transparent",
     iconClass: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300"
+  },
+  {
+    title: "Broadcast",
+    description: "Rau Studio reproduce tu cola local y mantiene un stream MP3 persistente hacia Icecast.",
+    to: "/broadcast",
+    icon: Radio,
+    accent: "from-pink-500/22 via-rose-500/10 to-transparent",
+    iconClass: "bg-pink-500/15 text-pink-700 dark:text-pink-300"
+  },
+  {
+    title: "Rau Connect",
+    description: "Prepara tu identidad y el catálogo que luego viajará directamente entre dispositivos.",
+    to: "/connect",
+    icon: Share2,
+    accent: "from-blue-500/22 via-cyan-500/10 to-transparent",
+    iconClass: "bg-blue-500/15 text-blue-700 dark:text-blue-300"
   }
 ] as const;
 
