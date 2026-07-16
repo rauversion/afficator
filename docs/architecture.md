@@ -139,9 +139,12 @@ Mac directly. An outbound connection publishes to a reachable Icecast server,
 which owns the public listener URL and fan-out.
 
 ```text
-Indexed playlist -> durable SQLite queue -> per-track FFmpeg decoder
-                 -> PCM pipe -> persistent FFmpeg/libmp3lame publisher
-                 -> remote Icecast mount -> listeners
+Indexed playlist -> SQLite queue -> per-track FFmpeg decoder --\
+                                                               +-> Rust PCM mixer
+AVFoundation microphone -> bounded PCM buffer ----------------/
+                                                                   |
+                                                                   v
+PCM pipe -> persistent FFmpeg/libmp3lame publisher -> Icecast -> listeners
 ```
 
 1. The user saves one Icecast source profile. Its password is encrypted through
@@ -152,10 +155,13 @@ Indexed playlist -> durable SQLite queue -> per-track FFmpeg decoder
 4. One long-lived publisher encodes that PCM with `libmp3lame` and writes the
    configured Icecast mount. It emits silence while the queue is empty so the
    listener URL remains connected.
-5. Track transitions update Icecast metadata through its admin endpoint.
-6. Stop and skip commands travel over an in-process channel. Interrupted
+5. On macOS, an optional AVFoundation FFmpeg process captures the selected
+   microphone, resamples it to the station format, and fills a bounded buffer.
+   Rust mixes it into music or silence only while the operator marks it live.
+6. Track transitions update Icecast metadata through its admin endpoint.
+7. Stop, skip, and microphone-live commands travel over an in-process channel. Interrupted
    `playing` rows return to `queued` when a new session starts.
-7. A lost publisher is terminated and recreated with bounded reconnect delays;
+8. A lost publisher is terminated and recreated with bounded reconnect delays;
    the current track returns to the queue instead of being marked as played.
 
 See [Radio Broadcast](radio-broadcast.md) for setup, operation, and network

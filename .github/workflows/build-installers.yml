@@ -111,7 +111,7 @@ jobs:
           path: |
             .cache/ffmpeg
             src-tauri/binaries
-          key: ffmpeg-8.1.2-lame-3.101-network-${{ matrix.artifact }}
+          key: ffmpeg-8.1.2-lame-3.101-network-avfoundation-${{ matrix.artifact }}
 
       - name: Validate Apple secrets
         if: runner.os == 'macOS'

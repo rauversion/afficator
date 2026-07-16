@@ -8,7 +8,7 @@ X264_SHA256="6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224"
 LAME_VERSION="3.101"
 LAME_SHA256="7578af6eebd578b2bd64e468fac4ae1f03670a7e028166e67f855674b9b6aeac"
 MACOS_DEPLOYMENT_TARGET="11.0"
-BUILD_ID="$FFMPEG_VERSION-x264-${X264_COMMIT:0:12}-lame-$LAME_VERSION-network-macos-$MACOS_DEPLOYMENT_TARGET-static-v3"
+BUILD_ID="$FFMPEG_VERSION-x264-${X264_COMMIT:0:12}-lame-$LAME_VERSION-network-avfoundation-macos-$MACOS_DEPLOYMENT_TARGET-static-v4"
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target_triple="${TAURI_ENV_TARGET_TRIPLE:-$(rustc --print host-tuple)}"
@@ -100,10 +100,11 @@ validate_native_features() {
     echo "Running $target_triple feature checks through the local compatibility layer."
   fi
 
-  local encoders filters protocols smoke_dir
+  local encoders filters protocols devices smoke_dir
   encoders="$($ffmpeg_output -hide_banner -encoders 2>/dev/null)"
   filters="$($ffmpeg_output -hide_banner -filters 2>/dev/null)"
   protocols="$($ffmpeg_output -hide_banner -protocols 2>/dev/null)"
+  devices="$($ffmpeg_output -hide_banner -devices 2>/dev/null)"
 
   for encoder in libx264 libmp3lame aac pcm_s16be pcm_s24be; do
     if [[ "$encoders" != *"$encoder"* ]]; then
@@ -125,6 +126,11 @@ validate_native_features() {
       exit 1
     fi
   done
+
+  if ! grep -Eq "^[[:space:]]*D.*avfoundation" <<< "$devices"; then
+    echo "Bundled FFmpeg is missing the required AVFoundation input device." >&2
+    exit 1
+  fi
 
   smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/rau-studio-ffmpeg.XXXXXX")"
   trap 'rm -rf "$smoke_dir"' RETURN
@@ -305,6 +311,7 @@ configure_flags=(
   "--enable-libx264"
   "--enable-libmp3lame"
   "--enable-securetransport"
+  "--enable-avfoundation"
   "--pkg-config-flags=--static"
   "--enable-audiotoolbox"
   "--enable-videotoolbox"

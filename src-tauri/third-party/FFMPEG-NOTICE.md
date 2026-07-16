@@ -4,7 +4,8 @@ Rau Studio for macOS includes the `ffmpeg` and `ffprobe` command-line programs
 from FFmpeg 8.1.2. The bundled FFmpeg programs are built with the GPL-licensed
 x264 encoder from commit `b35605ace3ddf7c1a5d67a2eb553f034aef41d55`, the
 LGPL-licensed LAME 3.101 MP3 encoder, network protocols, and macOS
-SecureTransport support. They do not include non-free components.
+SecureTransport and AVFoundation input support. They do not include non-free
+components.
 
 This FFmpeg configuration and x264 are distributed under the GNU General Public
 License version 2 or later. LAME is distributed under the GNU Lesser General

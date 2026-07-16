@@ -3,6 +3,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   Library,
   LoaderCircle,
+  Mic,
+  MicOff,
   Play,
   Plus,
   Radio,
@@ -13,9 +15,10 @@ import {
   Trash2,
   Wifi
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
 import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
 
@@ -30,6 +33,9 @@ type BroadcastProfile = {
   bitrate_kbps: number;
   tls: boolean;
   public: boolean;
+  microphone_enabled: boolean;
+  microphone_device: string;
+  microphone_gain_percent: number;
   password_configured: boolean;
   listener_url: string;
   updated_at: string;
@@ -40,7 +46,23 @@ type BroadcastPreflight = {
   mp3_encoder_available: boolean;
   icecast_protocol_available: boolean;
   tls_protocol_available: boolean;
+  microphone_input_available: boolean;
   ready: boolean;
+  message: string;
+};
+
+type BroadcastMicrophoneDevice = {
+  id: string;
+  label: string;
+  is_default: boolean;
+};
+
+type BroadcastMicrophoneStatus = {
+  configured: boolean;
+  ready: boolean;
+  live: boolean;
+  device?: string | null;
+  gain_percent: number;
   message: string;
 };
 
@@ -66,6 +88,7 @@ type BroadcastStatus = {
   message: string;
   now_playing?: BroadcastQueueEntry | null;
   started_at?: string | null;
+  microphone: BroadcastMicrophoneStatus;
   updated_at: string;
 };
 
@@ -111,9 +134,11 @@ export function BroadcastPage() {
   const [queue, setQueue] = useState<BroadcastQueueEntry[]>([]);
   const [libraries, setLibraries] = useState<PlaylistIndexLibrary[]>([]);
   const [playlists, setPlaylists] = useState<PlaylistIndexPlaylist[]>([]);
+  const [microphoneDevices, setMicrophoneDevices] = useState<BroadcastMicrophoneDevice[]>([]);
   const [libraryId, setLibraryId] = useState("");
   const [playlistPath, setPlaylistPath] = useState("");
-  const [events, setEvents] = useState<BroadcastProgressEvent[]>([]);
+  const [terminalLogs, setTerminalLogs] = useState<TerminalLogEntry[]>([]);
+  const [terminalExpanded, setTerminalExpanded] = useState(false);
   const [busy, setBusy] = useState<BusyAction>("loading");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -129,6 +154,11 @@ export function BroadcastPage() {
   const [isPublic, setIsPublic] = useState(false);
   const [password, setPassword] = useState("");
   const [clearPassword, setClearPassword] = useState(false);
+  const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
+  const [microphoneDevice, setMicrophoneDevice] = useState("default");
+  const [microphoneGain, setMicrophoneGain] = useState("100");
+  const terminalElement = useRef<HTMLDivElement | null>(null);
+  const nextTerminalLogId = useRef(1);
 
   const running = status ? ["connecting", "live", "reconnecting", "stopping"].includes(status.status) : false;
   const queuedTotal = queue.filter((entry) => entry.status === "queued").length;
@@ -146,6 +176,9 @@ export function BroadcastPage() {
     setBitrate(String(next.bitrate_kbps));
     setTls(next.tls);
     setIsPublic(next.public);
+    setMicrophoneEnabled(next.microphone_enabled);
+    setMicrophoneDevice(next.microphone_device || "default");
+    setMicrophoneGain(String(next.microphone_gain_percent));
     setPassword("");
     setClearPassword(false);
   }, []);
@@ -164,20 +197,28 @@ export function BroadcastPage() {
   useEffect(() => {
     let disposed = false;
     let unlisten: UnlistenFn | undefined;
+    let unlistenCalled = false;
+    const stopListeningOnce = (candidate = unlisten) => {
+      if (!candidate || unlistenCalled) return;
+      unlistenCalled = true;
+      safelyUnlisten(candidate);
+    };
     void Promise.all([
       invoke<BroadcastProfile>("broadcast_profile"),
       invoke<BroadcastStatus>("broadcast_status"),
       invoke<BroadcastQueueEntry[]>("broadcast_queue"),
       invoke<BroadcastPreflight>("broadcast_preflight"),
-      invoke<PlaylistIndexLibrary[]>("playlist_index_libraries")
+      invoke<PlaylistIndexLibrary[]>("playlist_index_libraries"),
+      invoke<BroadcastMicrophoneDevice[]>("broadcast_microphone_devices")
     ])
-      .then(([nextProfile, nextStatus, nextQueue, nextPreflight, nextLibraries]) => {
+      .then(([nextProfile, nextStatus, nextQueue, nextPreflight, nextLibraries, nextMicrophones]) => {
         if (disposed) return;
         hydrateProfile(nextProfile);
         setStatus(nextStatus);
         setQueue(nextQueue);
         setPreflight(nextPreflight);
         setLibraries(nextLibraries);
+        setMicrophoneDevices(nextMicrophones);
         setLibraryId(nextLibraries[0]?.id ?? "");
       })
       .catch((cause) => setError(errorMessage(cause, locale)))
@@ -185,11 +226,27 @@ export function BroadcastPage() {
 
     void listen<BroadcastProgressEvent>("broadcast-progress", ({ payload }) => {
       setStatus(payload.status);
-      setEvents((current) => [payload, ...current].slice(0, 12));
+      const level: TerminalLogEntry["level"] = payload.level === "error"
+        ? "error"
+        : payload.level === "warning"
+          ? "warning"
+          : "info";
+      setTerminalLogs((current) => [...current, {
+        id: nextTerminalLogId.current++,
+        time: new Date(payload.timestamp).toLocaleTimeString(),
+        level,
+        name: payload.event,
+        message: translateBackendMessage(locale, payload.message)
+      }].slice(-1200));
+      window.requestAnimationFrame(() => {
+        if (terminalElement.current) {
+          terminalElement.current.scrollTop = terminalElement.current.scrollHeight;
+        }
+      });
       void invoke<BroadcastQueueEntry[]>("broadcast_queue").then(setQueue).catch(() => undefined);
     })
       .then((stopListening) => {
-        if (disposed) stopListening();
+        if (disposed) stopListeningOnce(stopListening);
         else unlisten = stopListening;
       })
       .catch(() => undefined);
@@ -204,7 +261,7 @@ export function BroadcastPage() {
     return () => {
       disposed = true;
       window.clearInterval(timer);
-      unlisten?.();
+      stopListeningOnce();
     };
   }, [hydrateProfile, locale]);
 
@@ -245,6 +302,9 @@ export function BroadcastPage() {
           bitrateKbps: Number(bitrate),
           tls,
           public: isPublic,
+          microphoneEnabled,
+          microphoneDevice,
+          microphoneGainPercent: Number(microphoneGain),
           password: password || null,
           clearPassword
         }
@@ -301,6 +361,37 @@ export function BroadcastPage() {
     });
   }
 
+  async function toggleMicrophone() {
+    const live = !(status?.microphone?.live ?? false);
+    await runAction("microphone", async () => {
+      await invoke<BroadcastStatus>("broadcast_set_microphone_live", { live });
+      setStatus((current) => current ? {
+        ...current,
+        microphone: {
+          ...(current.microphone ?? {
+            configured: true,
+            ready: true,
+            device: profile?.microphone_device ?? "default",
+            gain_percent: profile?.microphone_gain_percent ?? 100,
+            message: ""
+          }),
+          live,
+          message: live ? t("Micrófono al aire.") : t("Micrófono silenciado.")
+        }
+      } : current);
+    });
+  }
+
+  async function refreshMicrophones() {
+    await runAction("microphones", async () => {
+      const devices = await invoke<BroadcastMicrophoneDevice[]>("broadcast_microphone_devices");
+      setMicrophoneDevices(devices);
+      if (!devices.some((device) => device.id === microphoneDevice)) {
+        setMicrophoneDevice("default");
+      }
+    });
+  }
+
   async function clearQueue() {
     await runAction("clearing", async () => {
       const deleted = await invoke<number>("broadcast_clear_queue");
@@ -329,6 +420,10 @@ export function BroadcastPage() {
     }
   }
 
+  function clearTerminal() {
+    setTerminalLogs([]);
+  }
+
   if (busy === "loading" && !profile) {
     return (
       <main className="grid min-h-screen place-items-center p-6">
@@ -338,7 +433,7 @@ export function BroadcastPage() {
   }
 
   return (
-    <main className="min-h-screen bg-background p-4 text-foreground lg:p-6">
+    <main className={cn("min-h-screen bg-background p-4 pb-20 text-foreground lg:p-6", terminalExpanded && "pb-72")}>
       <div className="mx-auto grid w-full max-w-[1480px] gap-4">
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -441,6 +536,57 @@ export function BroadcastPage() {
                     </label>
                   ) : null}
                 </div>
+                <div className="grid gap-3 rounded-md border border-border p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Mic className="h-4 w-4" />
+                      <strong className="text-sm">{t("Entrada de micrófono")}</strong>
+                    </div>
+                    <Button type="button" size="sm" variant="ghost" disabled={running || busy === "microphones"} onClick={() => void refreshMicrophones()}>
+                      <RefreshCcw className={cn("h-4 w-4", busy === "microphones" && "animate-spin")} />
+                      {t("Refrescar")}
+                    </Button>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={microphoneEnabled}
+                      disabled={running || !preflight?.microphone_input_available}
+                      onChange={(event) => setMicrophoneEnabled(event.target.checked)}
+                    />
+                    {t("Preparar micrófono al iniciar")}
+                  </label>
+                  {microphoneEnabled ? (
+                    <>
+                      <Field label={t("Dispositivo de entrada")}>
+                        <select className={fieldClass} value={microphoneDevice} disabled={running} onChange={(event) => setMicrophoneDevice(event.target.value)}>
+                          {microphoneDevices.map((device) => <option key={device.id} value={device.id}>{device.label}</option>)}
+                        </select>
+                      </Field>
+                      <Field label={t("Ganancia del micrófono: {gain}%", { gain: microphoneGain })}>
+                        <input
+                          className="w-full accent-foreground"
+                          type="range"
+                          min={0}
+                          max={200}
+                          step={5}
+                          value={microphoneGain}
+                          disabled={running}
+                          onChange={(event) => setMicrophoneGain(event.target.value)}
+                        />
+                      </Field>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Se prepara silenciado. Actívalo desde Control de transmisión cuando quieras hablar.")}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      {preflight?.microphone_input_available
+                        ? t("Activa esta opción para seleccionar un micrófono.")
+                        : t("El FFmpeg actual no incluye entrada AVFoundation.")}
+                    </p>
+                  )}
+                </div>
                 <div className="rounded-md bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
                   <strong className="block text-foreground">{profile?.listener_url ?? "—"}</strong>
                   <span>{translateBackendMessage(locale, preflight?.message ?? t("Revisando motor FFmpeg..."))}</span>
@@ -459,7 +605,7 @@ export function BroadcastPage() {
                 <CardTitle>{t("Control de transmisión")}</CardTitle>
                 <div className="flex flex-wrap gap-2">
                   {!running ? (
-                    <Button size="sm" disabled={!preflight?.ready || busy !== null} onClick={() => void startBroadcast()}>
+                    <Button size="sm" disabled={!preflight?.ready || (microphoneEnabled && !preflight?.microphone_input_available) || busy !== null} onClick={() => void startBroadcast()}>
                       {busy === "starting" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                       {t("Salir al aire")}
                     </Button>
@@ -473,6 +619,17 @@ export function BroadcastPage() {
                     <SkipForward className="h-4 w-4" />
                     {t("Saltar")}
                   </Button>
+                  {running && profile?.microphone_enabled ? (
+                    <Button
+                      size="sm"
+                      variant={status?.microphone?.live ? "destructive" : "secondary"}
+                      disabled={!status?.microphone?.ready || busy === "microphone"}
+                      onClick={() => void toggleMicrophone()}
+                    >
+                      {status?.microphone?.live ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+                      {status?.microphone?.live ? t("Silenciar micrófono") : t("Micrófono al aire")}
+                    </Button>
+                  ) : null}
                 </div>
               </CardHeader>
               <CardContent className="p-3">
@@ -487,6 +644,17 @@ export function BroadcastPage() {
                     {running ? t("La conexión sigue viva transmitiendo silencio hasta que haya una pista.") : t("Configura Icecast, agrega una playlist y sal al aire.")}
                   </div>
                 )}
+                {profile?.microphone_enabled ? (
+                  <div className={cn(
+                    "mt-3 flex items-center gap-2 rounded-md border px-3 py-2 text-xs",
+                    status?.microphone?.live
+                      ? "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-200"
+                      : "border-border text-muted-foreground"
+                  )}>
+                    {status?.microphone?.live ? <Mic className="h-4 w-4 animate-pulse" /> : <MicOff className="h-4 w-4" />}
+                    {translateBackendMessage(locale, status?.microphone?.message ?? t("Micrófono esperando inicio."))}
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
 
@@ -545,27 +713,16 @@ export function BroadcastPage() {
           </div>
         </section>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("Actividad reciente")}</CardTitle>
-            <Button size="sm" variant="ghost" onClick={() => void refreshRuntime()}>
-              <RefreshCcw className="h-4 w-4" />
-              {t("Refrescar")}
-            </Button>
-          </CardHeader>
-          <CardContent className="max-h-56">
-            {events.length === 0 ? (
-              <div className="p-3 text-sm text-muted-foreground">{t("Sin eventos todavía.")}</div>
-            ) : events.map((event) => (
-              <div key={`${event.timestamp}:${event.event}:${event.message}`} className="grid gap-1 border-b border-border px-3 py-2 text-xs sm:grid-cols-[90px_110px_minmax(0,1fr)]">
-                <span className="text-muted-foreground">{new Date(event.timestamp).toLocaleTimeString()}</span>
-                <span className={cn("font-semibold", event.level === "error" && "text-destructive", event.level === "warning" && "text-amber-700 dark:text-amber-300")}>{event.event}</span>
-                <span>{translateBackendMessage(locale, event.message)}</span>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
       </div>
+      <TerminalDrawer
+        logs={terminalLogs}
+        expanded={terminalExpanded}
+        terminalRef={terminalElement}
+        subtitle={t("ffmpeg / icecast / micrófono")}
+        emptyMessage="Sin eventos todavía."
+        onToggle={() => setTerminalExpanded((current) => !current)}
+        onClear={clearTerminal}
+      />
     </main>
   );
 }
@@ -636,4 +793,12 @@ function statusLabel(status: string, t: (key: string) => string) {
 
 function errorMessage(cause: unknown, locale: "es" | "en") {
   return translateBackendMessage(locale, cause instanceof Error ? cause.message : String(cause));
+}
+
+function safelyUnlisten(unlisten: UnlistenFn) {
+  try {
+    void Promise.resolve(unlisten()).catch(() => undefined);
+  } catch {
+    // Tauri may already have removed the listener during a dev reload.
+  }
 }

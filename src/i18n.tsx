@@ -118,6 +118,26 @@ const translations: Record<Locale, Record<string, string>> = {
       "FFmpeg does not include the Icecast output protocol.",
     "FFmpeg no incluye TLS, pero el perfil Icecast exige conexión segura.":
       "FFmpeg does not include TLS, but the Icecast profile requires a secure connection.",
+    "Entrada de micrófono": "Microphone input",
+    "Preparar micrófono al iniciar": "Prepare microphone on start",
+    "Dispositivo de entrada": "Input device",
+    "Ganancia del micrófono: {gain}%": "Microphone gain: {gain}%",
+    "Se prepara silenciado. Actívalo desde Control de transmisión cuando quieras hablar.":
+      "It starts muted. Enable it from Broadcast control when you want to speak.",
+    "Activa esta opción para seleccionar un micrófono.": "Enable this option to select a microphone.",
+    "El FFmpeg actual no incluye entrada AVFoundation.": "The current FFmpeg build does not include AVFoundation input.",
+    "Silenciar micrófono": "Mute microphone",
+    "Micrófono al aire": "Microphone live",
+    "Micrófono esperando inicio.": "Microphone waiting for broadcast.",
+    "Micrófono preparado y silenciado.": "Microphone ready and muted.",
+    "Micrófono desactivado.": "Microphone disabled.",
+    "Micrófono detenido.": "Microphone stopped.",
+    "Micrófono silenciado.": "Microphone muted.",
+    "ffmpeg / icecast / micrófono": "ffmpeg / Icecast / microphone",
+    "FFmpeg no incluye la entrada AVFoundation requerida para el micrófono.":
+      "FFmpeg does not include the AVFoundation input required for the microphone.",
+    "El micrófono no está preparado. Detén la radio y revisa su configuración.":
+      "The microphone is not ready. Stop the radio and check its configuration.",
     "Inicio": "Home",
     "Abrir menú": "Open menu",
     "Cerrar menú": "Close menu",

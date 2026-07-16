@@ -414,7 +414,7 @@ function AppShell() {
     )
       .then((listeners) => {
         if (!mounted) {
-          for (const unlisten of listeners) unlisten();
+          for (const unlisten of listeners) safelyUnlisten(unlisten);
           return;
         }
         unlisteners = listeners;
@@ -427,7 +427,7 @@ function AppShell() {
 
     return () => {
       mounted = false;
-      for (const unlisten of unlisteners) unlisten();
+      for (const unlisten of unlisteners) safelyUnlisten(unlisten);
     };
   }, []);
 
@@ -1175,7 +1175,7 @@ function RekordboxConvertPage() {
     }
 
     return () => {
-      for (const unlisten of unlisteners) unlisten();
+      for (const unlisten of unlisteners) safelyUnlisten(unlisten);
     };
   }, []);
 
@@ -3056,6 +3056,14 @@ function PathBlock({ label, value, missing }: { label: string; value?: string; m
 
 function copyText(value: string) {
   void navigator.clipboard?.writeText(value).catch(() => undefined);
+}
+
+function safelyUnlisten(unlisten: UnlistenFn) {
+  try {
+    void Promise.resolve(unlisten()).catch(() => undefined);
+  } catch {
+    // Tauri may already have removed the listener during a development reload.
+  }
 }
 
 function formatDuration(seconds: number) {

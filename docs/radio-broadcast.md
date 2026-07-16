@@ -50,11 +50,15 @@ provide the same capabilities.
    - **Source password**: the source credential, not the admin password.
    - **Use TLS**: enable only when the endpoint accepts secure source traffic.
 3. Choose an MP3 bitrate from 96 to 320 kbps and save the profile.
-4. Confirm that the FFmpeg preflight reports ready.
-5. Select an indexed library and playlist, then choose **Agregar**. Adding more
+4. Optionally enable **Preparar micrófono al iniciar**, choose the input device,
+   and set its gain. The microphone always starts muted for privacy.
+5. Confirm that the FFmpeg preflight reports ready.
+6. Select an indexed library and playlist, then choose **Agregar**. Adding more
    playlists appends them to the existing queue.
-6. Choose **Salir al aire**. The status changes through connecting to live.
-7. Test the displayed listener URL in another device or network.
+7. Choose **Salir al aire**. The status changes through connecting to live.
+8. Use **Micrófono al aire** only while speaking, then choose
+   **Silenciar micrófono**.
+9. Test the displayed listener URL in another device or network.
 
 The queue is durable in SQLite. Played, skipped, and failed rows remain visible
 until cleared. The active row cannot be removed, but it can be skipped.
@@ -67,6 +71,10 @@ until cleared. The active row cannot be removed, but it can be skipped.
 - When the queue runs out, Rau Studio transmits silence rather than closing the
   mount. New playlists can be appended while the station is live.
 - Artist and title metadata are sent when a track starts.
+- The selected microphone is captured through AVFoundation, normalized to the
+  same stereo 44.1 kHz PCM format, and mixed with the track or idle silence.
+  Gain is limited to 0–200%, and sample sums are clamped to avoid integer
+  overflow. The capture buffer is bounded to avoid unbounded latency or memory.
 - On a broken source connection the publisher retries. A track interrupted by
   that failure returns to the queue.
 - Closing Rau Studio ends the local source process. Icecast then removes the
@@ -83,6 +91,9 @@ until cleared. The active row cannot be removed, but it can be skipped.
 - Do not use the Icecast admin password as the source password.
 - Only broadcast audio you are authorized to distribute. Music licensing and
   royalty obligations depend on the countries and audience involved.
+- macOS asks for microphone access the first time capture starts. If it was
+  denied, enable Rau Studio under **System Settings → Privacy & Security →
+  Microphone**, then restart the app.
 
 ## Troubleshooting
 
