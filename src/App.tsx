@@ -22,6 +22,7 @@ import {
   KeyRound,
   ListMusic,
   LoaderCircle,
+  Menu,
   Monitor,
   Moon,
   MoreHorizontal,
@@ -40,7 +41,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { HashRouter, Navigate, NavLink, Outlet, Route, Routes, useOutletContext } from "react-router-dom";
+import { HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useOutletContext } from "react-router-dom";
 import { Button } from "./components/ui/button";
 import { CatalogPage } from "./CatalogPage";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
@@ -320,12 +321,19 @@ export default function App() {
 }
 
 function AppShell() {
+  const { t } = useI18n();
+  const location = useLocation();
   const [darkMode, setDarkMode] = useState(() => detectInitialDarkMode());
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [systemStatusLoading, setSystemStatusLoading] = useState(true);
   const [systemStatusError, setSystemStatusError] = useState<string | null>(null);
   const [eventBridgeStatus, setEventBridgeStatus] = useState<EventBridgeStatus>("checking");
   const [lastRealtimeEventAt, setLastRealtimeEventAt] = useState<string | null>(null);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [desktopSidebar, setDesktopSidebar] = useState(() =>
+    typeof window !== "undefined" ? window.matchMedia("(min-width: 1024px)").matches : true
+  );
+  const mobileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const shellContext = useMemo<AppShellContext>(
     () => ({ darkMode, setDarkMode, refreshSystemStatus }),
     [darkMode]
@@ -335,6 +343,40 @@ function AppShell() {
     document.documentElement.classList.toggle("dark", darkMode);
     localStorage.setItem(themeModeKey, darkMode ? "dark" : "light");
   }, [darkMode]);
+
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const desktopQuery = window.matchMedia("(min-width: 1024px)");
+    const updateDesktopMode = (event: MediaQueryListEvent | MediaQueryList) => {
+      setDesktopSidebar(event.matches);
+      if (event.matches) setMobileSidebarOpen(false);
+    };
+
+    updateDesktopMode(desktopQuery);
+    desktopQuery.addEventListener("change", updateDesktopMode);
+    return () => desktopQuery.removeEventListener("change", updateDesktopMode);
+  }, []);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen || desktopSidebar) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setMobileSidebarOpen(false);
+      window.requestAnimationFrame(() => mobileMenuButtonRef.current?.focus());
+    };
+    document.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [desktopSidebar, mobileSidebarOpen]);
 
   useEffect(() => {
     refreshSystemStatus();
@@ -399,9 +441,27 @@ function AppShell() {
     }
   }
 
+  function closeMobileSidebar(restoreMenuFocus = false) {
+    setMobileSidebarOpen(false);
+    if (restoreMenuFocus) {
+      window.requestAnimationFrame(() => mobileMenuButtonRef.current?.focus());
+    }
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <div className="flex min-h-screen max-lg:flex-col">
+      <div className="flex min-h-screen">
+        <button
+          type="button"
+          className={cn(
+            "fixed inset-0 z-40 bg-black/55 backdrop-blur-[2px] transition-opacity duration-300 lg:hidden",
+            mobileSidebarOpen ? "opacity-100" : "pointer-events-none opacity-0"
+          )}
+          aria-label={t("Cerrar menú")}
+          aria-hidden={!mobileSidebarOpen}
+          tabIndex={mobileSidebarOpen ? 0 : -1}
+          onClick={() => closeMobileSidebar(true)}
+        />
         <AppSidebar
           eventBridgeStatus={eventBridgeStatus}
           lastRealtimeEventAt={lastRealtimeEventAt}
@@ -409,8 +469,36 @@ function AppShell() {
           systemStatusError={systemStatusError}
           systemStatusLoading={systemStatusLoading}
           onRefreshSystemStatus={refreshSystemStatus}
+          mobileOpen={mobileSidebarOpen}
+          desktop={desktopSidebar}
+          onMobileClose={() => closeMobileSidebar(true)}
+          onMobileNavigate={() => closeMobileSidebar(false)}
         />
         <div className="min-w-0 flex-1">
+          <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-background/90 px-3 shadow-sm backdrop-blur-xl lg:hidden">
+            <Button
+              ref={mobileMenuButtonRef}
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-10 w-10 shrink-0"
+              aria-label={t("Abrir menú")}
+              aria-controls="app-sidebar"
+              aria-expanded={mobileSidebarOpen}
+              onClick={() => setMobileSidebarOpen(true)}
+            >
+              <Menu className="h-5 w-5" />
+            </Button>
+            <NavLink to="/" className="flex min-w-0 items-center gap-2 rounded-md pr-2">
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-border bg-secondary">
+                <img src="/rau-logo.png" alt="" className="h-7 w-7 object-contain" />
+              </span>
+              <div className="min-w-0">
+                <strong className="block truncate text-sm">Rau Studio</strong>
+                <span className="block truncate text-[11px] text-muted-foreground">{t("Creative audio workspace · local first")}</span>
+              </div>
+            </NavLink>
+          </header>
           <Outlet context={shellContext} />
         </div>
       </div>
@@ -2214,7 +2302,11 @@ function AppSidebar({
   systemStatus,
   systemStatusError,
   systemStatusLoading,
-  onRefreshSystemStatus
+  onRefreshSystemStatus,
+  mobileOpen,
+  desktop,
+  onMobileClose,
+  onMobileNavigate
 }: {
   eventBridgeStatus: EventBridgeStatus;
   lastRealtimeEventAt: string | null;
@@ -2222,6 +2314,10 @@ function AppSidebar({
   systemStatusError: string | null;
   systemStatusLoading: boolean;
   onRefreshSystemStatus: () => void;
+  mobileOpen: boolean;
+  desktop: boolean;
+  onMobileClose: () => void;
+  onMobileNavigate: () => void;
 }) {
   const { t } = useI18n();
   const [creatorOpen, setCreatorOpen] = useState(false);
@@ -2231,6 +2327,7 @@ function AppSidebar({
     return saved === null ? true : saved === "true";
   });
   const creatorRef = useRef<HTMLDivElement | null>(null);
+  const mobileCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const ffmpegInstalled = systemStatus?.ffmpeg.installed ?? false;
   const ffprobeInstalled = systemStatus?.ffprobe.installed ?? false;
   const ffmpegLabel = systemStatusLoading && !systemStatus
@@ -2325,21 +2422,55 @@ function AppSidebar({
     return () => document.removeEventListener("mousedown", closeOnOutsideClick);
   }, [creatorOpen]);
 
-  return (
-    <aside className="sticky top-0 flex h-screen w-64 shrink-0 flex-col border-r border-border bg-card px-3 py-4 max-lg:static max-lg:h-auto max-lg:w-full max-lg:border-b max-lg:border-r-0">
-      <NavLink to="/" className="mb-5 flex shrink-0 items-center gap-3 rounded-md px-2 py-1 transition-colors hover:bg-secondary max-lg:mb-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
-          <img src="/rau-logo.png" alt="" className="h-8 w-8 object-contain" />
-        </span>
-        <div className="min-w-0">
-          <strong className="block truncate text-sm font-semibold">Rau Studio</strong>
-          <span className="block truncate text-xs text-muted-foreground">
-            {t("v{version} · Desktop", { version: appVersion })}
-          </span>
-        </div>
-      </NavLink>
+  useEffect(() => {
+    if (!mobileOpen || desktop) return;
+    const frame = window.requestAnimationFrame(() => mobileCloseButtonRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [desktop, mobileOpen]);
 
-      <nav className="grid min-h-0 flex-1 gap-5 overflow-y-auto pr-1 max-lg:flex max-lg:max-h-40 max-lg:flex-none max-lg:gap-3 max-lg:overflow-x-auto max-lg:overflow-y-hidden max-lg:pr-0">
+  return (
+    <aside
+      id="app-sidebar"
+      aria-label={t("Navegación principal")}
+      aria-hidden={!desktop && !mobileOpen}
+      inert={!desktop && !mobileOpen}
+      className={cn(
+        "fixed inset-y-0 left-0 z-50 flex h-dvh w-72 max-w-[calc(100vw-24px)] shrink-0 -translate-x-[105%] flex-col border-r border-border bg-card/95 px-3 py-4 shadow-2xl backdrop-blur-xl transition-transform duration-300 ease-out will-change-transform",
+        mobileOpen && "translate-x-0",
+        "lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:w-64 lg:max-w-none lg:translate-x-0 lg:bg-card lg:shadow-none lg:backdrop-blur-none"
+      )}
+    >
+      <div className="mb-5 flex shrink-0 items-center gap-2">
+        <NavLink to="/" className="flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-1 transition-colors hover:bg-secondary" onClick={onMobileNavigate}>
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-border bg-secondary">
+            <img src="/rau-logo.png" alt="" className="h-8 w-8 object-contain" />
+          </span>
+          <div className="min-w-0">
+            <strong className="block truncate text-sm font-semibold">Rau Studio</strong>
+            <span className="block truncate text-xs text-muted-foreground">
+              {t("v{version} · Desktop", { version: appVersion })}
+            </span>
+          </div>
+        </NavLink>
+        <Button
+          ref={mobileCloseButtonRef}
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9 shrink-0 lg:hidden"
+          aria-label={t("Cerrar menú")}
+          onClick={onMobileClose}
+        >
+          <X className="h-5 w-5" />
+        </Button>
+      </div>
+
+      <nav
+        className="grid min-h-0 flex-1 gap-5 overflow-y-auto pr-1"
+        onClick={(event) => {
+          if (event.target instanceof Element && event.target.closest("a")) onMobileNavigate();
+        }}
+      >
         <SidebarSection title={t("Studio")}>
           <SidebarLink to="/" end icon={<House className="h-4 w-4" />}>
             {t("Inicio")}
@@ -2404,7 +2535,7 @@ function AppSidebar({
         </SidebarSection>
       </nav>
 
-      <div className="mt-3 grid shrink-0 gap-2 border-t border-border pt-3 max-lg:border-t max-lg:pt-3">
+      <div className="mt-3 grid shrink-0 gap-2 border-t border-border pt-3">
         <SidebarAudioPlayer />
 
         <div className="rounded-md border border-border bg-background p-2">
@@ -2561,7 +2692,7 @@ function StatusDot({ tone, label }: { tone: StatusTone; label: string }) {
 
 function SidebarSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="grid gap-1 max-lg:min-w-52">
+    <section className="grid gap-1">
       <span className="px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
       </span>

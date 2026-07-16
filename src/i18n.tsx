@@ -56,6 +56,9 @@ const translations: Record<Locale, Record<string, string>> = {
     "Abrir Enrichment": "Open Enrichment",
     "Studio": "Studio",
     "Inicio": "Home",
+    "Abrir menú": "Open menu",
+    "Cerrar menú": "Close menu",
+    "Navegación principal": "Main navigation",
     "Rau Connect": "Rau Connect",
     "Compartir y descubrir": "Share and discover",
     "Prepara tu identidad y el catálogo que luego viajará directamente entre dispositivos.":

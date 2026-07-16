@@ -363,7 +363,7 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
   }
 
   return (
-    <main className="flex h-full min-h-screen flex-col bg-background p-4 text-foreground">
+    <main className="flex min-h-screen flex-col bg-background p-4 text-foreground lg:h-screen lg:min-h-0 lg:overflow-hidden">
       <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-muted-foreground">
@@ -406,7 +406,10 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
         </div>
       ) : null}
 
-      <section className="grid h-[calc(100vh-350px)] min-h-[560px] grid-cols-[320px_minmax(0,1fr)] gap-3 max-lg:h-[640px] max-lg:grid-cols-1">
+      <section
+        data-playlist-browser-layout
+        className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)] gap-3 max-lg:h-[640px] max-lg:min-h-[640px] max-lg:flex-none max-lg:grid-cols-1"
+      >
         <Card className="flex h-full min-h-0 flex-col overflow-hidden">
           <CardHeader>
             <div className="min-w-0">
@@ -508,7 +511,7 @@ export function PlaylistBrowserPage({ kind }: { kind: BrowserKind }) {
             {!activeGroup ? <EmptyRow>{t("Selecciona un grupo")}</EmptyRow> : null}
             {activeGroup && displayedTracks.length === 0 ? <EmptyRow>{t("Sin tracks.")}</EmptyRow> : null}
             {activeGroup && kind === "artist" && artistDetailTab === "albums" ? (
-              <section className="grid h-full min-h-[420px] grid-cols-[240px_minmax(0,1fr)] max-lg:grid-cols-1">
+              <section className="grid h-full min-h-0 grid-cols-[240px_minmax(0,1fr)] max-lg:min-h-[420px] max-lg:grid-cols-1">
                 <div className="min-h-0 overflow-y-auto border-r border-border max-lg:max-h-56 max-lg:border-b max-lg:border-r-0">
                   {artistAlbums.length === 0 ? <EmptyRow>{t("Sin albums.")}</EmptyRow> : null}
                   {artistAlbums.map((album) => (
