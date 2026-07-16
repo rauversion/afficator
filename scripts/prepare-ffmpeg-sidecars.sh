@@ -5,8 +5,10 @@ FFMPEG_VERSION="8.1.2"
 FFMPEG_SHA256="464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c"
 X264_COMMIT="b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
 X264_SHA256="6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224"
+LAME_VERSION="3.101"
+LAME_SHA256="7578af6eebd578b2bd64e468fac4ae1f03670a7e028166e67f855674b9b6aeac"
 MACOS_DEPLOYMENT_TARGET="11.0"
-BUILD_ID="$FFMPEG_VERSION-x264-${X264_COMMIT:0:12}-macos-$MACOS_DEPLOYMENT_TARGET-static-v2"
+BUILD_ID="$FFMPEG_VERSION-x264-${X264_COMMIT:0:12}-lame-$LAME_VERSION-network-macos-$MACOS_DEPLOYMENT_TARGET-static-v3"
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target_triple="${TAURI_ENV_TARGET_TRIPLE:-$(rustc --print host-tuple)}"
@@ -31,6 +33,10 @@ x264_archive="$cache_dir/x264-$X264_COMMIT.tar.bz2"
 x264_source_dir="$cache_dir/x264-$X264_COMMIT"
 x264_build_dir="$cache_dir/build-x264-$target_triple"
 x264_install_dir="$cache_dir/install-x264-$target_triple"
+lame_archive="$cache_dir/lame-$LAME_VERSION.tar.gz"
+lame_source_dir="$cache_dir/lame-$LAME_VERSION"
+lame_build_dir="$cache_dir/build-lame-$target_triple"
+lame_install_dir="$cache_dir/install-lame-$target_triple"
 build_dir="$cache_dir/build-$target_triple"
 binary_dir="$root_dir/src-tauri/binaries"
 ffmpeg_output="$binary_dir/ffmpeg-$target_triple"
@@ -51,6 +57,15 @@ verify_x264_archive() {
   actual="$(openssl dgst -sha256 "$x264_archive" | awk '{print $NF}')"
   if [[ "$actual" != "$X264_SHA256" ]]; then
     echo "x264 archive checksum mismatch: expected $X264_SHA256, got $actual." >&2
+    exit 1
+  fi
+}
+
+verify_lame_archive() {
+  local actual
+  actual="$(openssl dgst -sha256 "$lame_archive" | awk '{print $NF}')"
+  if [[ "$actual" != "$LAME_SHA256" ]]; then
+    echo "LAME archive checksum mismatch: expected $LAME_SHA256, got $actual." >&2
     exit 1
   fi
 }
@@ -85,11 +100,12 @@ validate_native_features() {
     echo "Running $target_triple feature checks through the local compatibility layer."
   fi
 
-  local encoders filters smoke_dir
+  local encoders filters protocols smoke_dir
   encoders="$($ffmpeg_output -hide_banner -encoders 2>/dev/null)"
   filters="$($ffmpeg_output -hide_banner -filters 2>/dev/null)"
+  protocols="$($ffmpeg_output -hide_banner -protocols 2>/dev/null)"
 
-  for encoder in libx264 aac pcm_s16be pcm_s24be; do
+  for encoder in libx264 libmp3lame aac pcm_s16be pcm_s24be; do
     if [[ "$encoders" != *"$encoder"* ]]; then
       echo "Bundled FFmpeg is missing required encoder: $encoder" >&2
       exit 1
@@ -99,6 +115,13 @@ validate_native_features() {
   for filter in ebur128 astats acompressor alimiter equalizer highpass lowpass; do
     if [[ "$filters" != *"$filter"* ]]; then
       echo "Bundled FFmpeg is missing required filter: $filter" >&2
+      exit 1
+    fi
+  done
+
+  for protocol in icecast http https tcp tls; do
+    if ! grep -Eq "^[[:space:]]*$protocol$" <<< "$protocols"; then
+      echo "Bundled FFmpeg is missing required protocol: $protocol" >&2
       exit 1
     fi
   done
@@ -121,6 +144,13 @@ validate_native_features() {
   "$ffprobe_output" \
     -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \
     "$smoke_dir/smoke.mp4" | grep -q "h264"
+
+  "$ffmpeg_output" \
+    -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:duration=0.25" \
+    -c:a libmp3lame -b:a 128k "$smoke_dir/smoke.mp3"
+  "$ffprobe_output" \
+    -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 \
+    "$smoke_dir/smoke.mp3" | grep -q "mp3"
   rm -rf "$smoke_dir"
   trap - RETURN
 }
@@ -134,7 +164,8 @@ validate_sidecars() {
 mkdir -p "$cache_dir" "$binary_dir"
 
 if [[ -x "$ffmpeg_output" && -x "$ffprobe_output" && -f "$version_marker" && \
-      -f "$binary_dir/COPYING.FFMPEG-GPLv2" && -f "$binary_dir/COPYING.X264-GPLv2" ]] && \
+      -f "$binary_dir/COPYING.FFMPEG-GPLv2" && -f "$binary_dir/COPYING.X264-GPLv2" && \
+      -f "$binary_dir/COPYING.LAME-LGPLv2" ]] && \
    [[ "$(<"$version_marker")" == "$BUILD_ID" ]]; then
   validate_sidecars
   echo "FFmpeg $FFMPEG_VERSION sidecars are ready for $target_triple."
@@ -157,11 +188,22 @@ if [[ ! -f "$x264_archive" ]]; then
 fi
 verify_x264_archive
 
+if [[ ! -f "$lame_archive" ]]; then
+  echo "Downloading LAME $LAME_VERSION source from SourceForge..."
+  curl --fail --location --show-error \
+    "https://downloads.sourceforge.net/project/lame/lame/$LAME_VERSION/lame-$LAME_VERSION.tar.gz" \
+    --output "$lame_archive"
+fi
+verify_lame_archive
+
 if [[ ! -d "$source_dir" ]]; then
   tar -xf "$archive" -C "$cache_dir"
 fi
 if [[ ! -d "$x264_source_dir" ]]; then
   tar -xf "$x264_archive" -C "$cache_dir"
+fi
+if [[ ! -d "$lame_source_dir" ]]; then
+  tar -xf "$lame_archive" -C "$cache_dir"
 fi
 
 rm -rf "$x264_build_dir" "$x264_install_dir"
@@ -202,6 +244,44 @@ if [[ ! -f "$x264_install_dir/lib/libx264.a" || ! -f "$x264_install_dir/lib/pkgc
   exit 1
 fi
 
+rm -rf "$lame_build_dir" "$lame_install_dir"
+mkdir -p "$lame_build_dir" "$lame_install_dir"
+
+lame_configure_flags=(
+  "--prefix=$lame_install_dir"
+  "--host=$target_triple"
+  "--enable-static"
+  "--disable-shared"
+  "--disable-frontend"
+  "--disable-decoder"
+)
+
+echo "Building LAME $LAME_VERSION for $target_triple..."
+lame_configure_log="$lame_build_dir/configure.log"
+if ! (
+  cd "$lame_build_dir"
+  CC=clang \
+    CFLAGS="-arch $target_arch -mmacosx-version-min=$MACOS_DEPLOYMENT_TARGET" \
+    LDFLAGS="-arch $target_arch -mmacosx-version-min=$MACOS_DEPLOYMENT_TARGET" \
+    MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
+    "$lame_source_dir/configure" "${lame_configure_flags[@]}" > "$lame_configure_log" 2>&1
+); then
+  cat "$lame_configure_log" >&2
+  exit 1
+fi
+
+lame_build_log="$lame_build_dir/build.log"
+if ! make -s -C "$lame_build_dir" -j "$jobs" > "$lame_build_log" 2>&1; then
+  tail -n 300 "$lame_build_log" >&2
+  exit 1
+fi
+make -s -C "$lame_build_dir" install >> "$lame_build_log" 2>&1
+
+if [[ ! -f "$lame_install_dir/lib/libmp3lame.a" || ! -f "$lame_install_dir/lib/pkgconfig/lame.pc" ]]; then
+  echo "LAME static library installation is incomplete." >&2
+  exit 1
+fi
+
 rm -rf "$build_dir"
 mkdir -p "$build_dir"
 
@@ -211,12 +291,11 @@ configure_flags=(
   "--arch=$target_arch"
   "--target-os=darwin"
   "--cc=clang"
-  "--extra-cflags=-arch $target_arch -mmacosx-version-min=$MACOS_DEPLOYMENT_TARGET"
-  "--extra-ldflags=-arch $target_arch -mmacosx-version-min=$MACOS_DEPLOYMENT_TARGET"
+  "--extra-cflags=-arch $target_arch -mmacosx-version-min=$MACOS_DEPLOYMENT_TARGET -I$lame_install_dir/include"
+  "--extra-ldflags=-arch $target_arch -mmacosx-version-min=$MACOS_DEPLOYMENT_TARGET -L$lame_install_dir/lib"
   "--disable-autodetect"
   "--disable-debug"
   "--disable-doc"
-  "--disable-network"
   "--disable-shared"
   "--enable-static"
   "--disable-programs"
@@ -224,6 +303,8 @@ configure_flags=(
   "--enable-ffprobe"
   "--enable-gpl"
   "--enable-libx264"
+  "--enable-libmp3lame"
+  "--enable-securetransport"
   "--pkg-config-flags=--static"
   "--enable-audiotoolbox"
   "--enable-videotoolbox"
@@ -237,7 +318,7 @@ echo "Configuring FFmpeg $FFMPEG_VERSION for $target_triple..."
 configure_log="$build_dir/configure.log"
 if ! (
   cd "$build_dir"
-  PKG_CONFIG_PATH="$x264_install_dir/lib/pkgconfig" \
+  PKG_CONFIG_PATH="$x264_install_dir/lib/pkgconfig:$lame_install_dir/lib/pkgconfig" \
     MACOSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
     "$source_dir/configure" "${configure_flags[@]}" > "$configure_log" 2>&1
 ); then
@@ -259,6 +340,7 @@ strip -x "$ffmpeg_output" "$ffprobe_output"
 printf '%s\n' "$BUILD_ID" > "$version_marker"
 install -m 644 "$source_dir/COPYING.GPLv2" "$binary_dir/COPYING.FFMPEG-GPLv2"
 install -m 644 "$x264_source_dir/COPYING" "$binary_dir/COPYING.X264-GPLv2"
+install -m 644 "$lame_source_dir/COPYING" "$binary_dir/COPYING.LAME-LGPLv2"
 
 validate_sidecars
 echo "FFmpeg $FFMPEG_VERSION sidecars are ready for $target_triple."

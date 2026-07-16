@@ -15,6 +15,7 @@ use std::os::unix::fs::OpenOptionsExt;
 const DB_FILE: &str = "aifficator.sqlite3";
 const SECRET_FILE: &str = "settings-secret.bin";
 const OPENAI_API_KEY_SETTING: &str = "openai_api_key";
+const ICECAST_SOURCE_PASSWORD_SETTING: &str = "broadcast.icecast_source_password";
 const ENRICHMENT_CREDENTIAL_PREFIX: &str = "enrichment.provider";
 const FFMPEG_PATH_SETTING: &str = "ffmpeg_path";
 const FFPROBE_PATH_SETTING: &str = "ffprobe_path";
@@ -202,6 +203,20 @@ pub(crate) fn load_openai_api_key(app: &AppHandle) -> Result<Option<String>, Str
     } else {
         Ok(Some(api_key))
     }
+}
+
+pub(crate) fn load_icecast_source_password(app: &AppHandle) -> Result<Option<String>, String> {
+    load_text_setting(app, ICECAST_SOURCE_PASSWORD_SETTING)
+}
+
+pub(crate) fn save_icecast_source_password(
+    app: &AppHandle,
+    password: Option<String>,
+) -> Result<(), String> {
+    let password = password
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    save_optional_text_setting(app, ICECAST_SOURCE_PASSWORD_SETTING, password)
 }
 
 pub(crate) fn load_enrichment_credential(

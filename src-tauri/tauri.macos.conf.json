@@ -9,7 +9,8 @@
     "resources": [
       "third-party/FFMPEG-NOTICE.md",
       "binaries/COPYING.FFMPEG-GPLv2",
-      "binaries/COPYING.X264-GPLv2"
+      "binaries/COPYING.X264-GPLv2",
+      "binaries/COPYING.LAME-LGPLv2"
     ],
     "macOS": {
       "minimumSystemVersion": "11.0"

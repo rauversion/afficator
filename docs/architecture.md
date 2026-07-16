@@ -28,6 +28,7 @@ Major domains:
 - Mastering jobs and events.
 - Turn jobs and events.
 - Indexed playlist libraries, memberships, draft playlists, and embeddings.
+- Icecast source profiles and an ordered, durable radio broadcast queue.
 - Encrypted settings, including OpenAI and enrichment-provider credentials and audio tool paths.
 - Encrypted P2P device identity, trusted peers, presence observations, shared folders, and virtual file catalogs.
 
@@ -62,6 +63,7 @@ The Rust backend owns:
 - ffmpeg/ffprobe command construction;
 - optional OpenAI requests;
 - encrypted settings persistence.
+- Icecast source lifecycle, MP3 publishing, queue recovery, and reconnect policy.
 - P2P identity locking, share permissions, and filesystem-safe catalog indexing.
 
 ## Media Tool Resolution
@@ -72,10 +74,10 @@ The backend resolves each media tool in this order:
 2. the sidecar bundled with the macOS application;
 3. the process `PATH` and known package-manager locations.
 
-macOS sidecars are built from pinned FFmpeg and x264 source archives by
+macOS sidecars are built from pinned FFmpeg, x264, and LAME source archives by
 `scripts/prepare-ffmpeg-sidecars.sh`. The script validates source checksums,
-architectures, dynamic dependencies, required encoders and filters, and real
-AIFF/MP4 smoke conversions before Tauri bundles them.
+architectures, dynamic dependencies, required encoders, filters, and network
+protocols, plus real AIFF/MP3/MP4 smoke conversions before Tauri bundles them.
 
 The frontend owns:
 
@@ -124,10 +126,40 @@ Long-running tasks emit Tauri events:
 - `playlist-index-progress`
 - `playlist-copilot-progress`
 - `turn-progress`
+- `broadcast-progress`
 
 Rau Connect emits `p2p-network-event` for endpoint lifecycle and authenticated diagnostic traffic. Presence observations, chat delivery, and transfer progress will extend this event boundary as their protocols are added.
 
 The app shell listens to these events to report bridge health, while each feature page consumes the relevant stream for progress, row status, and terminal logs.
+
+## Radio Broadcast Pipeline
+
+The desktop app acts as an Icecast source client; listeners never connect to the
+Mac directly. An outbound connection publishes to a reachable Icecast server,
+which owns the public listener URL and fan-out.
+
+```text
+Indexed playlist -> durable SQLite queue -> per-track FFmpeg decoder
+                 -> PCM pipe -> persistent FFmpeg/libmp3lame publisher
+                 -> remote Icecast mount -> listeners
+```
+
+1. The user saves one Icecast source profile. Its password is encrypted through
+   the existing settings vault and is never returned to the frontend.
+2. Adding an indexed playlist snapshots its playable local paths and original
+   order into `broadcast_queue_entries`.
+3. A per-track decoder normalizes audio to stereo 44.1 kHz signed 16-bit PCM.
+4. One long-lived publisher encodes that PCM with `libmp3lame` and writes the
+   configured Icecast mount. It emits silence while the queue is empty so the
+   listener URL remains connected.
+5. Track transitions update Icecast metadata through its admin endpoint.
+6. Stop and skip commands travel over an in-process channel. Interrupted
+   `playing` rows return to `queued` when a new session starts.
+7. A lost publisher is terminated and recreated with bounded reconnect delays;
+   the current track returns to the queue instead of being marked as played.
+
+See [Radio Broadcast](radio-broadcast.md) for setup, operation, and network
+topologies.
 
 ## Rekordbox Conversion Pipeline
 
@@ -199,6 +231,7 @@ If OpenAI is not configured or a request fails, the app uses local deterministic
 - `src/FileConversionPage.tsx`
 - `src/MasteringPage.tsx`
 - `src/TurnPage.tsx`
+- `src/BroadcastPage.tsx`
 - `src/PlaylistIndexPage.tsx`
 - `src/PlaylistBrowserPage.tsx`
 - `src/TaxonomyPage.tsx`
@@ -216,4 +249,5 @@ If OpenAI is not configured or a request fails, the app uses local deterministic
 - `src-tauri/src/settings.rs`
 - `src-tauri/src/system.rs`
 - `src-tauri/src/turn.rs`
+- `src-tauri/src/broadcast.rs`
 - `crates/aifficator-core/src/*`

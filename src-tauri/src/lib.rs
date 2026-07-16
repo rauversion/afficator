@@ -21,6 +21,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
+mod broadcast;
 mod enrichment;
 mod local_conversion;
 mod mastering;
@@ -1454,10 +1455,22 @@ fn is_inside_converted_folder(root: &Path, path: &Path) -> bool {
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(broadcast::BroadcastManager::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             system_status,
+            broadcast::broadcast_profile,
+            broadcast::broadcast_save_profile,
+            broadcast::broadcast_preflight,
+            broadcast::broadcast_queue,
+            broadcast::broadcast_append_playlist,
+            broadcast::broadcast_remove_queue_entry,
+            broadcast::broadcast_clear_queue,
+            broadcast::broadcast_status,
+            broadcast::broadcast_start,
+            broadcast::broadcast_stop,
+            broadcast::broadcast_skip,
             import_rekordbox_xml,
             plan_conversion,
             export_rekordbox_xml,

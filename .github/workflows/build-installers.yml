@@ -111,7 +111,7 @@ jobs:
           path: |
             .cache/ffmpeg
             src-tauri/binaries
-          key: ffmpeg-8.1.2-${{ matrix.artifact }}
+          key: ffmpeg-8.1.2-lame-3.101-network-${{ matrix.artifact }}
 
       - name: Validate Apple secrets
         if: runner.os == 'macOS'
@@ -303,6 +303,11 @@ jobs:
             --output release-artifacts/x264-b35605ace3dd-source.tar.bz2
           echo "6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224  release-artifacts/x264-b35605ace3dd-source.tar.bz2" | \
             sha256sum --check
+          curl --fail --location --show-error \
+            https://downloads.sourceforge.net/project/lame/lame/3.101/lame-3.101.tar.gz \
+            --output release-artifacts/lame-3.101-source.tar.gz
+          echo "7578af6eebd578b2bd64e468fac4ae1f03670a7e028166e67f855674b9b6aeac  release-artifacts/lame-3.101-source.tar.gz" | \
+            sha256sum --check
 
       - name: Publish release assets
         env:
@@ -320,6 +325,7 @@ jobs:
             -name '*.rpm' -o \
             -name 'ffmpeg-*-source.tar.xz' \
             -o -name 'x264-*-source.tar.bz2' \
+            -o -name 'lame-*-source.tar.gz' \
           \))
 
           if [ "${#files[@]}" -eq 0 ]; then

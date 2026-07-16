@@ -27,6 +27,7 @@ import {
   Moon,
   MoreHorizontal,
   Play,
+  Radio,
   RefreshCcw,
   Search,
   Settings,
@@ -44,6 +45,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useOutletContext } from "react-router-dom";
 import { Button } from "./components/ui/button";
 import { CatalogPage } from "./CatalogPage";
+import { BroadcastPage } from "./BroadcastPage";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { GlobalAudioPlayerProvider, SidebarAudioPlayer, useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
 import {
@@ -308,6 +310,7 @@ export default function App() {
             <Route path="/turn" element={<TurnPage />} />
             <Route path="/mastering" element={<MasteringPage />} />
             <Route path="/connect" element={<P2PPage />} />
+            <Route path="/broadcast" element={<BroadcastPage />} />
             <Route
               path="/settings"
               element={<SettingsPage />}
@@ -395,7 +398,8 @@ function AppShell() {
       "mastering-progress",
       "playlist-index-progress",
       "track-enrichment-progress",
-      "turn-progress"
+      "turn-progress",
+      "broadcast-progress"
     ];
 
     setEventBridgeStatus("checking");
@@ -2477,6 +2481,9 @@ function AppSidebar({
           </SidebarLink>
           <SidebarLink to="/connect" icon={<Share2 className="h-4 w-4" />}>
             {t("Rau Connect")}
+          </SidebarLink>
+          <SidebarLink to="/broadcast" icon={<Radio className="h-4 w-4" />}>
+            {t("Broadcast")}
           </SidebarLink>
         </SidebarSection>
 
