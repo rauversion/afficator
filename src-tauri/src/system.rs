@@ -6,12 +6,30 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::AppHandle;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BinarySource {
+    Configured,
+    Bundled,
+    System,
+}
+
+#[derive(Debug)]
+struct ResolvedBinary {
+    path: PathBuf,
+    source: BinarySource,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct BinaryStatus {
     pub installed: bool,
     pub version: Option<String>,
     pub path: Option<String>,
     pub configured_path: Option<String>,
+    pub source: Option<BinarySource>,
     pub message: Option<String>,
 }
 
@@ -25,12 +43,9 @@ pub(crate) fn ffprobe_command(app: &AppHandle) -> Command {
 
 pub(crate) fn binary_status(app: &AppHandle, name: &str) -> BinaryStatus {
     let configured_path = configured_binary_path(app, name).ok().flatten();
-    let command_path = configured_path
-        .as_ref()
-        .map(PathBuf::from)
-        .or_else(|| resolve_binary(app, name));
-    let mut command = match command_path.as_ref() {
-        Some(path) => Command::new(path),
+    let resolved = resolve_binary(app, name);
+    let mut command = match resolved.as_ref() {
+        Some(binary) => Command::new(&binary.path),
         None => Command::new(name),
     };
 
@@ -46,10 +61,12 @@ pub(crate) fn binary_status(app: &AppHandle, name: &str) -> BinaryStatus {
             BinaryStatus {
                 installed: true,
                 version,
-                path: command_path
-                    .map(path_to_string)
+                path: resolved
+                    .as_ref()
+                    .map(|binary| path_to_string(binary.path.clone()))
                     .or_else(|| Some(name.to_string())),
                 configured_path,
+                source: resolved.as_ref().map(|binary| binary.source),
                 message: Some(format!("{name} esta disponible.")),
             }
         }
@@ -58,8 +75,11 @@ pub(crate) fn binary_status(app: &AppHandle, name: &str) -> BinaryStatus {
             BinaryStatus {
                 installed: false,
                 version: None,
-                path: command_path.map(path_to_string),
+                path: resolved
+                    .as_ref()
+                    .map(|binary| path_to_string(binary.path.clone())),
                 configured_path,
+                source: resolved.as_ref().map(|binary| binary.source),
                 message: Some(format!(
                     "{name} respondio con estado {}. {}",
                     output.status,
@@ -70,8 +90,11 @@ pub(crate) fn binary_status(app: &AppHandle, name: &str) -> BinaryStatus {
         Err(error) => BinaryStatus {
             installed: false,
             version: None,
-            path: command_path.map(path_to_string),
+            path: resolved
+                .as_ref()
+                .map(|binary| path_to_string(binary.path.clone())),
             configured_path,
+            source: resolved.as_ref().map(|binary| binary.source),
             message: Some(format!("No se pudo ejecutar {name}: {error}")),
         },
     }
@@ -108,40 +131,55 @@ pub(crate) fn is_external_volume_path(path: &Path) -> bool {
 }
 
 fn binary_command(app: &AppHandle, name: &str) -> Command {
-    if let Ok(Some(path)) = configured_binary_path(app, name) {
-        return Command::new(path);
-    }
-
     match resolve_binary(app, name) {
-        Some(path) => Command::new(path),
+        Some(binary) => Command::new(binary.path),
         None => Command::new(name),
     }
 }
 
-fn resolve_binary(app: &AppHandle, name: &str) -> Option<PathBuf> {
-    binary_candidates(app, name)
-        .into_iter()
-        .find(|path| is_executable_candidate(path))
+fn resolve_binary(app: &AppHandle, name: &str) -> Option<ResolvedBinary> {
+    select_binary(binary_candidates(app, name))
 }
 
-fn binary_candidates(app: &AppHandle, name: &str) -> Vec<PathBuf> {
+fn select_binary(candidates: Vec<ResolvedBinary>) -> Option<ResolvedBinary> {
+    candidates.into_iter().find(|binary| {
+        binary.source == BinarySource::Configured || is_executable_candidate(&binary.path)
+    })
+}
+
+fn binary_candidates(app: &AppHandle, name: &str) -> Vec<ResolvedBinary> {
     let mut candidates = Vec::new();
 
     if let Ok(Some(path)) = configured_binary_path(app, name) {
-        candidates.push(PathBuf::from(path));
+        candidates.push(ResolvedBinary {
+            path: PathBuf::from(path),
+            source: BinarySource::Configured,
+        });
         return candidates;
     }
 
+    candidates.extend(
+        bundled_binary_candidates(name)
+            .into_iter()
+            .map(|path| ResolvedBinary {
+                path,
+                source: BinarySource::Bundled,
+            }),
+    );
+
     if let Some(paths) = env::var_os("PATH") {
         for directory in env::split_paths(&paths) {
-            push_binary_candidate(&mut candidates, &directory, name);
+            push_binary_candidate(&mut candidates, &directory, name, BinarySource::System);
         }
     }
 
     for path in settings::default_binary_paths(name) {
         let candidate = PathBuf::from(path);
         if candidate.components().count() > 1 {
-            candidates.push(candidate);
+            candidates.push(ResolvedBinary {
+                path: candidate,
+                source: BinarySource::System,
+            });
         }
     }
 
@@ -157,19 +195,98 @@ fn configured_binary_path(app: &AppHandle, name: &str) -> Result<Option<String>,
     }
 }
 
-fn push_binary_candidate(candidates: &mut Vec<PathBuf>, directory: &Path, name: &str) {
-    candidates.push(directory.join(name));
+fn push_binary_candidate(
+    candidates: &mut Vec<ResolvedBinary>,
+    directory: &Path,
+    name: &str,
+    source: BinarySource,
+) {
+    candidates.push(ResolvedBinary {
+        path: directory.join(name),
+        source,
+    });
 
     #[cfg(windows)]
     if !name.to_ascii_lowercase().ends_with(".exe") {
-        candidates.push(directory.join(format!("{name}.exe")));
+        candidates.push(ResolvedBinary {
+            path: directory.join(format!("{name}.exe")),
+            source,
+        });
     }
 }
 
 fn is_executable_candidate(path: &Path) -> bool {
-    path.is_file()
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    return metadata.permissions().mode() & 0o111 != 0;
+
+    #[cfg(not(unix))]
+    true
 }
 
 fn path_to_string(path: PathBuf) -> String {
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(target_os = "macos")]
+fn bundled_binary_candidates(name: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let suffixed_name = format!("{name}-{}-apple-darwin", env::consts::ARCH);
+
+    if let Ok(executable) = env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            candidates.push(directory.join(name));
+            candidates.push(directory.join(&suffixed_name));
+        }
+    }
+
+    if cfg!(debug_assertions) {
+        candidates.push(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("binaries")
+                .join(suffixed_name),
+        );
+    }
+
+    candidates
+}
+
+#[cfg(not(target_os = "macos"))]
+fn bundled_binary_candidates(_name: &str) -> Vec<PathBuf> {
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{select_binary, BinarySource, ResolvedBinary};
+    use std::path::PathBuf;
+
+    #[test]
+    fn configured_path_remains_a_strict_override_when_missing() {
+        let configured = PathBuf::from("/definitely/missing/ffmpeg");
+        let selected = select_binary(vec![ResolvedBinary {
+            path: configured.clone(),
+            source: BinarySource::Configured,
+        }])
+        .expect("configured candidates are selected so the UI can report their error");
+
+        assert_eq!(selected.path, configured);
+        assert_eq!(selected.source, BinarySource::Configured);
+    }
+
+    #[test]
+    fn missing_automatic_candidates_are_skipped() {
+        let selected = select_binary(vec![ResolvedBinary {
+            path: PathBuf::from("/definitely/missing/bundled-ffmpeg"),
+            source: BinarySource::Bundled,
+        }]);
+
+        assert!(selected.is_none());
+    }
 }

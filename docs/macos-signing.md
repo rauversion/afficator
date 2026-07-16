@@ -6,6 +6,8 @@ Rau Studio can build macOS bundles without an Apple Developer certificate, but u
 
 - The release workflow builds separate Apple Silicon and Intel artifacts.
 - Each macOS app is signed with **Developer ID Application** and notarized.
+- The nested `ffmpeg` and `ffprobe` sidecars are signed and verified before the
+  outer app bundle is accepted.
 - The workflow creates a signed `.dmg`, submits it to Apple, staples the ticket,
   and verifies it with Gatekeeper before uploading it.
 - macOS jobs fail before building when a required repository secret is missing.

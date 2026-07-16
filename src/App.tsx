@@ -228,6 +228,7 @@ type BinaryStatus = {
   version?: string | null;
   path?: string | null;
   configured_path?: string | null;
+  source?: "configured" | "bundled" | "system" | null;
   message?: string | null;
 };
 
@@ -751,7 +752,7 @@ function SettingsPage() {
               <CardTitle>{t("Audio tools")}</CardTitle>
             </div>
             <span className="text-xs text-muted-foreground">
-              {loadingAudioTools ? t("Cargando rutas...") : t("Configura ffmpeg/ffprobe o deja autodeteccion.")}
+              {loadingAudioTools ? t("Cargando rutas...") : t("Rau Studio usa su motor integrado; estas rutas son opcionales.")}
             </span>
           </CardHeader>
           <CardContent>
@@ -2192,6 +2193,17 @@ function AppSidebar({
       ? "pending"
       : "ok";
 
+  function audioToolDetail(status: BinaryStatus | undefined, fallback: string) {
+    if (!status) return systemStatusError ?? fallback;
+    if (status.source === "bundled") {
+      return `${t("Incluido con Rau Studio")} · ${status.version ?? status.path ?? fallback}`;
+    }
+    if (status.source === "configured") {
+      return `${t("Ruta configurada")} · ${status.path ?? status.version ?? fallback}`;
+    }
+    return status.path ?? status.version ?? status.message ?? fallback;
+  }
+
   function setStatusCollapsed(next: boolean) {
     setStatusCollapsedState(next);
     localStorage.setItem(sidebarStatusCollapsedKey, String(next));
@@ -2210,13 +2222,13 @@ function AppSidebar({
           <StatusLine
             label={t("FFmpeg")}
             value={ffmpegLabel}
-            detail={systemStatus?.ffmpeg.path ?? systemStatus?.ffmpeg.version ?? systemStatus?.ffmpeg.message ?? systemStatusError ?? t("conversion engine")}
+            detail={audioToolDetail(systemStatus?.ffmpeg, t("conversion engine"))}
             tone={ffmpegTone}
           />
           <StatusLine
             label={t("FFprobe")}
             value={ffprobeLabel}
-            detail={systemStatus?.ffprobe.path ?? systemStatus?.ffprobe.version ?? systemStatus?.ffprobe.message ?? systemStatusError ?? t("metadata probe")}
+            detail={audioToolDetail(systemStatus?.ffprobe, t("metadata probe"))}
             tone={ffprobeTone}
           />
         </div>
@@ -2225,13 +2237,10 @@ function AppSidebar({
           <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] leading-relaxed text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-100">
             <div className="mb-1 flex items-center gap-1.5 font-semibold">
               <AlertTriangle className="h-3.5 w-3.5" />
-              {t("Instala ffmpeg")}
+              {t("Motor de audio no disponible")}
             </div>
-            <code className="block rounded bg-background/70 px-1.5 py-1 font-mono text-[10px]">
-              brew install ffmpeg
-            </code>
             <span className="mt-1 block text-amber-800 dark:text-amber-200">
-              {t("Incluye ffprobe. Puedes ajustar rutas en Settings.")}
+              {t("Reinstala Rau Studio o configura rutas manuales en Settings.")}
             </span>
           </div>
         ) : null}

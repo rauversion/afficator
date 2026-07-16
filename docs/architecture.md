@@ -2,7 +2,7 @@
 
 Rau Studio is a local-first desktop app for audio preparation, Rekordbox conversion, mastering, release visuals, and playlist intelligence.
 
-The application is built around a Tauri desktop shell, a Rust backend, a React/TypeScript frontend, local SQLite persistence, and external media tools (`ffmpeg`/`ffprobe`). Original media files and source XML files are treated as immutable inputs.
+The application is built around a Tauri desktop shell, a Rust backend, a React/TypeScript frontend, local SQLite persistence, and local media tools (`ffmpeg`/`ffprobe`). macOS bundles carry pinned sidecars; other platforms currently resolve system or manually configured binaries. Original media files and source XML files are treated as immutable inputs.
 
 ## Stack
 
@@ -61,6 +61,19 @@ The Rust backend owns:
 - ffmpeg/ffprobe command construction;
 - optional OpenAI requests;
 - encrypted settings persistence.
+
+## Media Tool Resolution
+
+The backend resolves each media tool in this order:
+
+1. an explicit path saved in Settings;
+2. the sidecar bundled with the macOS application;
+3. the process `PATH` and known package-manager locations.
+
+macOS sidecars are built from pinned FFmpeg and x264 source archives by
+`scripts/prepare-ffmpeg-sidecars.sh`. The script validates source checksums,
+architectures, dynamic dependencies, required encoders and filters, and real
+AIFF/MP4 smoke conversions before Tauri bundles them.
 
 The frontend owns:
 

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
+    "resources": [
+      "third-party/FFMPEG-NOTICE.md",
+      "binaries/COPYING.FFMPEG-GPLv2",
+      "binaries/COPYING.X264-GPLv2"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  }
+}

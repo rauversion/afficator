@@ -45,12 +45,21 @@ Rau Studio uses Tauri 2, Rust, React, TypeScript, SQLite, OpenAI-compatible AI f
 
 - Stable Rust.
 - Node.js and npm.
-- `ffmpeg` and `ffprobe` available in `PATH`, or configured in **Settings**.
 
-On macOS:
+The signed macOS installer includes compatible `ffmpeg` and `ffprobe` binaries,
+so end users do not need Homebrew or a system installation. Manually configured
+paths remain available as an advanced override. Windows and Linux builds still
+use `ffmpeg`/`ffprobe` from `PATH` or **Settings**.
+
+Building the macOS app from source additionally requires Xcode command-line
+tools and `pkg-config`; Intel builds require `nasm`. The first native build
+downloads pinned FFmpeg/x264 source archives, verifies their SHA-256 hashes,
+and compiles the sidecars locally.
+
+Prepare or validate the macOS sidecars explicitly:
 
 ```sh
-brew install ffmpeg
+npm run sidecars:prepare
 ```
 
 ## Commands
@@ -142,12 +151,16 @@ result with Gatekeeper. Details are in
 
 ## Quick Troubleshooting
 
-Check `ffmpeg` and `ffprobe`:
+Check an optional system `ffmpeg` and `ffprobe` override:
 
 ```sh
 ffmpeg -version
 ffprobe -version
 ```
+
+On macOS, the status panel reports **Incluido con Rau Studio** when the bundled
+sidecars are active. If the bundled engine is missing, reinstall the signed app
+or configure manual paths in **Settings**.
 
 If the Vite websocket fails during development, restart the native dev server:
 
@@ -161,4 +174,7 @@ If files live on an external macOS drive and playback/conversion fails, grant Ra
 
 ## License
 
-MIT
+Rau Studio source code is MIT licensed. The separately bundled FFmpeg/x264
+command-line programs are distributed under GPL terms; their notices, license
+texts, exact build configuration, and corresponding source archives accompany
+the macOS distribution.

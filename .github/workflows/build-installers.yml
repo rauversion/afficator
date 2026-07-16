@@ -97,8 +97,21 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      - name: Install macOS media build dependencies
+        if: runner.os == 'macOS'
+        run: brew install nasm pkg-config
+
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Restore bundled FFmpeg cache
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: |
+            .cache/ffmpeg
+            src-tauri/binaries
+          key: ffmpeg-8.1.2-${{ matrix.artifact }}
 
       - name: Validate Apple secrets
         if: runner.os == 'macOS'
@@ -179,6 +192,10 @@ jobs:
             --bundles app
 
           app="${{ matrix.bundle_dir }}/macos/Rau Studio.app"
+          for tool in ffmpeg ffprobe; do
+            test -x "$app/Contents/MacOS/$tool"
+            codesign --verify --strict --verbose=2 "$app/Contents/MacOS/$tool"
+          done
           codesign --verify --deep --strict --verbose=2 "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute -vv "$app"
@@ -273,6 +290,20 @@ jobs:
         with:
           path: release-artifacts
 
+      - name: Add corresponding FFmpeg source
+        shell: bash
+        run: |
+          curl --fail --location --show-error \
+            https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz \
+            --output release-artifacts/ffmpeg-8.1.2-source.tar.xz
+          echo "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c  release-artifacts/ffmpeg-8.1.2-source.tar.xz" | \
+            sha256sum --check
+          curl --fail --location --show-error \
+            https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2 \
+            --output release-artifacts/x264-b35605ace3dd-source.tar.bz2
+          echo "6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224  release-artifacts/x264-b35605ace3dd-source.tar.bz2" | \
+            sha256sum --check
+
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -286,7 +317,9 @@ jobs:
             -name '*.exe' -o \
             -name '*.AppImage' -o \
             -name '*.deb' -o \
-            -name '*.rpm' \
+            -name '*.rpm' -o \
+            -name 'ffmpeg-*-source.tar.xz' \
+            -o -name 'x264-*-source.tar.bz2' \
           \))
 
           if [ "${#files[@]}" -eq 0 ]; then

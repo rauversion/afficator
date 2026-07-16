@@ -4,9 +4,9 @@
   "version": "0.1.10",
   "identifier": "com.aifficator.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run sidecars:prepare && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run sidecars:prepare && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
