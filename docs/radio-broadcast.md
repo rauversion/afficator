@@ -70,7 +70,8 @@ until cleared. The active row cannot be removed, but it can be skipped.
 - Icecast receives one continuous source connection across track transitions.
 - When the queue runs out, Rau Studio transmits silence rather than closing the
   mount. New playlists can be appended while the station is live.
-- Artist and title metadata are sent when a track starts.
+- Artist and title metadata are sent as UTF-8 when a track starts. Icecast
+  exposes the current value on its status page and through `/status-json.xsl`.
 - The selected microphone is captured natively through CPAL/CoreAudio,
   normalized and resampled to the same stereo 44.1 kHz PCM format, and mixed
   with the track or idle silence. Gain is limited to 0–200%, and sample sums are

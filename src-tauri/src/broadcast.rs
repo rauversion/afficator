@@ -1798,6 +1798,7 @@ fn update_icecast_metadata_async(
                         ("mount", profile.mount.as_str()),
                         ("mode", "updinfo"),
                         ("song", display_title(&entry).as_str()),
+                        ("charset", "UTF-8"),
                     ])
                     .send()
             });
