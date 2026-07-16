@@ -1,6 +1,6 @@
 [package]
 name = "rau-studio"
-version = "0.1.15"
+version = "0.1.16"
 description = "Local audio toolkit for DJs and producers"
 authors = ["Rauversion"]
 edition = "2021"
