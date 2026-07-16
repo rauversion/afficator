@@ -1,5 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeDevCommand": "npm run sidecars:prepare && npm run dev",
+    "beforeBuildCommand": "npm run sidecars:prepare && npm run build"
+  },
   "bundle": {
     "externalBin": ["binaries/ffmpeg", "binaries/ffprobe"],
     "resources": [
