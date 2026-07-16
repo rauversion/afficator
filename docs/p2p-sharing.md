@@ -1,6 +1,6 @@
 # P2P Sharing Foundation
 
-Rau Connect is the foundation for peer identity, contacts, presence, shared-folder catalogs, chat, and peer-to-peer downloads. The local security and catalog boundaries remain separate from the transport, but Rau can now start an authenticated Iroh endpoint and exchange diagnostic traffic with another running instance.
+Rau Connect is the foundation for peer identity, contacts, presence, shared-folder catalogs, chat, and peer-to-peer downloads. The local security and catalog boundaries remain separate from the transport, while authenticated Iroh protocols now carry diagnostics, catalog searches, file bytes, and chat messages between running instances.
 
 ## Current Scope
 
@@ -23,15 +23,20 @@ Implemented:
 - versioned `/rau/diagnostic/1` request/response traffic;
 - shareable endpoint tickets, authenticated peer IDs, and measured round-trip time;
 - observed peer persistence and a two-minute recent-reachability presence lease;
-- Tauri network events and React controls for start, stop, ticket copy, connection test, and the online/offline device list.
+- return-ticket exchange so either peer can initiate later traffic;
+- bounded and authorized `/rau/catalog/1` remote searches;
+- streamed `/rau/file/1` downloads with temporary files, progress events, and safe replacement;
+- path, symlink, share state, and peer authorization revalidation before every download;
+- persisted private and general `/rau/chat/1` messages with delivery acknowledgements;
+- Tauri network, transfer, and chat events plus React controls for the complete flow.
 
 Not yet implemented:
 
 - QR rendering, one-use pairing invitations, and contact authorization;
 - periodic presence heartbeats;
-- private or general chat;
-- remote catalog request handling;
-- resumable file download;
+- selected-contact ACLs and explicit trust promotion;
+- content hashes and resumable downloads;
+- message deletion, unread counters, and offline delivery;
 - community discovery and moderation.
 
 ## Identity Storage
@@ -69,7 +74,7 @@ Remote path:   House/Night Drive.aiff
 Remote file:   SHA256(share_id || 0x00 || remote_path)
 ```
 
-The catalog excludes hidden paths and symlinks. Before a future download begins, the backend must resolve the selected file again, verify that it remains a regular file under the canonical share root, re-check the share ACL, and bind the transfer to an immutable content hash.
+The catalog excludes hidden paths and symlinks. Before each download, the backend resolves the selected file again, rejects absolute paths and non-normal path components, checks every component for symlinks, verifies that the canonical result remains beneath the share root, confirms the share is enabled, and re-checks peer authorization. Immutable content hashes remain a future integrity and resume boundary.
 
 ## SQLite Tables
 
@@ -77,6 +82,7 @@ The catalog excludes hidden paths and symlinks. Before a future download begins,
 - `p2p_peers`: paired endpoint IDs, trust, last address, and last presence observation.
 - `p2p_shares`: local roots, visibility policy, counters, and enabled state.
 - `p2p_shared_files`: opaque IDs and virtual metadata for indexed files.
+- `p2p_chat_messages`: incoming/outgoing private or general messages and delivery state.
 
 Visibility values are intentionally bounded:
 
@@ -104,6 +110,13 @@ Catalog:
 - `p2p_set_share_enabled`
 - `p2p_remove_share`
 - `p2p_search_shared_files`
+- `p2p_remote_search`
+- `p2p_download_remote_file`
+
+Chat:
+
+- `p2p_chat_list`
+- `p2p_chat_send`
 
 Peers:
 
@@ -129,7 +142,7 @@ Iroh connect(ALPN /rau/diagnostic/1)
       +-- QUIC authenticates Device B endpoint ID
       |
       v
-bounded JSON ping(nonce, version, public display name)
+bounded JSON ping(nonce, version, public display name, return ticket)
       |
       v
 bounded JSON pong(same nonce, B endpoint ID, display name)
@@ -138,12 +151,20 @@ bounded JSON pong(same nonce, B endpoint ID, display name)
 A verifies pong endpoint ID == authenticated QUIC peer ID
       |
       v
-peer observation + RTT + p2p-network-event
+peer observation + validated return ticket + RTT + p2p-network-event
 ```
 
-The endpoint ticket is public connection metadata, not the private key. The future QR screen will encode this ticket together with a short-lived, one-use invitation capability. Scanning a raw diagnostic ticket currently proves which endpoint answered, but does not yet make that endpoint a trusted contact.
+The endpoint ticket is public connection metadata, not the private key. The future QR screen will encode this ticket together with a short-lived, one-use invitation capability. Scanning a raw diagnostic ticket currently proves which endpoint answered and records it as an observed contact, but does not yet promote it through an explicit trust ceremony.
 
-`online` currently means that the peer completed an authenticated diagnostic exchange during the last two minutes. It automatically appears `offline` after the lease expires. Periodic heartbeat traffic will renew this lease in a later slice.
+`online` currently means that the peer completed authenticated diagnostic, catalog, download, or chat traffic during the last two minutes. It automatically appears `offline` after the lease expires. Periodic heartbeat traffic will renew this lease in a later slice.
+
+## Service Protocols
+
+- `/rau/catalog/1`: bounded JSON query and virtual metadata response. Known, non-blocked peers can see enabled `contacts`, `community`, and `ticket` shares. `selected_contacts` is denied until its ACL exists.
+- `/rau/file/1`: bounded request, length-prefixed metadata header, then streamed file bytes. The receiver writes to a temporary sibling and only replaces the selected destination after the byte count is complete.
+- `/rau/chat/1`: bounded private/general message and authenticated delivery acknowledgement. Messages travel inside Iroh's encrypted transport and are stored as plaintext in the local SQLite database.
+
+The current general room is a direct fan-out to every known peer with a return ticket. It is deliberately not a globally discoverable public room.
 
 ## Next Network Slice
 
@@ -152,9 +173,9 @@ The next slice can build on the verified transport without changing the local ca
 1. Add `/rau/pair/1`, expiring one-use invitations, QR rendering, and explicit acceptance.
 2. Promote accepted endpoint IDs from `observed` to `paired` in `p2p_peers`.
 3. Add periodic presence heartbeats for paired contacts.
-4. Add `/rau/catalog/1` with bounded, authorized search requests.
-5. Resolve a result to a revalidated file handle and content hash.
-6. Add the download transport behind a `BlobTransport` boundary.
-7. Add `/rau/chat/1` only after peer authorization and delivery acknowledgements are stable.
+4. Add immutable content hashes and resumable file ranges.
+5. Add unread state, retry queues, and offline chat delivery.
+6. Add an optional encrypted-at-rest chat database policy.
+7. Design community discovery and moderation as a separate trust boundary.
 
 The public general room should remain a separate protocol and policy boundary from trusted private contacts.

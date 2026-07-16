@@ -6,8 +6,8 @@ use ring::digest::{digest, SHA256};
 use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
-use serde::Serialize;
-use std::path::{Path, PathBuf};
+use serde::{Deserialize, Serialize};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
@@ -15,6 +15,8 @@ use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 use zeroize::Zeroizing;
 
+pub(crate) mod catalog;
+pub(crate) mod chat;
 pub(crate) mod network;
 
 const DB_FILE: &str = "aifficator.sqlite3";
@@ -80,13 +82,14 @@ pub(crate) struct IdentityStatus {
     endpoint_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct PeerSummary {
     endpoint_id: String,
     display_name: String,
     trust_state: String,
     presence_status: String,
     last_seen_at: Option<String>,
+    can_connect: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -103,23 +106,29 @@ pub(crate) struct SharedFolder {
     created_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct SharedFileSearchResult {
-    provider_endpoint_id: String,
-    share_id: String,
-    share_name: String,
-    file_id: String,
-    name: String,
-    relative_path: String,
-    extension: String,
-    size_bytes: u64,
-    modified_ms: Option<i64>,
+    pub(super) provider_endpoint_id: String,
+    pub(super) share_id: String,
+    pub(super) share_name: String,
+    pub(super) file_id: String,
+    pub(super) name: String,
+    pub(super) relative_path: String,
+    pub(super) extension: String,
+    pub(super) size_bytes: u64,
+    pub(super) modified_ms: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct SharedFileSearchResponse {
-    query: String,
-    results: Vec<SharedFileSearchResult>,
+    pub(super) query: String,
+    pub(super) results: Vec<SharedFileSearchResult>,
+}
+
+pub(super) struct ResolvedSharedFile {
+    pub name: String,
+    pub path: PathBuf,
+    pub modified_ms: Option<i64>,
 }
 
 fn identity_session() -> &'static Mutex<Option<UnlockedIdentity>> {
@@ -284,7 +293,8 @@ pub(crate) fn p2p_list_peers(app: AppHandle) -> Result<Vec<PeerSummary>, String>
     let conn = open_db(&app)?;
     let mut statement = conn
         .prepare(
-            "SELECT endpoint_id, display_name, trust_state, presence_status, last_seen_at
+            "SELECT endpoint_id, display_name, trust_state, presence_status, last_seen_at,
+                    CASE WHEN last_endpoint_addr IS NOT NULL AND last_endpoint_addr != '' THEN 1 ELSE 0 END
              FROM p2p_peers
              ORDER BY lower(display_name), endpoint_id",
         )
@@ -297,6 +307,7 @@ pub(crate) fn p2p_list_peers(app: AppHandle) -> Result<Vec<PeerSummary>, String>
                 trust_state: row.get(2)?,
                 presence_status: row.get(3)?,
                 last_seen_at: row.get(4)?,
+                can_connect: row.get::<_, i64>(5)? != 0,
             })
         })
         .map_err(|error| format!("No se pudo consultar contactos P2P: {error}"))?;
@@ -471,6 +482,29 @@ pub(crate) fn p2p_search_shared_files(
 ) -> Result<SharedFileSearchResponse, String> {
     let endpoint_id = require_unlocked_identity()?;
     let conn = open_db(&app)?;
+    search_shared_files(&conn, &endpoint_id, query, limit, false)
+}
+
+pub(super) fn search_shared_files_for_peer(
+    app: &AppHandle,
+    remote_endpoint_id: &str,
+    query: String,
+    limit: Option<usize>,
+) -> Result<SharedFileSearchResponse, String> {
+    let endpoint_id = require_unlocked_identity()?;
+    let conn = open_db(app)?;
+    require_authorized_peer(&conn, remote_endpoint_id)?;
+    mark_peer_seen_in_connection(&conn, remote_endpoint_id)?;
+    search_shared_files(&conn, &endpoint_id, query, limit, true)
+}
+
+fn search_shared_files(
+    conn: &Connection,
+    endpoint_id: &str,
+    query: String,
+    limit: Option<usize>,
+    remote_request: bool,
+) -> Result<SharedFileSearchResponse, String> {
     let query = query.trim().to_string();
     let tokens = query
         .split_whitespace()
@@ -486,6 +520,9 @@ pub(crate) fn p2p_search_shared_files(
          JOIN p2p_shares s ON s.id = f.share_id
          WHERE s.enabled = 1",
     );
+    if remote_request {
+        sql.push_str(" AND s.visibility IN ('contacts', 'community', 'ticket')");
+    }
     let mut values = Vec::new();
     for token in tokens {
         sql.push_str(
@@ -505,7 +542,7 @@ pub(crate) fn p2p_search_shared_files(
     let rows = statement
         .query_map(params_from_iter(values.iter()), |row| {
             Ok(SharedFileSearchResult {
-                provider_endpoint_id: endpoint_id.clone(),
+                provider_endpoint_id: endpoint_id.to_string(),
                 share_id: row.get(0)?,
                 share_name: row.get(1)?,
                 file_id: row.get(2)?,
@@ -522,6 +559,147 @@ pub(crate) fn p2p_search_shared_files(
         .map_err(|error| format!("No se pudo leer resultado compartido: {error}"))?;
 
     Ok(SharedFileSearchResponse { query, results })
+}
+
+pub(super) fn require_authorized_peer(conn: &Connection, endpoint_id: &str) -> Result<(), String> {
+    let authorized = conn
+        .query_row(
+            "SELECT blocked_at IS NULL FROM p2p_peers WHERE endpoint_id = ?1",
+            params![endpoint_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()
+        .map_err(|error| format!("No se pudo verificar autorizacion del peer: {error}"))?
+        .unwrap_or(false);
+    if authorized {
+        Ok(())
+    } else {
+        Err("El peer remoto no es un contacto P2P autorizado.".to_string())
+    }
+}
+
+pub(super) fn mark_peer_seen(app: &AppHandle, endpoint_id: &str) -> Result<(), String> {
+    let conn = open_db(app)?;
+    require_authorized_peer(&conn, endpoint_id)?;
+    mark_peer_seen_in_connection(&conn, endpoint_id)
+}
+
+fn mark_peer_seen_in_connection(conn: &Connection, endpoint_id: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE p2p_peers SET presence_status = 'online', last_seen_at = ?2
+         WHERE endpoint_id = ?1 AND blocked_at IS NULL",
+        params![endpoint_id, timestamp()],
+    )
+    .map_err(|error| format!("No se pudo actualizar presencia del peer: {error}"))?;
+    Ok(())
+}
+
+pub(super) fn peer_endpoint_ticket(app: &AppHandle, endpoint_id: &str) -> Result<String, String> {
+    let conn = open_db(app)?;
+    require_authorized_peer(&conn, endpoint_id)?;
+    conn.query_row(
+        "SELECT last_endpoint_addr FROM p2p_peers WHERE endpoint_id = ?1",
+        params![endpoint_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map_err(|error| format!("No se pudo leer ticket del peer: {error}"))?
+    .flatten()
+    .filter(|ticket| !ticket.trim().is_empty())
+    .ok_or_else(|| {
+        "Ese peer no publico un ticket de retorno. Vuelve a probar la conexion en ambos dispositivos."
+            .to_string()
+    })
+}
+
+pub(super) fn peer_display_name(app: &AppHandle, endpoint_id: &str) -> Result<String, String> {
+    let conn = open_db(app)?;
+    conn.query_row(
+        "SELECT display_name FROM p2p_peers WHERE endpoint_id = ?1",
+        params![endpoint_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| format!("No se pudo leer nombre del peer: {error}"))?
+    .ok_or_else(|| "El peer ya no existe en la lista local.".to_string())
+}
+
+pub(super) fn resolve_shared_file_for_peer(
+    app: &AppHandle,
+    remote_endpoint_id: &str,
+    share_id: &str,
+    file_id: &str,
+) -> Result<ResolvedSharedFile, String> {
+    let conn = open_db(app)?;
+    require_authorized_peer(&conn, remote_endpoint_id)?;
+    mark_peer_seen_in_connection(&conn, remote_endpoint_id)?;
+    let record = conn
+        .query_row(
+            "SELECT s.root_path, s.visibility, f.relative_path, f.name
+             FROM p2p_shared_files f
+             JOIN p2p_shares s ON s.id = f.share_id
+             WHERE s.id = ?1 AND f.id = ?2 AND s.enabled = 1",
+            params![share_id, file_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("No se pudo resolver archivo compartido: {error}"))?
+        .ok_or_else(|| "El archivo compartido ya no esta disponible.".to_string())?;
+    if !matches!(record.1.as_str(), "contacts" | "community" | "ticket") {
+        return Err("La carpeta no autoriza descargas para este peer.".to_string());
+    }
+
+    let root = canonical_shared_root(&record.0)?;
+    let path = safe_shared_file_path(&root, &record.2)?;
+    let metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("No se pudo leer archivo compartido: {error}"))?;
+    if !metadata.is_file() {
+        return Err("El archivo compartido ya no es un archivo regular.".to_string());
+    }
+    Ok(ResolvedSharedFile {
+        name: record.3,
+        path,
+        modified_ms: metadata.modified().ok().and_then(system_time_millis),
+    })
+}
+
+fn safe_shared_file_path(root: &Path, relative_path: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(relative_path);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("La ruta virtual del archivo no es valida.".to_string());
+    }
+
+    let mut candidate = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return Err("La ruta virtual del archivo no es valida.".to_string());
+        };
+        candidate.push(part);
+        let metadata = std::fs::symlink_metadata(&candidate)
+            .map_err(|error| format!("No se pudo revalidar ruta compartida: {error}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err("La ruta compartida contiene un enlace simbolico.".to_string());
+        }
+    }
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| format!("No se pudo resolver archivo compartido: {error}"))?;
+    if !canonical.starts_with(root) {
+        return Err("El archivo solicitado escapa de la carpeta compartida.".to_string());
+    }
+    Ok(canonical)
 }
 
 pub(super) fn open_db(app: &AppHandle) -> Result<Connection, String> {
@@ -594,10 +772,26 @@ fn init_db(conn: &Connection) -> Result<(), String> {
           UNIQUE (share_id, relative_path)
         );
 
+        CREATE TABLE IF NOT EXISTS p2p_chat_messages (
+          id TEXT PRIMARY KEY,
+          room TEXT NOT NULL CHECK (room IN ('private', 'general')),
+          peer_endpoint_id TEXT NOT NULL,
+          sender_endpoint_id TEXT NOT NULL,
+          sender_display_name TEXT NOT NULL,
+          body TEXT NOT NULL,
+          direction TEXT NOT NULL CHECK (direction IN ('incoming', 'outgoing')),
+          delivery_status TEXT NOT NULL CHECK (delivery_status IN ('pending', 'delivered', 'partial', 'failed')),
+          sent_at TEXT NOT NULL,
+          received_at TEXT,
+          created_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS p2p_shared_files_share_name_idx
           ON p2p_shared_files(share_id, name);
         CREATE INDEX IF NOT EXISTS p2p_peers_presence_idx
           ON p2p_peers(presence_status, display_name);
+        CREATE INDEX IF NOT EXISTS p2p_chat_room_peer_sent_idx
+          ON p2p_chat_messages(room, peer_endpoint_id, sent_at);
         ",
     )
     .map_err(|error| format!("No se pudo inicializar esquema P2P: {error}"))
@@ -951,7 +1145,7 @@ fn identity_aad(endpoint_id: &str) -> Aad<Vec<u8>> {
     Aad::from(format!("rau-p2p-identity-v1:{endpoint_id}").into_bytes())
 }
 
-fn require_unlocked_identity() -> Result<String, String> {
+pub(super) fn require_unlocked_identity() -> Result<String, String> {
     identity_session()
         .lock()
         .map_err(|_| "No se pudo leer identidad P2P de esta sesion.".to_string())?
@@ -1089,6 +1283,21 @@ mod tests {
     }
 
     #[test]
+    fn shared_file_resolution_stays_beneath_its_canonical_root() {
+        let root = std::env::temp_dir().join(format!("rau-p2p-resolve-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("Artist")).expect("create shared test directory");
+        std::fs::write(root.join("Artist").join("Track.aiff"), b"audio")
+            .expect("write shared test file");
+        let canonical = root.canonicalize().expect("canonical test root");
+        let resolved = safe_shared_file_path(&canonical, "Artist/Track.aiff")
+            .expect("resolve safe shared path");
+        assert!(resolved.starts_with(&canonical));
+        assert!(safe_shared_file_path(&canonical, "../outside.aiff").is_err());
+        assert!(safe_shared_file_path(&canonical, "/absolute.aiff").is_err());
+        std::fs::remove_dir_all(root).expect("clean shared test directory");
+    }
+
+    #[test]
     fn p2p_schema_enforces_one_identity_and_cascades_share_files() {
         let conn = Connection::open_in_memory().expect("open memory database");
         conn.execute_batch("PRAGMA foreign_keys = ON;")
@@ -1119,5 +1328,47 @@ mod tests {
             })
             .expect("count shared files");
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn remote_catalog_requires_a_known_peer_and_hides_selected_contacts() {
+        let conn = Connection::open_in_memory().expect("open memory database");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        init_db(&conn).expect("initialize p2p schema");
+        conn.execute(
+            "INSERT INTO p2p_peers (
+               endpoint_id, display_name, trust_state, presence_status, paired_at
+             ) VALUES ('peer-a', 'Peer A', 'observed', 'online', 'now')",
+            [],
+        )
+        .expect("insert known peer");
+        for (share_id, visibility) in [
+            ("share-contacts", "contacts"),
+            ("share-selected", "selected_contacts"),
+        ] {
+            conn.execute(
+                "INSERT INTO p2p_shares (
+                   id, name, root_path, visibility, enabled, file_count,
+                   total_size_bytes, skipped_entries, last_indexed_at, created_at, updated_at
+                 ) VALUES (?1, ?1, ?2, ?3, 1, 1, 5, 0, 'now', 'now', 'now')",
+                params![share_id, format!("/virtual/{share_id}"), visibility],
+            )
+            .expect("insert visibility share");
+            conn.execute(
+                "INSERT INTO p2p_shared_files (
+                   id, share_id, relative_path, name, extension, size_bytes
+                 ) VALUES (?1, ?2, 'Track.aiff', 'Track.aiff', 'aiff', 5)",
+                params![format!("file-{share_id}"), share_id],
+            )
+            .expect("insert visibility file");
+        }
+
+        assert!(require_authorized_peer(&conn, "unknown").is_err());
+        require_authorized_peer(&conn, "peer-a").expect("authorize known peer");
+        let response = search_shared_files(&conn, "local-endpoint", String::new(), Some(100), true)
+            .expect("search remote-visible files");
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(response.results[0].share_id, "share-contacts");
     }
 }

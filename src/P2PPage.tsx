@@ -1,14 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   Activity,
   Copy,
+  Download,
   FolderOpen,
+  Globe2,
   HardDrive,
   KeyRound,
+  Library,
   LoaderCircle,
   LockKeyhole,
+  MessageCircle,
   Network,
   Pause,
   Play,
@@ -41,6 +45,7 @@ type PeerSummary = {
   trust_state: string;
   presence_status: "online" | "away" | "offline" | "unknown" | string;
   last_seen_at?: string | null;
+  can_connect: boolean;
 };
 
 type NetworkStatus = {
@@ -100,6 +105,57 @@ type SharedFileSearchResponse = {
   results: SharedFileSearchResult[];
 };
 
+type RemoteCatalogResponse = SharedFileSearchResponse & {
+  peer_endpoint_id: string;
+  peer_display_name: string;
+};
+
+type DownloadResult = {
+  peer_endpoint_id: string;
+  name: string;
+  destination_path: string;
+  size_bytes: number;
+  elapsed_ms: number;
+};
+
+type TransferEvent = {
+  transfer_id: string;
+  peer_endpoint_id: string;
+  file_name: string;
+  destination_path: string;
+  received_bytes: number;
+  total_bytes: number;
+  status: "downloading" | "completed" | string;
+  message: string;
+  occurred_at: string;
+};
+
+type ChatRoom = "private" | "general";
+
+type ChatMessage = {
+  id: string;
+  room: ChatRoom;
+  peer_endpoint_id: string;
+  sender_endpoint_id: string;
+  sender_display_name: string;
+  body: string;
+  direction: "incoming" | "outgoing" | string;
+  delivery_status: "pending" | "delivered" | "partial" | "failed" | string;
+  sent_at: string;
+  received_at?: string | null;
+};
+
+type ChatEvent = {
+  kind: "message_received" | "message_sent" | string;
+  message: ChatMessage;
+};
+
+type ChatSendResult = {
+  message: ChatMessage;
+  attempted_recipients: number;
+  delivered_recipients: number;
+};
+
 type BusyAction =
   | "loading"
   | "identity"
@@ -110,6 +166,9 @@ type BusyAction =
   | "add-share"
   | `share:${string}`
   | "search"
+  | "remote-search"
+  | `download:${string}`
+  | "chat-send"
   | null;
 
 const fieldClass =
@@ -139,6 +198,15 @@ export function P2PPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SharedFileSearchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
+  const [remotePeer, setRemotePeer] = useState("");
+  const [remoteQuery, setRemoteQuery] = useState("");
+  const [remoteResults, setRemoteResults] = useState<SharedFileSearchResult[]>([]);
+  const [hasRemoteSearched, setHasRemoteSearched] = useState(false);
+  const [transfer, setTransfer] = useState<TransferEvent | null>(null);
+  const [chatRoom, setChatRoom] = useState<ChatRoom>("private");
+  const [chatPeer, setChatPeer] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatBody, setChatBody] = useState("");
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -198,6 +266,70 @@ export function P2PPage() {
     () => shares.reduce((total, share) => total + share.file_count, 0),
     [shares]
   );
+  const reachablePeers = useMemo(() => peers.filter((peer) => peer.can_connect), [peers]);
+
+  useEffect(() => {
+    const firstPeer = reachablePeers[0]?.endpoint_id ?? "";
+    if (!reachablePeers.some((peer) => peer.endpoint_id === remotePeer)) {
+      setRemotePeer(firstPeer);
+      setRemoteResults([]);
+      setHasRemoteSearched(false);
+    }
+    if (!reachablePeers.some((peer) => peer.endpoint_id === chatPeer)) {
+      setChatPeer(firstPeer);
+    }
+  }, [chatPeer, reachablePeers, remotePeer]);
+
+  useEffect(() => {
+    if (!identity?.unlocked || (chatRoom === "private" && !chatPeer)) {
+      setChatMessages([]);
+      return;
+    }
+    void invoke<ChatMessage[]>("p2p_chat_list", {
+      room: chatRoom,
+      peerEndpointId: chatRoom === "private" ? chatPeer : null,
+      limit: 300
+    })
+      .then(setChatMessages)
+      .catch((cause) => setError(errorMessage(cause)));
+  }, [chatPeer, chatRoom, identity?.unlocked]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    void listen<ChatEvent>("p2p-chat-event", ({ payload }) => {
+      const matchesRoom = payload.message.room === chatRoom;
+      const matchesPeer = chatRoom === "general"
+        || payload.message.peer_endpoint_id === chatPeer;
+      if (matchesRoom && matchesPeer) {
+        setChatMessages((current) => upsertChatMessage(current, payload.message));
+      }
+    })
+      .then((stopListening) => {
+        if (disposed) stopListening();
+        else unlisten = stopListening;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [chatPeer, chatRoom]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+    void listen<TransferEvent>("p2p-transfer-event", ({ payload }) => setTransfer(payload))
+      .then((stopListening) => {
+        if (disposed) stopListening();
+        else unlisten = stopListening;
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   async function createIdentity(event: FormEvent) {
     event.preventDefault();
@@ -317,7 +449,10 @@ export function P2PPage() {
         ticket: remoteTicket
       });
       setPingResult(result);
-      setPeers(await invoke<PeerSummary[]>("p2p_list_peers"));
+      const nextPeers = await invoke<PeerSummary[]>("p2p_list_peers");
+      setPeers(nextPeers);
+      setRemotePeer(result.remote_endpoint_id);
+      setChatPeer(result.remote_endpoint_id);
       setNotice(t("Conexión autenticada con {name} en {rtt} ms.", {
         name: result.remote_display_name,
         rtt: result.rtt_ms.toFixed(1)
@@ -429,6 +564,100 @@ export function P2PPage() {
     }
   }
 
+  async function searchRemoteCatalog(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setNotice(null);
+    if (!remotePeer) {
+      setError(t("Selecciona un peer con ticket de retorno."));
+      return;
+    }
+    setBusy("remote-search");
+    try {
+      const response = await invoke<RemoteCatalogResponse>("p2p_remote_search", {
+        peerEndpointId: remotePeer,
+        query: remoteQuery,
+        limit: 100
+      });
+      setRemoteResults(response.results);
+      setHasRemoteSearched(true);
+      setNotice(t("Catálogo remoto de {name}: {count} resultado(s).", {
+        name: response.peer_display_name,
+        count: response.results.length
+      }));
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function downloadRemoteFile(result: SharedFileSearchResult) {
+    const destination = await save({ defaultPath: result.name });
+    if (typeof destination !== "string") return;
+    setError(null);
+    setNotice(null);
+    setTransfer({
+      transfer_id: `pending:${result.file_id}`,
+      peer_endpoint_id: remotePeer,
+      file_name: result.name,
+      destination_path: destination,
+      received_bytes: 0,
+      total_bytes: result.size_bytes,
+      status: "downloading",
+      message: t("Iniciando descarga P2P…"),
+      occurred_at: new Date().toISOString()
+    });
+    setBusy(`download:${result.file_id}`);
+    try {
+      const downloaded = await invoke<DownloadResult>("p2p_download_remote_file", {
+        peerEndpointId: remotePeer,
+        shareId: result.share_id,
+        fileId: result.file_id,
+        destinationPath: destination
+      });
+      setNotice(t("Descarga completada: {name} ({size}).", {
+        name: downloaded.name,
+        size: formatBytes(downloaded.size_bytes)
+      }));
+    } catch (cause) {
+      setError(errorMessage(cause));
+      setTransfer((current) => current ? { ...current, status: "failed", message: errorMessage(cause) } : current);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function sendChatMessage(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setNotice(null);
+    if (chatRoom === "private" && !chatPeer) {
+      setError(t("Selecciona un peer para el chat privado."));
+      return;
+    }
+    setBusy("chat-send");
+    try {
+      const result = await invoke<ChatSendResult>("p2p_chat_send", {
+        room: chatRoom,
+        peerEndpointId: chatRoom === "private" ? chatPeer : null,
+        body: chatBody
+      });
+      setChatMessages((current) => upsertChatMessage(current, result.message));
+      setChatBody("");
+      if (chatRoom === "general") {
+        setNotice(t("Mensaje general entregado a {delivered} de {total} peer(s).", {
+          delivered: result.delivered_recipients,
+          total: result.attempted_recipients
+        }));
+      }
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   if (busy === "loading" && !identity) {
     return (
       <main className="grid min-h-screen place-items-center p-6">
@@ -529,6 +758,41 @@ export function P2PPage() {
               onPing={pingRemotePeer}
             />
 
+            <section className="grid items-start gap-4 xl:grid-cols-2">
+              <RemoteCatalogPanel
+                peers={reachablePeers}
+                selectedPeer={remotePeer}
+                query={remoteQuery}
+                results={remoteResults}
+                searched={hasRemoteSearched}
+                transfer={transfer}
+                busy={busy}
+                networkRunning={network?.running === true}
+                onPeer={(endpointId) => {
+                  setRemotePeer(endpointId);
+                  setRemoteResults([]);
+                  setHasRemoteSearched(false);
+                }}
+                onQuery={setRemoteQuery}
+                onSearch={searchRemoteCatalog}
+                onDownload={(result) => void downloadRemoteFile(result)}
+              />
+              <ChatPanel
+                identity={identity}
+                peers={reachablePeers}
+                room={chatRoom}
+                selectedPeer={chatPeer}
+                messages={chatMessages}
+                body={chatBody}
+                busy={busy === "chat-send"}
+                networkRunning={network?.running === true}
+                onRoom={setChatRoom}
+                onPeer={setChatPeer}
+                onBody={setChatBody}
+                onSend={sendChatMessage}
+              />
+            </section>
+
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -580,6 +844,286 @@ export function P2PPage() {
         )}
       </div>
     </main>
+  );
+}
+
+function RemoteCatalogPanel({
+  peers,
+  selectedPeer,
+  query,
+  results,
+  searched,
+  transfer,
+  busy,
+  networkRunning,
+  onPeer,
+  onQuery,
+  onSearch,
+  onDownload
+}: {
+  peers: PeerSummary[];
+  selectedPeer: string;
+  query: string;
+  results: SharedFileSearchResult[];
+  searched: boolean;
+  transfer: TransferEvent | null;
+  busy: BusyAction;
+  networkRunning: boolean;
+  onPeer: (endpointId: string) => void;
+  onQuery: (query: string) => void;
+  onSearch: (event: FormEvent) => void;
+  onDownload: (result: SharedFileSearchResult) => void;
+}) {
+  const { t } = useI18n();
+  const searchBusy = busy === "remote-search";
+  const progress = transfer && transfer.total_bytes > 0
+    ? Math.min(100, (transfer.received_bytes / transfer.total_bytes) * 100)
+    : 0;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <Library className="h-4 w-4" />
+            {t("Biblioteca remota")}
+          </CardTitle>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {t("Busca metadata remota y descarga el archivo directamente desde el peer.")}
+          </p>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-3 p-3">
+        <form className="grid gap-2" onSubmit={onSearch}>
+          <Field label={t("Dispositivo remoto")}>
+            <select
+              className={fieldClass}
+              value={selectedPeer}
+              disabled={!networkRunning || peers.length === 0}
+              onChange={(event) => onPeer(event.target.value)}
+            >
+              {peers.length === 0 ? <option value="">{t("Sin peers con ticket de retorno")}</option> : null}
+              {peers.map((peer) => (
+                <option key={peer.endpoint_id} value={peer.endpoint_id}>
+                  {peer.display_name} · {shortEndpoint(peer.endpoint_id)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+            <input
+              className={fieldClass}
+              value={query}
+              disabled={!networkRunning || !selectedPeer}
+              placeholder={t("Buscar en los archivos del peer…")}
+              onChange={(event) => onQuery(event.target.value)}
+            />
+            <Button disabled={!networkRunning || !selectedPeer || searchBusy}>
+              {searchBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+              {t("Buscar remoto")}
+            </Button>
+          </div>
+        </form>
+
+        {peers.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-4 text-center text-xs leading-5 text-muted-foreground">
+            {t("Vuelve a probar la conexión para intercambiar tickets de retorno con el otro dispositivo.")}
+          </div>
+        ) : null}
+
+        {transfer ? (
+          <div className={cn(
+            "rounded-md border p-3",
+            transfer.status === "failed" ? "border-destructive/30 bg-destructive/10" : "border-border bg-secondary/45"
+          )}>
+            <div className="flex items-center justify-between gap-3 text-xs">
+              <strong className="truncate">{transfer.file_name}</strong>
+              <span className="shrink-0 text-muted-foreground">
+                {formatBytes(transfer.received_bytes)} / {formatBytes(transfer.total_bytes)}
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-background">
+              <div
+                className={cn("h-full transition-[width]", transfer.status === "failed" ? "bg-destructive" : "bg-emerald-500")}
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <p className="mt-1.5 truncate text-[10px] text-muted-foreground">{transfer.message}</p>
+          </div>
+        ) : null}
+
+        {!searched ? (
+          <div className="rounded-md border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+            {t("Busca sin texto para listar los primeros archivos que el peer autoriza.")}
+          </div>
+        ) : results.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-5 text-center text-sm text-muted-foreground">
+            {t("El peer no devolvió archivos para esta búsqueda.")}
+          </div>
+        ) : (
+          <div className="overflow-hidden rounded-md border border-border">
+            <div className="grid grid-cols-[minmax(0,1fr)_100px_80px_36px] gap-2 border-b border-border bg-secondary/50 px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground max-sm:grid-cols-[minmax(0,1fr)_36px]">
+              <span>{t("Archivo")}</span>
+              <span className="max-sm:hidden">{t("Carpeta")}</span>
+              <span className="max-sm:hidden">{t("Tamaño")}</span>
+              <span />
+            </div>
+            <div className="max-h-80 overflow-y-auto">
+              {results.map((result) => {
+                const downloading = busy === `download:${result.file_id}`;
+                return (
+                  <div key={`${result.share_id}:${result.file_id}`} className="grid grid-cols-[minmax(0,1fr)_100px_80px_36px] items-center gap-2 border-b border-border px-3 py-2 last:border-b-0 max-sm:grid-cols-[minmax(0,1fr)_36px]">
+                    <div className="min-w-0">
+                      <strong className="block truncate text-xs">{result.name}</strong>
+                      <span className="block truncate text-[10px] text-muted-foreground">{result.relative_path}</span>
+                    </div>
+                    <span className="truncate text-[10px] text-muted-foreground max-sm:hidden">{result.share_name}</span>
+                    <span className="text-[10px] text-muted-foreground max-sm:hidden">{formatBytes(result.size_bytes)}</span>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      disabled={!networkRunning || downloading}
+                      aria-label={t("Descargar {name}", { name: result.name })}
+                      title={t("Descargar")}
+                      onClick={() => onDownload(result)}
+                    >
+                      {downloading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ChatPanel({
+  identity,
+  peers,
+  room,
+  selectedPeer,
+  messages,
+  body,
+  busy,
+  networkRunning,
+  onRoom,
+  onPeer,
+  onBody,
+  onSend
+}: {
+  identity: IdentityStatus;
+  peers: PeerSummary[];
+  room: ChatRoom;
+  selectedPeer: string;
+  messages: ChatMessage[];
+  body: string;
+  busy: boolean;
+  networkRunning: boolean;
+  onRoom: (room: ChatRoom) => void;
+  onPeer: (endpointId: string) => void;
+  onBody: (body: string) => void;
+  onSend: (event: FormEvent) => void;
+}) {
+  const { t } = useI18n();
+  const canSend = networkRunning && peers.length > 0 && (room === "general" || Boolean(selectedPeer));
+
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <MessageCircle className="h-4 w-4" />
+            {t("Chat P2P")}
+          </CardTitle>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {t("Los mensajes viajan por Iroh y se guardan localmente en SQLite.")}
+          </p>
+        </div>
+        <div className="flex rounded-md border border-border p-0.5">
+          <Button type="button" size="sm" variant={room === "private" ? "secondary" : "ghost"} onClick={() => onRoom("private")}>
+            {t("Privado")}
+          </Button>
+          <Button type="button" size="sm" variant={room === "general" ? "secondary" : "ghost"} onClick={() => onRoom("general")}>
+            <Globe2 className="h-3.5 w-3.5" />
+            {t("General")}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-3 p-3">
+        {room === "private" ? (
+          <select
+            className={fieldClass}
+            value={selectedPeer}
+            disabled={!networkRunning || peers.length === 0}
+            aria-label={t("Destinatario del chat privado")}
+            onChange={(event) => onPeer(event.target.value)}
+          >
+            {peers.length === 0 ? <option value="">{t("Sin peers con ticket de retorno")}</option> : null}
+            {peers.map((peer) => <option key={peer.endpoint_id} value={peer.endpoint_id}>{peer.display_name}</option>)}
+          </select>
+        ) : (
+          <p className="rounded-md bg-secondary/50 px-3 py-2 text-xs leading-5 text-muted-foreground">
+            {t("El chat general se difunde a todos tus peers conocidos; todavía no es una sala pública global.")}
+          </p>
+        )}
+
+        <div className="grid min-h-72 max-h-96 content-start gap-2 overflow-y-auto rounded-md border border-border bg-background p-3">
+          {messages.length === 0 ? (
+            <div className="grid min-h-64 place-items-center text-center text-sm text-muted-foreground">
+              {t("Todavía no hay mensajes en esta conversación.")}
+            </div>
+          ) : messages.map((message) => {
+            const outgoing = message.direction === "outgoing" || message.sender_endpoint_id === identity.endpoint_id;
+            return (
+              <article key={message.id} className={cn("flex", outgoing ? "justify-end" : "justify-start")}>
+                <div className={cn(
+                  "max-w-[86%] rounded-lg px-3 py-2",
+                  outgoing ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"
+                )}>
+                  {!outgoing || room === "general" ? (
+                    <strong className="mb-1 block text-[10px] opacity-75">{message.sender_display_name}</strong>
+                  ) : null}
+                  <p className="whitespace-pre-wrap break-words text-sm leading-5">{message.body}</p>
+                  <div className="mt-1 flex items-center justify-end gap-2 text-[9px] opacity-65">
+                    <time>{formatChatTime(message.sent_at)}</time>
+                    {outgoing ? <span>{deliveryLabel(message.delivery_status, t)}</span> : null}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+
+        <form className="grid gap-2" onSubmit={onSend}>
+          <textarea
+            className="min-h-20 w-full resize-y rounded-md border border-border bg-background p-3 text-sm text-foreground outline-none focus:border-foreground/35 focus:ring-2 focus:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-60"
+            value={body}
+            maxLength={4000}
+            disabled={!canSend || busy}
+            required
+            placeholder={room === "private" ? t("Escribe un mensaje privado…") : t("Escribe para tus peers conocidos…")}
+            onChange={(event) => onBody(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && canSend && body.trim()) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+          />
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[10px] text-muted-foreground">{body.length}/4000</span>
+            <Button disabled={!canSend || busy || !body.trim()}>
+              {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {t("Enviar mensaje")}
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -753,6 +1297,11 @@ function NetworkPanel({
                         {peer.last_seen_at
                           ? t("Última actividad: {date}", { date: formatDate(peer.last_seen_at) })
                           : t("Sin actividad registrada")}
+                      </p>
+                      <p className={cn("mt-1 text-[10px]", peer.can_connect ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300")}>
+                        {peer.can_connect
+                          ? t("Catálogo y chat disponibles")
+                          : t("Repite la conexión para habilitar catálogo y chat")}
                       </p>
                     </article>
                   );
@@ -1129,6 +1678,28 @@ function formatBytes(value: number) {
 function formatDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function formatChatTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function upsertChatMessage(messages: ChatMessage[], next: ChatMessage) {
+  const existing = messages.findIndex((message) => message.id === next.id);
+  const updated = existing >= 0
+    ? messages.map((message, index) => index === existing ? next : message)
+    : [...messages, next];
+  return updated.sort((left, right) => left.sent_at.localeCompare(right.sent_at));
+}
+
+function deliveryLabel(status: string, t: (key: string) => string) {
+  if (status === "delivered") return t("Entregado");
+  if (status === "partial") return t("Entrega parcial");
+  if (status === "failed") return t("Falló");
+  return t("Enviando");
 }
 
 function errorMessage(cause: unknown) {

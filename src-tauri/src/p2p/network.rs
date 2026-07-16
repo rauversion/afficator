@@ -1,4 +1,6 @@
-use super::{open_db, unlocked_network_identity};
+use super::{
+    catalog, chat, mark_peer_seen, open_db, peer_endpoint_ticket, unlocked_network_identity,
+};
 use chrono::Utc;
 use iroh::{
     endpoint::{presets, Connection},
@@ -54,6 +56,8 @@ struct DiagnosticRequest {
     nonce: String,
     display_name: String,
     sent_at_ms: i64,
+    #[serde(default)]
+    endpoint_ticket: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -117,6 +121,10 @@ impl ProtocolHandler for DiagnosticProtocol {
             }
         };
         let remote_display_name = safe_peer_name(&request.display_name, &remote_endpoint_id);
+        let remote_ticket = request
+            .endpoint_ticket
+            .as_deref()
+            .and_then(|ticket| validated_endpoint_ticket(ticket, &remote_endpoint_id));
         let response = DiagnosticResponse {
             version: PROTOCOL_VERSION,
             kind: "pong".to_string(),
@@ -142,7 +150,7 @@ impl ProtocolHandler for DiagnosticProtocol {
                 app.clone(),
                 remote_endpoint_id.clone(),
                 remote_display_name.clone(),
-                None,
+                remote_ticket,
             )
             .await;
             emit_network_event(
@@ -198,6 +206,15 @@ pub(crate) async fn p2p_network_start(app: AppHandle) -> Result<NetworkStatus, S
     };
     let router = Router::builder(endpoint.clone())
         .accept(DIAGNOSTIC_ALPN, protocol)
+        .accept(
+            catalog::CATALOG_ALPN,
+            catalog::CatalogProtocol::new(app.clone(), endpoint_id.clone()),
+        )
+        .accept(catalog::FILE_ALPN, catalog::FileProtocol::new(app.clone()))
+        .accept(
+            chat::CHAT_ALPN,
+            chat::ChatProtocol::new(app.clone(), endpoint_id.clone()),
+        )
         .spawn();
     let runtime = NetworkRuntime {
         endpoint,
@@ -300,6 +317,70 @@ pub(crate) async fn p2p_network_ping_ticket(
     Ok(result)
 }
 
+pub(super) async fn connect_known_peer(
+    app: &AppHandle,
+    peer_endpoint_id: &str,
+    alpn: &'static [u8],
+) -> Result<Connection, String> {
+    let ticket_text = peer_endpoint_ticket(app, peer_endpoint_id)?;
+    let ticket = ticket_text
+        .parse::<EndpointTicket>()
+        .map_err(|error| format!("El ticket guardado del peer no es valido: {error}"))?;
+    if ticket.endpoint_addr().id.to_string() != peer_endpoint_id {
+        return Err("El ticket guardado no coincide con la identidad del peer.".to_string());
+    }
+    let endpoint = {
+        let state = network_state().lock().await;
+        state
+            .as_ref()
+            .ok_or_else(|| "Inicia la red P2P antes de usar servicios remotos.".to_string())?
+            .endpoint
+            .clone()
+    };
+    let connection = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        endpoint.connect(ticket.endpoint_addr().clone(), alpn),
+    )
+    .await
+    .map_err(|_| "La conexion P2P excedio 15 segundos.".to_string())?
+    .map_err(|error| format!("No se pudo conectar al peer: {error}"))?;
+    if connection.remote_id().to_string() != peer_endpoint_id {
+        connection.close(4u32.into(), b"unexpected peer identity");
+        return Err(
+            "La conexion respondio con una identidad distinta al peer elegido.".to_string(),
+        );
+    }
+    mark_peer_seen(app, peer_endpoint_id)?;
+    Ok(connection)
+}
+
+pub(super) async fn local_display_name() -> Result<String, String> {
+    let state = network_state().lock().await;
+    state
+        .as_ref()
+        .map(|runtime| runtime.display_name.clone())
+        .ok_or_else(|| "Inicia la red P2P antes de enviar mensajes.".to_string())
+}
+
+pub(super) async fn local_endpoint_ticket() -> Result<String, String> {
+    let state = network_state().lock().await;
+    state
+        .as_ref()
+        .map(|runtime| EndpointTicket::new(runtime.endpoint.addr()).to_string())
+        .ok_or_else(|| "Inicia la red P2P antes de enviar mensajes.".to_string())
+}
+
+pub(super) fn observe_return_ticket(
+    app: &AppHandle,
+    endpoint_id: &str,
+    display_name: &str,
+    ticket: &str,
+) {
+    if let Some(ticket) = validated_endpoint_ticket(ticket, endpoint_id) {
+        let _ = observe_peer(app, endpoint_id, display_name, Some(&ticket));
+    }
+}
+
 async fn ping_endpoint(
     endpoint: &Endpoint,
     remote_addr: EndpointAddr,
@@ -325,6 +406,7 @@ async fn ping_endpoint(
         nonce: nonce.clone(),
         display_name: display_name.to_string(),
         sent_at_ms: unix_millis(),
+        endpoint_ticket: Some(EndpointTicket::new(endpoint.addr()).to_string()),
     };
     let request_bytes = serde_json::to_vec(&request)
         .map_err(|error| format!("No se pudo codificar ping P2P: {error}"))?;
@@ -398,6 +480,10 @@ fn valid_request(request: &DiagnosticRequest) -> bool {
         && request.display_name.chars().count() >= 2
         && request.display_name.chars().count() <= 64
         && request.sent_at_ms > 0
+        && request
+            .endpoint_ticket
+            .as_ref()
+            .is_none_or(|ticket| ticket.len() <= MAX_TICKET_LENGTH)
 }
 
 fn safe_peer_name(value: &str, endpoint_id: &str) -> String {
@@ -407,6 +493,15 @@ fn safe_peer_name(value: &str, endpoint_id: &str) -> String {
     } else {
         format!("Peer {}", &endpoint_id[..endpoint_id.len().min(12)])
     }
+}
+
+fn validated_endpoint_ticket(ticket: &str, endpoint_id: &str) -> Option<String> {
+    let ticket = ticket.trim();
+    if ticket.is_empty() || ticket.len() > MAX_TICKET_LENGTH {
+        return None;
+    }
+    let parsed = ticket.parse::<EndpointTicket>().ok()?;
+    (parsed.endpoint_addr().id.to_string() == endpoint_id).then(|| ticket.to_string())
 }
 
 async fn observe_peer_async(
@@ -485,6 +580,7 @@ mod tests {
             nonce: Uuid::new_v4().to_string(),
             display_name: "Rau Test".to_string(),
             sent_at_ms: unix_millis(),
+            endpoint_ticket: None,
         };
         assert!(valid_request(&request));
         request.version = 2;

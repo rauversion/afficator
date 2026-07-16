@@ -128,7 +128,7 @@ Long-running tasks emit Tauri events:
 - `turn-progress`
 - `broadcast-progress`
 
-Rau Connect emits `p2p-network-event` for endpoint lifecycle and authenticated diagnostic traffic. Presence observations, chat delivery, and transfer progress will extend this event boundary as their protocols are added.
+Rau Connect emits `p2p-network-event` for endpoint lifecycle and diagnostics, `p2p-chat-event` for persisted message delivery, and `p2p-transfer-event` for download progress and completion.
 
 The app shell listens to these events to report bridge health, while each feature page consumes the relevant stream for progress, row status, and terminal logs.
 
