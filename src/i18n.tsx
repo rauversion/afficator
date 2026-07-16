@@ -124,18 +124,22 @@ const translations: Record<Locale, Record<string, string>> = {
     "Ganancia del micrófono: {gain}%": "Microphone gain: {gain}%",
     "Se prepara silenciado. Actívalo desde Control de transmisión cuando quieras hablar.":
       "It starts muted. Enable it from Broadcast control when you want to speak.",
+    "Cuando detecta tu voz, la música baja automáticamente y vuelve a subir al terminar.":
+      "When it detects your voice, music lowers automatically and rises again when you finish.",
     "Activa esta opción para seleccionar un micrófono.": "Enable this option to select a microphone.",
-    "El FFmpeg actual no incluye entrada AVFoundation.": "The current FFmpeg build does not include AVFoundation input.",
+    "No hay un dispositivo de entrada de audio disponible.": "No audio input device is available.",
     "Silenciar micrófono": "Mute microphone",
     "Micrófono al aire": "Microphone live",
+    "Nivel de entrada": "Input level",
+    "Sin señal": "No signal",
     "Micrófono esperando inicio.": "Microphone waiting for broadcast.",
     "Micrófono preparado y silenciado.": "Microphone ready and muted.",
     "Micrófono desactivado.": "Microphone disabled.",
     "Micrófono detenido.": "Microphone stopped.",
     "Micrófono silenciado.": "Microphone muted.",
     "ffmpeg / icecast / micrófono": "ffmpeg / Icecast / microphone",
-    "FFmpeg no incluye la entrada AVFoundation requerida para el micrófono.":
-      "FFmpeg does not include the AVFoundation input required for the microphone.",
+    "Micrófono al aire · sin señal de entrada.": "Microphone live · no input signal.",
+    "Micrófono al aire · estabilizando señal.": "Microphone live · stabilizing input.",
     "El micrófono no está preparado. Detén la radio y revisa su configuración.":
       "The microphone is not ready. Stop the radio and check its configuration.",
     "Inicio": "Home",

@@ -71,10 +71,15 @@ until cleared. The active row cannot be removed, but it can be skipped.
 - When the queue runs out, Rau Studio transmits silence rather than closing the
   mount. New playlists can be appended while the station is live.
 - Artist and title metadata are sent when a track starts.
-- The selected microphone is captured through AVFoundation, normalized to the
-  same stereo 44.1 kHz PCM format, and mixed with the track or idle silence.
-  Gain is limited to 0–200%, and sample sums are clamped to avoid integer
-  overflow. The capture buffer is bounded to avoid unbounded latency or memory.
+- The selected microphone is captured natively through CPAL/CoreAudio,
+  normalized and resampled to the same stereo 44.1 kHz PCM format, and mixed
+  with the track or idle silence. Gain is limited to 0–200%, and sample sums are
+  clamped to avoid integer overflow. Voice-activated ducking lowers music to
+  35% while speech is detected, then restores it gradually so speech is not
+  buried under a mastered track and level changes do not click or pump. The
+  bounded buffer keeps a 250 ms reserve to absorb CoreAudio/FFmpeg callback
+  jitter, avoids unbounded latency or memory, and the control panel displays
+  its live input level.
 - On a broken source connection the publisher retries. A track interrupted by
   that failure returns to the queue.
 - Closing Rau Studio ends the local source process. Icecast then removes the

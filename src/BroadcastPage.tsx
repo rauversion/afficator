@@ -61,6 +61,8 @@ type BroadcastMicrophoneStatus = {
   configured: boolean;
   ready: boolean;
   live: boolean;
+  receiving_audio: boolean;
+  level_percent: number;
   device?: string | null;
   gain_percent: number;
   message: string;
@@ -219,6 +221,9 @@ export function BroadcastPage() {
         setPreflight(nextPreflight);
         setLibraries(nextLibraries);
         setMicrophoneDevices(nextMicrophones);
+        if (!nextMicrophones.some((device) => device.id === nextProfile.microphone_device)) {
+          setMicrophoneDevice(nextMicrophones[0]?.id ?? "default");
+        }
         setLibraryId(nextLibraries[0]?.id ?? "");
       })
       .catch((cause) => setError(errorMessage(cause, locale)))
@@ -226,23 +231,25 @@ export function BroadcastPage() {
 
     void listen<BroadcastProgressEvent>("broadcast-progress", ({ payload }) => {
       setStatus(payload.status);
-      const level: TerminalLogEntry["level"] = payload.level === "error"
-        ? "error"
-        : payload.level === "warning"
-          ? "warning"
-          : "info";
-      setTerminalLogs((current) => [...current, {
-        id: nextTerminalLogId.current++,
-        time: new Date(payload.timestamp).toLocaleTimeString(),
-        level,
-        name: payload.event,
-        message: translateBackendMessage(locale, payload.message)
-      }].slice(-1200));
-      window.requestAnimationFrame(() => {
-        if (terminalElement.current) {
-          terminalElement.current.scrollTop = terminalElement.current.scrollHeight;
-        }
-      });
+      if (payload.event !== "microphone_level") {
+        const level: TerminalLogEntry["level"] = payload.level === "error"
+          ? "error"
+          : payload.level === "warning"
+            ? "warning"
+            : "info";
+        setTerminalLogs((current) => [...current, {
+          id: nextTerminalLogId.current++,
+          time: new Date(payload.timestamp).toLocaleTimeString(),
+          level,
+          name: payload.event,
+          message: translateBackendMessage(locale, payload.message)
+        }].slice(-1200));
+        window.requestAnimationFrame(() => {
+          if (terminalElement.current) {
+            terminalElement.current.scrollTop = terminalElement.current.scrollHeight;
+          }
+        });
+      }
       void invoke<BroadcastQueueEntry[]>("broadcast_queue").then(setQueue).catch(() => undefined);
     })
       .then((stopListening) => {
@@ -371,6 +378,8 @@ export function BroadcastPage() {
           ...(current.microphone ?? {
             configured: true,
             ready: true,
+            receiving_audio: false,
+            level_percent: 0,
             device: profile?.microphone_device ?? "default",
             gain_percent: profile?.microphone_gain_percent ?? 100,
             message: ""
@@ -577,13 +586,14 @@ export function BroadcastPage() {
                       </Field>
                       <p className="text-xs text-muted-foreground">
                         {t("Se prepara silenciado. Actívalo desde Control de transmisión cuando quieras hablar.")}
+                        {" "}{t("Cuando detecta tu voz, la música baja automáticamente y vuelve a subir al terminar.")}
                       </p>
                     </>
                   ) : (
                     <p className="text-xs text-muted-foreground">
                       {preflight?.microphone_input_available
                         ? t("Activa esta opción para seleccionar un micrófono.")
-                        : t("El FFmpeg actual no incluye entrada AVFoundation.")}
+                        : t("No hay un dispositivo de entrada de audio disponible.")}
                     </p>
                   )}
                 </div>
@@ -652,7 +662,25 @@ export function BroadcastPage() {
                       : "border-border text-muted-foreground"
                   )}>
                     {status?.microphone?.live ? <Mic className="h-4 w-4 animate-pulse" /> : <MicOff className="h-4 w-4" />}
-                    {translateBackendMessage(locale, status?.microphone?.message ?? t("Micrófono esperando inicio."))}
+                    <span className="min-w-0 flex-1 truncate">
+                      {translateBackendMessage(locale, status?.microphone?.message ?? t("Micrófono esperando inicio."))}
+                    </span>
+                    {status?.microphone?.live ? (
+                      <div className="flex shrink-0 items-center gap-2" title={t("Nivel de entrada") }>
+                        <span className="w-14 text-right tabular-nums">
+                          {status.microphone.receiving_audio ? `${status.microphone.level_percent}%` : t("Sin señal")}
+                        </span>
+                        <div className="h-2 w-20 overflow-hidden rounded-full bg-background/70 ring-1 ring-current/15">
+                          <div
+                            className={cn(
+                              "h-full rounded-full transition-[width] duration-150",
+                              status.microphone.level_percent > 80 ? "bg-red-500" : "bg-emerald-500"
+                            )}
+                            style={{ width: `${status.microphone.level_percent}%` }}
+                          />
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </CardContent>

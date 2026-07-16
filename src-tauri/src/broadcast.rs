@@ -1,6 +1,7 @@
 use crate::{settings, system};
 use chrono::Utc;
-use regex::Regex;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{Data, SampleFormat};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -11,7 +12,7 @@ use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -22,6 +23,14 @@ const PCM_CHANNELS: usize = 2;
 const PCM_BYTES_PER_SAMPLE: usize = 2;
 const SILENCE_CHUNK_MILLIS: usize = 250;
 const MICROPHONE_BUFFER_SECONDS: usize = 2;
+const MICROPHONE_PREBUFFER_MILLIS: usize = 250;
+const MICROPHONE_MAX_LATENCY_MILLIS: usize = 750;
+const MICROPHONE_DUCKING_PERCENT: f32 = 35.0;
+const MICROPHONE_DUCKING_THRESHOLD: f32 = 0.01;
+const MICROPHONE_ENVELOPE_ATTACK: f32 = 0.01;
+const MICROPHONE_ENVELOPE_RELEASE: f32 = 0.0002;
+const MICROPHONE_DUCKING_ATTACK: f32 = 0.002;
+const MICROPHONE_DUCKING_RELEASE: f32 = 0.00008;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +119,8 @@ pub struct BroadcastMicrophoneStatus {
     configured: bool,
     ready: bool,
     live: bool,
+    receiving_audio: bool,
+    level_percent: u8,
     device: Option<String>,
     gain_percent: u16,
     message: String,
@@ -121,6 +132,8 @@ impl Default for BroadcastMicrophoneStatus {
             configured: false,
             ready: false,
             live: false,
+            receiving_audio: false,
+            level_percent: 0,
             device: None,
             gain_percent: 100,
             message: "Micrófono desactivado.".to_string(),
@@ -320,10 +333,7 @@ impl BroadcastManager {
             return Err(preflight.message);
         }
         if profile.microphone_enabled && !preflight.microphone_input_available {
-            return Err(
-                "FFmpeg no incluye la entrada AVFoundation requerida para el micrófono."
-                    .to_string(),
-            );
+            return Err("No hay un dispositivo de entrada de audio disponible.".to_string());
         }
 
         let mut conn = open_db(&app)?;
@@ -604,11 +614,9 @@ fn validate_profile(mut input: BroadcastProfileInput) -> Result<BroadcastProfile
     if !(64..=320).contains(&input.bitrate_kbps) {
         return Err("El bitrate MP3 debe estar entre 64 y 320 kbps.".to_string());
     }
-    if input.microphone_device != "default"
-        && !input
-            .microphone_device
-            .chars()
-            .all(|character| character.is_ascii_digit())
+    if input.microphone_device.is_empty()
+        || input.microphone_device.len() > 512
+        || input.microphone_device.chars().any(char::is_control)
     {
         return Err("Dispositivo de micrófono invalido.".to_string());
     }
@@ -711,9 +719,6 @@ fn ffmpeg_preflight(app: &AppHandle, tls_required: bool) -> BroadcastPreflight {
     let protocols = system::ffmpeg_command(app)
         .args(["-hide_banner", "-protocols"])
         .output();
-    let devices = system::ffmpeg_command(app)
-        .args(["-hide_banner", "-devices"])
-        .output();
     let ffmpeg_available = encoders.is_ok() && protocols.is_ok();
     let encoder_text = encoders
         .ok()
@@ -723,16 +728,10 @@ fn ffmpeg_preflight(app: &AppHandle, tls_required: bool) -> BroadcastPreflight {
         .ok()
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
         .unwrap_or_default();
-    let device_text = devices
-        .ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_default();
     let mp3_encoder_available = encoder_text.lines().any(|line| line.contains("libmp3lame"));
     let icecast_protocol_available = protocol_list_contains(&protocol_text, "icecast");
     let tls_protocol_available = protocol_list_contains(&protocol_text, "tls");
-    let microphone_input_available = device_text
-        .lines()
-        .any(|line| line.contains("avfoundation") && line.trim_start().starts_with('D'));
+    let microphone_input_available = cpal::default_host().default_input_device().is_some();
     let ready = ffmpeg_available
         && mp3_encoder_available
         && icecast_protocol_available
@@ -763,68 +762,36 @@ fn protocol_list_contains(output: &str, protocol: &str) -> bool {
     output.lines().any(|line| line.trim() == protocol)
 }
 
-fn microphone_devices(app: &AppHandle) -> Result<Vec<BroadcastMicrophoneDevice>, String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        return Err("La selección de micrófono está disponible en macOS.".to_string());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let output = system::ffmpeg_command(app)
-            .args([
-                "-hide_banner",
-                "-f",
-                "avfoundation",
-                "-list_devices",
-                "true",
-                "-i",
-                "",
-            ])
-            .output()
-            .map_err(|error| format!("No se pudieron consultar micrófonos: {error}"))?;
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let mut devices = vec![BroadcastMicrophoneDevice {
+fn microphone_devices(_app: &AppHandle) -> Result<Vec<BroadcastMicrophoneDevice>, String> {
+    let host = cpal::default_host();
+    let default_device = host.default_input_device();
+    let mut result = Vec::new();
+    if default_device.is_some() {
+        result.push(BroadcastMicrophoneDevice {
             id: "default".to_string(),
-            label: "Micrófono predeterminado de macOS".to_string(),
+            label: "Micrófono predeterminado del sistema".to_string(),
             is_default: true,
-        }];
-        let line_pattern = Regex::new(r"\]\s+\[(\d+)\]\s+(.+)$")
-            .map_err(|error| format!("No se pudo preparar parser de micrófonos: {error}"))?;
-        let mut reading_audio = false;
-        for line in stderr.lines() {
-            if line.contains("AVFoundation audio devices:") {
-                reading_audio = true;
-                continue;
-            }
-            if !reading_audio {
-                continue;
-            }
-            if line.contains(" devices:") || line.contains("Error opening input") {
-                break;
-            }
-            let Some(captures) = line_pattern.captures(line) else {
-                continue;
-            };
-            let Some(id) = captures.get(1).map(|value| value.as_str().to_string()) else {
-                continue;
-            };
-            let Some(label) = captures
-                .get(2)
-                .map(|value| value.as_str().trim().to_string())
-                .filter(|value| !value.is_empty())
-            else {
-                continue;
-            };
-            devices.push(BroadcastMicrophoneDevice {
-                id,
-                label,
-                is_default: false,
-            });
-        }
-        Ok(devices)
+        });
     }
+    let devices = host
+        .input_devices()
+        .map_err(|error| format!("No se pudieron consultar micrófonos: {error}"))?;
+    for device in devices {
+        let id = device
+            .id()
+            .map_err(|error| format!("No se pudo identificar un micrófono: {error}"))?
+            .to_string();
+        let label = device
+            .description()
+            .map(|description| description.name().to_string())
+            .unwrap_or_else(|_| device.to_string());
+        result.push(BroadcastMicrophoneDevice {
+            id,
+            label,
+            is_default: false,
+        });
+    }
+    Ok(result)
 }
 
 fn publisher_args(profile: &BroadcastProfile, password: &str) -> Vec<String> {
@@ -882,6 +849,7 @@ fn decoder_args(path: &str) -> Vec<String> {
         "-loglevel".to_string(),
         "error".to_string(),
         "-nostdin".to_string(),
+        "-re".to_string(),
         "-i".to_string(),
         path.to_string(),
         "-map".to_string(),
@@ -901,155 +869,306 @@ fn decoder_args(path: &str) -> Vec<String> {
     ]
 }
 
-fn microphone_capture_args(device: &str) -> Vec<String> {
-    vec![
-        "-hide_banner".to_string(),
-        "-loglevel".to_string(),
-        "warning".to_string(),
-        "-nostdin".to_string(),
-        "-thread_queue_size".to_string(),
-        "512".to_string(),
-        "-fflags".to_string(),
-        "+nobuffer".to_string(),
-        "-f".to_string(),
-        "avfoundation".to_string(),
-        "-i".to_string(),
-        format!(":{device}"),
-        "-map".to_string(),
-        "0:a:0".to_string(),
-        "-vn".to_string(),
-        "-c:a".to_string(),
-        "pcm_s16le".to_string(),
-        "-ar".to_string(),
-        PCM_SAMPLE_RATE.to_string(),
-        "-ac".to_string(),
-        PCM_CHANNELS.to_string(),
-        "-f".to_string(),
-        "s16le".to_string(),
-        "pipe:1".to_string(),
-    ]
+struct MicrophoneCapture {
+    _stream: cpal::Stream,
+    buffer: Arc<Mutex<VecDeque<[i16; 2]>>>,
+    stream_error: Arc<Mutex<Option<String>>>,
+    input_sample_rate: u32,
+    resample_position: f64,
+    buffering: bool,
+    microphone_envelope: f32,
+    music_gain_percent: f32,
 }
 
-struct MicrophoneCapture {
-    child: Child,
-    buffer: Arc<Mutex<VecDeque<u8>>>,
+struct MicrophoneMix {
+    mixed_frames: usize,
+    peak_percent: u8,
+    buffering: bool,
 }
 
 impl MicrophoneCapture {
-    fn mix_into(&mut self, output: &mut [u8], gain_percent: u16) -> Result<(), String> {
-        if let Some(status) = self
-            .child
-            .try_wait()
-            .map_err(|error| format!("No se pudo revisar el micrófono: {error}"))?
+    fn mix_into(&mut self, output: &mut [u8], gain_percent: u16) -> Result<MicrophoneMix, String> {
+        if let Some(error) = self
+            .stream_error
+            .lock()
+            .map_err(|_| "No se pudo revisar el micrófono.".to_string())?
+            .take()
         {
-            return Err(format!(
-                "La captura de micrófono terminó con estado {status}."
-            ));
+            return Err(error);
         }
         let mut microphone = self
             .buffer
             .lock()
             .map_err(|_| "No se pudo leer el buffer del micrófono.".to_string())?;
-        if microphone.len() > output.len() {
-            let excess = microphone.len() - output.len();
-            let aligned = excess / 4 * 4;
-            microphone.drain(..aligned);
+        let output_frames = output.len() / 4;
+        let input_per_output = self.input_sample_rate as f64 / PCM_SAMPLE_RATE as f64;
+        let required_frames = (output_frames as f64 * input_per_output).ceil() as usize + 1;
+        let prebuffer_frames =
+            self.input_sample_rate as usize * MICROPHONE_PREBUFFER_MILLIS / 1_000;
+        let target_frames = required_frames + prebuffer_frames;
+        if self.buffering {
+            if microphone.len() < target_frames {
+                return Ok(MicrophoneMix {
+                    mixed_frames: 0,
+                    peak_percent: 0,
+                    buffering: true,
+                });
+            }
+            self.buffering = false;
+        } else if microphone.len() < required_frames {
+            self.buffering = true;
+            self.resample_position = 0.0;
+            self.microphone_envelope = 0.0;
+            self.music_gain_percent = 100.0;
+            return Ok(MicrophoneMix {
+                mixed_frames: 0,
+                peak_percent: 0,
+                buffering: true,
+            });
         }
-        let sample_bytes = output.len().min(microphone.len()) & !1;
-        for sample in output[..sample_bytes].chunks_exact_mut(2) {
-            let low = microphone.pop_front().unwrap_or_default();
-            let high = microphone.pop_front().unwrap_or_default();
-            let music = i16::from_le_bytes([sample[0], sample[1]]) as i32;
-            let mic = i16::from_le_bytes([low, high]) as i32;
-            let mixed = mix_pcm_sample(music as i16, mic as i16, gain_percent);
-            sample.copy_from_slice(&mixed.to_le_bytes());
+        let maximum_latency_frames =
+            self.input_sample_rate as usize * MICROPHONE_MAX_LATENCY_MILLIS / 1_000;
+        if microphone.len() > maximum_latency_frames {
+            let excess = microphone.len().saturating_sub(target_frames);
+            microphone.drain(..excess);
+            self.resample_position = 0.0;
         }
-        Ok(())
+        let mut position = self.resample_position;
+        let mut mixed_frames = 0usize;
+        let mut peak = 0u16;
+        for output_frame in output.chunks_exact_mut(4) {
+            let input_index = position.floor() as usize;
+            let Some([left, right]) = microphone.get(input_index).copied() else {
+                break;
+            };
+            let music_left = i16::from_le_bytes([output_frame[0], output_frame[1]]);
+            let music_right = i16::from_le_bytes([output_frame[2], output_frame[3]]);
+            let microphone_level = f32::from(left.unsigned_abs().max(right.unsigned_abs()))
+                / f32::from(i16::MAX as u16);
+            let envelope_rate = if microphone_level > self.microphone_envelope {
+                MICROPHONE_ENVELOPE_ATTACK
+            } else {
+                MICROPHONE_ENVELOPE_RELEASE
+            };
+            self.microphone_envelope +=
+                (microphone_level - self.microphone_envelope) * envelope_rate;
+            let target_music_gain = if self.microphone_envelope >= MICROPHONE_DUCKING_THRESHOLD {
+                MICROPHONE_DUCKING_PERCENT
+            } else {
+                100.0
+            };
+            let ducking_rate = if target_music_gain < self.music_gain_percent {
+                MICROPHONE_DUCKING_ATTACK
+            } else {
+                MICROPHONE_DUCKING_RELEASE
+            };
+            self.music_gain_percent += (target_music_gain - self.music_gain_percent) * ducking_rate;
+            let music_gain_percent = self.music_gain_percent.round() as u16;
+            let mixed_left = mix_pcm_sample(music_left, left, gain_percent, music_gain_percent);
+            let mixed_right = mix_pcm_sample(music_right, right, gain_percent, music_gain_percent);
+            output_frame[..2].copy_from_slice(&mixed_left.to_le_bytes());
+            output_frame[2..].copy_from_slice(&mixed_right.to_le_bytes());
+            peak = peak.max(left.unsigned_abs()).max(right.unsigned_abs());
+            mixed_frames += 1;
+            position += input_per_output;
+        }
+        let consumed = (position.floor() as usize).min(microphone.len());
+        microphone.drain(..consumed);
+        self.resample_position = position - consumed as f64;
+        Ok(MicrophoneMix {
+            mixed_frames,
+            peak_percent: ((u32::from(peak) * 100 / i16::MAX as u32).min(100)) as u8,
+            buffering: false,
+        })
     }
 
-    fn clear(&self) {
+    fn clear(&mut self) {
         if let Ok(mut buffer) = self.buffer.lock() {
             buffer.clear();
         }
+        self.resample_position = 0.0;
+        self.buffering = true;
+        self.microphone_envelope = 0.0;
+        self.music_gain_percent = 100.0;
     }
 
-    fn terminate(mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.child.kill();
-        }
-        let _ = self.child.wait();
-    }
+    fn terminate(self) {}
 }
 
-fn mix_pcm_sample(music: i16, microphone: i16, gain_percent: u16) -> i16 {
+fn mix_pcm_sample(music: i16, microphone: i16, gain_percent: u16, music_gain_percent: u16) -> i16 {
     (music as i32)
+        .saturating_mul(i32::from(music_gain_percent))
+        .saturating_div(100)
         .saturating_add((microphone as i32).saturating_mul(gain_percent as i32) / 100)
         .clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
 fn spawn_microphone_capture(
-    app: &AppHandle,
+    _app: &AppHandle,
     device: &str,
-    runtime: &Arc<RuntimeState>,
+    _runtime: &Arc<RuntimeState>,
 ) -> Result<MicrophoneCapture, String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, device, runtime);
-        return Err("La captura de micrófono está disponible en macOS.".to_string());
+    let host = cpal::default_host();
+    let selected = if device == "default" {
+        host.default_input_device()
+            .ok_or_else(|| "No hay un micrófono predeterminado disponible.".to_string())?
+    } else {
+        host.input_devices()
+            .map_err(|error| format!("No se pudieron consultar micrófonos: {error}"))?
+            .find(|candidate| {
+                candidate
+                    .id()
+                    .map(|id| id.to_string() == device)
+                    .unwrap_or(false)
+            })
+            .ok_or_else(|| "El micrófono seleccionado ya no está disponible.".to_string())?
+    };
+    let supported = selected
+        .default_input_config()
+        .map_err(|error| format!("No se pudo obtener el formato del micrófono: {error}"))?;
+    let sample_format = supported.sample_format();
+    if !matches!(
+        sample_format,
+        SampleFormat::F32
+            | SampleFormat::F64
+            | SampleFormat::I8
+            | SampleFormat::I16
+            | SampleFormat::I32
+            | SampleFormat::U8
+            | SampleFormat::U16
+            | SampleFormat::U32
+    ) {
+        return Err(format!(
+            "El formato {sample_format} del micrófono no está soportado."
+        ));
     }
+    let config: cpal::StreamConfig = supported.into();
+    let input_sample_rate = config.sample_rate;
+    let input_channels = usize::from(config.channels);
+    let buffer = Arc::new(Mutex::new(VecDeque::new()));
+    let callback_buffer = Arc::clone(&buffer);
+    let stream_error = Arc::new(Mutex::new(None));
+    let callback_error = Arc::clone(&stream_error);
+    let maximum_frames = input_sample_rate as usize * MICROPHONE_BUFFER_SECONDS;
+    let stream = selected
+        .build_input_stream_raw(
+            config,
+            sample_format,
+            move |data, _| {
+                push_microphone_data(data, input_channels, maximum_frames, &callback_buffer)
+            },
+            move |error| {
+                if let Ok(mut target) = callback_error.lock() {
+                    *target = Some(format!("La captura de micrófono falló: {error}"));
+                }
+            },
+            None,
+        )
+        .map_err(|error| {
+            format!(
+                "No se pudo abrir el micrófono. Revisa el permiso de macOS para Rau Studio: {error}"
+            )
+        })?;
+    stream.play().map_err(|error| {
+        format!(
+            "No se pudo activar el micrófono. Revisa el permiso de macOS para Rau Studio: {error}"
+        )
+    })?;
+    Ok(MicrophoneCapture {
+        _stream: stream,
+        buffer,
+        stream_error,
+        input_sample_rate,
+        resample_position: 0.0,
+        buffering: true,
+        microphone_envelope: 0.0,
+        music_gain_percent: 100.0,
+    })
+}
 
-    #[cfg(target_os = "macos")]
-    {
-        let mut child = system::ffmpeg_command(app)
-            .args(microphone_capture_args(device))
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("No se pudo iniciar el micrófono: {error}"))?;
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "No se pudo leer audio del micrófono.".to_string())?;
-        let buffer = Arc::new(Mutex::new(VecDeque::new()));
-        let reader_buffer = Arc::clone(&buffer);
-        thread::spawn(move || {
-            let mut chunk = [0u8; 16 * 1024];
-            let maximum_bytes =
-                PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_BYTES_PER_SAMPLE * MICROPHONE_BUFFER_SECONDS;
-            while let Ok(read) = stdout.read(&mut chunk) {
-                if read == 0 {
-                    break;
-                }
-                let Ok(mut target) = reader_buffer.lock() else {
-                    break;
-                };
-                target.extend(&chunk[..read]);
-                if target.len() > maximum_bytes {
-                    let excess = target.len() - maximum_bytes;
-                    let aligned = excess.div_ceil(4) * 4;
-                    let drop_bytes = aligned.min(target.len());
-                    target.drain(..drop_bytes);
-                }
-            }
-        });
-        if let Some(stderr) = child.stderr.take() {
-            let app = app.clone();
-            let runtime = Arc::clone(runtime);
-            thread::spawn(move || {
-                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    if !line.trim().is_empty() {
-                        runtime.log(
-                            &app,
-                            "warning",
-                            "ffmpeg_microphone",
-                            format!("Micrófono: {line}"),
-                        );
-                    }
-                }
-            });
-        }
-        Ok(MicrophoneCapture { child, buffer })
+fn push_microphone_data(
+    data: &Data,
+    channels: usize,
+    maximum_frames: usize,
+    buffer: &Arc<Mutex<VecDeque<[i16; 2]>>>,
+) {
+    let Ok(mut target) = buffer.lock() else {
+        return;
+    };
+    match data.sample_format() {
+        SampleFormat::F32 => append_microphone_frames(
+            data.as_slice::<f32>().unwrap_or_default(),
+            channels,
+            &mut target,
+            |sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16,
+        ),
+        SampleFormat::F64 => append_microphone_frames(
+            data.as_slice::<f64>().unwrap_or_default(),
+            channels,
+            &mut target,
+            |sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f64).round() as i16,
+        ),
+        SampleFormat::I8 => append_microphone_frames(
+            data.as_slice::<i8>().unwrap_or_default(),
+            channels,
+            &mut target,
+            |sample| i16::from(sample) << 8,
+        ),
+        SampleFormat::I16 => append_microphone_frames(
+            data.as_slice::<i16>().unwrap_or_default(),
+            channels,
+            &mut target,
+            |sample| sample,
+        ),
+        SampleFormat::I32 => append_microphone_frames(
+            data.as_slice::<i32>().unwrap_or_default(),
+            channels,
+            &mut target,
+            |sample| (sample >> 16) as i16,
+        ),
+        SampleFormat::U8 => append_microphone_frames(
+            data.as_slice::<u8>().unwrap_or_default(),
+            channels,
+            &mut target,
+            |sample| (i16::from(sample) - 128) << 8,
+        ),
+        SampleFormat::U16 => append_microphone_frames(
+            data.as_slice::<u16>().unwrap_or_default(),
+            channels,
+            &mut target,
+            |sample| (i32::from(sample) - 32_768) as i16,
+        ),
+        SampleFormat::U32 => append_microphone_frames(
+            data.as_slice::<u32>().unwrap_or_default(),
+            channels,
+            &mut target,
+            |sample| ((i64::from(sample) - 2_147_483_648) >> 16) as i16,
+        ),
+        _ => return,
+    }
+    if target.len() > maximum_frames {
+        let excess = target.len() - maximum_frames;
+        target.drain(..excess);
+    }
+}
+
+fn append_microphone_frames<T: Copy>(
+    samples: &[T],
+    channels: usize,
+    target: &mut VecDeque<[i16; 2]>,
+    convert: impl Fn(T) -> i16,
+) {
+    if channels == 0 {
+        return;
+    }
+    for frame in samples.chunks_exact(channels) {
+        let left = convert(frame[0]);
+        let right = if channels > 1 {
+            convert(frame[1])
+        } else {
+            left
+        };
+        target.push_back([left, right]);
     }
 }
 
@@ -1059,6 +1178,9 @@ struct WorkerAudio {
     gain_percent: u16,
     microphone: Option<MicrophoneCapture>,
     microphone_live: bool,
+    microphone_receiving_audio: bool,
+    microphone_level_percent: u8,
+    last_meter_emit: Instant,
 }
 
 impl WorkerAudio {
@@ -1071,6 +1193,9 @@ impl WorkerAudio {
             gain_percent: profile.microphone_gain_percent,
             microphone: None,
             microphone_live: false,
+            microphone_receiving_audio: false,
+            microphone_level_percent: 0,
+            last_meter_emit: Instant::now(),
         }
     }
 
@@ -1079,6 +1204,8 @@ impl WorkerAudio {
             configured: self.configured,
             ready: self.microphone.is_some(),
             live: self.microphone_live,
+            receiving_audio: self.microphone_receiving_audio,
+            level_percent: self.microphone_level_percent,
             device: self.device.clone(),
             gain_percent: self.gain_percent,
             message: message.into(),
@@ -1098,8 +1225,11 @@ impl WorkerAudio {
             );
         }
         self.microphone_live = live;
+        self.microphone_receiving_audio = false;
+        self.microphone_level_percent = 0;
+        self.last_meter_emit = Instant::now();
         if !live {
-            if let Some(microphone) = self.microphone.as_ref() {
+            if let Some(microphone) = self.microphone.as_mut() {
                 microphone.clear();
             }
         }
@@ -1120,23 +1250,52 @@ impl WorkerAudio {
             microphone.clear();
             return;
         }
-        if let Err(error) = microphone.mix_into(output, self.gain_percent) {
-            self.microphone_live = false;
-            runtime.log(app, "error", "microphone", error.clone());
-            if let Some(microphone) = self.microphone.take() {
-                microphone.terminate();
+        match microphone.mix_into(output, self.gain_percent) {
+            Ok(mixed) => {
+                self.microphone_receiving_audio = mixed.mixed_frames > 0;
+                self.microphone_level_percent = mixed.peak_percent;
+                if self.last_meter_emit.elapsed() >= Duration::from_millis(500) {
+                    let message = if mixed.buffering {
+                        "Micrófono al aire · estabilizando señal.".to_string()
+                    } else if self.microphone_receiving_audio {
+                        format!(
+                            "Micrófono al aire · señal {}%.",
+                            self.microphone_level_percent
+                        )
+                    } else {
+                        "Micrófono al aire · sin señal de entrada.".to_string()
+                    };
+                    runtime.update_microphone(
+                        app,
+                        self.status(message),
+                        "info",
+                        "microphone_level",
+                    );
+                    self.last_meter_emit = Instant::now();
+                }
             }
-            runtime.update_microphone(
-                app,
-                self.status(format!("Micrófono no disponible: {error}")),
-                "error",
-                "microphone_failed",
-            );
+            Err(error) => {
+                self.microphone_live = false;
+                self.microphone_receiving_audio = false;
+                self.microphone_level_percent = 0;
+                runtime.log(app, "error", "microphone", error.clone());
+                if let Some(microphone) = self.microphone.take() {
+                    microphone.terminate();
+                }
+                runtime.update_microphone(
+                    app,
+                    self.status(format!("Micrófono no disponible: {error}")),
+                    "error",
+                    "microphone_failed",
+                );
+            }
         }
     }
 
     fn terminate(&mut self) {
         self.microphone_live = false;
+        self.microphone_receiving_audio = false;
+        self.microphone_level_percent = 0;
         if let Some(microphone) = self.microphone.take() {
             microphone.terminate();
         }
@@ -1505,6 +1664,8 @@ fn run_worker(
                     ) {
                         break;
                     }
+                } else {
+                    thread::sleep(Duration::from_millis(SILENCE_CHUNK_MILLIS as u64));
                 }
             }
             Err(error) => {
@@ -1998,24 +2159,33 @@ mod tests {
     }
 
     #[test]
+    fn decoder_is_paced_in_real_time_before_mixing() {
+        let args = decoder_args("track.wav");
+        assert!(args.windows(2).any(|pair| pair == ["-re", "-i"]));
+    }
+
+    #[test]
     fn silence_chunk_is_exactly_a_quarter_second_of_pcm() {
         assert_eq!(silence_chunk().len(), 44_100);
     }
 
     #[test]
-    fn microphone_capture_uses_avfoundation_and_normalized_pcm() {
-        let args = microphone_capture_args("2");
-        assert!(args.windows(2).any(|pair| pair == ["-f", "avfoundation"]));
-        assert!(args.windows(2).any(|pair| pair == ["-i", ":2"]));
-        assert!(args.windows(2).any(|pair| pair == ["-ar", "44100"]));
-        assert!(args.windows(2).any(|pair| pair == ["-ac", "2"]));
+    fn microphone_input_normalizes_mono_frames_to_stereo() {
+        let mut target = VecDeque::new();
+        append_microphone_frames(&[-1.0_f32, 0.5, 1.0], 1, &mut target, |sample| {
+            (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16
+        });
+        assert_eq!(target.len(), 3);
+        assert_eq!(target[0], [-i16::MAX, -i16::MAX]);
+        assert_eq!(target[2], [i16::MAX, i16::MAX]);
     }
 
     #[test]
     fn microphone_mix_applies_gain_and_clamps() {
-        assert_eq!(mix_pcm_sample(1_000, 2_000, 50), 2_000);
-        assert_eq!(mix_pcm_sample(30_000, 30_000, 100), i16::MAX);
-        assert_eq!(mix_pcm_sample(-30_000, -30_000, 100), i16::MIN);
+        assert_eq!(mix_pcm_sample(1_000, 2_000, 50, 35), 1_350);
+        assert_eq!(mix_pcm_sample(30_000, 30_000, 100, 35), i16::MAX);
+        assert_eq!(mix_pcm_sample(-30_000, -30_000, 100, 35), i16::MIN);
+        assert_eq!(mix_pcm_sample(1_000, 0, 100, 100), 1_000);
     }
 
     #[test]
