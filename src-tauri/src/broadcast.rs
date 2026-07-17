@@ -1,4 +1,4 @@
-use crate::{settings, system};
+use crate::{application_audio, settings, system};
 use chrono::Utc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Data, SampleFormat};
@@ -18,6 +18,8 @@ use uuid::Uuid;
 
 const DB_FILE: &str = "aifficator.sqlite3";
 const PROFILE_ID: &str = "default";
+const MANUAL_QUEUE_PATH: &str = "__manual__";
+const MANUAL_QUEUE_NAME: &str = "Agregadas manualmente";
 const PCM_SAMPLE_RATE: usize = 44_100;
 const PCM_CHANNELS: usize = 2;
 const PCM_BYTES_PER_SAMPLE: usize = 2;
@@ -31,6 +33,7 @@ const MICROPHONE_ENVELOPE_ATTACK: f32 = 0.01;
 const MICROPHONE_ENVELOPE_RELEASE: f32 = 0.0002;
 const MICROPHONE_DUCKING_ATTACK: f32 = 0.002;
 const MICROPHONE_DUCKING_RELEASE: f32 = 0.00008;
+const LINE_INPUT_CHUNK_MILLIS: usize = 50;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +50,14 @@ pub struct BroadcastProfileInput {
     microphone_enabled: bool,
     microphone_device: String,
     microphone_gain_percent: u16,
+    line_input_enabled: bool,
+    line_input_device: String,
+    line_input_channel: u16,
+    line_input_stereo: bool,
+    line_input_gain_percent: u16,
+    application_audio_enabled: bool,
+    application_audio_bundle_id: String,
+    application_audio_gain_percent: u16,
     password: Option<String>,
     clear_password: bool,
 }
@@ -66,6 +77,14 @@ pub struct BroadcastProfile {
     microphone_enabled: bool,
     microphone_device: String,
     microphone_gain_percent: u16,
+    line_input_enabled: bool,
+    line_input_device: String,
+    line_input_channel: u16,
+    line_input_stereo: bool,
+    line_input_gain_percent: u16,
+    application_audio_enabled: bool,
+    application_audio_bundle_id: String,
+    application_audio_gain_percent: u16,
     password_configured: bool,
     listener_url: String,
     updated_at: String,
@@ -112,6 +131,14 @@ pub struct BroadcastMicrophoneDevice {
     id: String,
     label: String,
     is_default: bool,
+    input_channels: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BroadcastApplicationAudioDevice {
+    id: String,
+    label: String,
+    process_id: i32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,12 +169,86 @@ impl Default for BroadcastMicrophoneStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct BroadcastLineInputStatus {
+    configured: bool,
+    ready: bool,
+    live: bool,
+    receiving_audio: bool,
+    level_percent: u8,
+    device: Option<String>,
+    channel: u16,
+    stereo: bool,
+    gain_percent: u16,
+    message: String,
+}
+
+impl Default for BroadcastLineInputStatus {
+    fn default() -> Self {
+        Self {
+            configured: false,
+            ready: false,
+            live: false,
+            receiving_audio: false,
+            level_percent: 0,
+            device: None,
+            channel: 1,
+            stereo: true,
+            gain_percent: 100,
+            message: "Línea directa desactivada.".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BroadcastApplicationAudioStatus {
+    configured: bool,
+    ready: bool,
+    live: bool,
+    receiving_audio: bool,
+    level_percent: u8,
+    application: Option<String>,
+    label: Option<String>,
+    gain_percent: u16,
+    message: String,
+}
+
+impl Default for BroadcastApplicationAudioStatus {
+    fn default() -> Self {
+        Self {
+            configured: false,
+            ready: false,
+            live: false,
+            receiving_audio: false,
+            level_percent: 0,
+            application: None,
+            label: None,
+            gain_percent: 100,
+            message: "Audio del Mac desactivado.".to_string(),
+        }
+    }
+}
+
+fn application_audio_title(target_id: Option<&str>, label: Option<&str>) -> String {
+    if target_id == Some(application_audio::SYSTEM_AUDIO_TARGET_ID) {
+        return label
+            .unwrap_or(application_audio::SYSTEM_AUDIO_LABEL)
+            .to_string();
+    }
+    label
+        .map(|label| format!("Audio de {label}"))
+        .unwrap_or_else(|| "Audio del Mac".to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct BroadcastStatus {
     status: String,
     message: String,
     now_playing: Option<BroadcastQueueEntry>,
     started_at: Option<String>,
+    source_mode: String,
     microphone: BroadcastMicrophoneStatus,
+    line_input: BroadcastLineInputStatus,
+    application_audio: BroadcastApplicationAudioStatus,
     updated_at: String,
 }
 
@@ -158,7 +259,10 @@ impl Default for BroadcastStatus {
             message: "Radio detenida.".to_string(),
             now_playing: None,
             started_at: None,
+            source_mode: "playlist".to_string(),
             microphone: BroadcastMicrophoneStatus::default(),
+            line_input: BroadcastLineInputStatus::default(),
+            application_audio: BroadcastApplicationAudioStatus::default(),
             updated_at: timestamp(),
         }
     }
@@ -196,17 +300,34 @@ impl RuntimeState {
     ) {
         let (level, event) = event_context;
         let message = message.into();
-        let microphone = self
+        let (source_mode, microphone, line_input, application_audio) = self
             .snapshot
             .lock()
-            .map(|current| current.microphone.clone())
-            .unwrap_or_default();
+            .map(|current| {
+                (
+                    current.source_mode.clone(),
+                    current.microphone.clone(),
+                    current.line_input.clone(),
+                    current.application_audio.clone(),
+                )
+            })
+            .unwrap_or_else(|_| {
+                (
+                    "playlist".to_string(),
+                    BroadcastMicrophoneStatus::default(),
+                    BroadcastLineInputStatus::default(),
+                    BroadcastApplicationAudioStatus::default(),
+                )
+            });
         let snapshot = BroadcastStatus {
             status: status.to_string(),
             message: message.clone(),
             now_playing,
             started_at,
+            source_mode,
             microphone,
+            line_input,
+            application_audio,
             updated_at: timestamp(),
         };
         if let Ok(mut current) = self.snapshot.lock() {
@@ -253,6 +374,106 @@ impl RuntimeState {
         );
     }
 
+    fn update_line_input(
+        &self,
+        app: &AppHandle,
+        line_input: BroadcastLineInputStatus,
+        level: &str,
+        event: &str,
+    ) {
+        let snapshot = if let Ok(mut current) = self.snapshot.lock() {
+            current.source_mode = if line_input.live {
+                "line_input".to_string()
+            } else if current.application_audio.live {
+                "application_audio".to_string()
+            } else {
+                "playlist".to_string()
+            };
+            if line_input.live {
+                current.now_playing = None;
+                current.message = "Línea directa al aire.".to_string();
+            } else if current.status == "live" && !current.application_audio.live {
+                current.message = "Radio en vivo · fuente Playlist.".to_string();
+            }
+            current.line_input = line_input.clone();
+            current.updated_at = timestamp();
+            current.clone()
+        } else {
+            BroadcastStatus {
+                source_mode: if line_input.live {
+                    "line_input".to_string()
+                } else {
+                    "playlist".to_string()
+                },
+                line_input: line_input.clone(),
+                ..BroadcastStatus::default()
+            }
+        };
+        let _ = app.emit(
+            "broadcast-progress",
+            BroadcastProgressEvent {
+                level: level.to_string(),
+                event: event.to_string(),
+                message: line_input.message,
+                status: snapshot,
+                timestamp: timestamp(),
+            },
+        );
+    }
+
+    fn update_application_audio(
+        &self,
+        app: &AppHandle,
+        application_audio: BroadcastApplicationAudioStatus,
+        level: &str,
+        event: &str,
+    ) {
+        let snapshot = if let Ok(mut current) = self.snapshot.lock() {
+            current.source_mode = if application_audio.live {
+                "application_audio".to_string()
+            } else if current.line_input.live {
+                "line_input".to_string()
+            } else {
+                "playlist".to_string()
+            };
+            if application_audio.live {
+                current.now_playing = None;
+                current.message = format!(
+                    "{} al aire.",
+                    application_audio_title(
+                        application_audio.application.as_deref(),
+                        application_audio.label.as_deref()
+                    )
+                );
+            } else if current.status == "live" && !current.line_input.live {
+                current.message = "Radio en vivo · fuente Playlist.".to_string();
+            }
+            current.application_audio = application_audio.clone();
+            current.updated_at = timestamp();
+            current.clone()
+        } else {
+            BroadcastStatus {
+                source_mode: if application_audio.live {
+                    "application_audio".to_string()
+                } else {
+                    "playlist".to_string()
+                },
+                application_audio: application_audio.clone(),
+                ..BroadcastStatus::default()
+            }
+        };
+        let _ = app.emit(
+            "broadcast-progress",
+            BroadcastProgressEvent {
+                level: level.to_string(),
+                event: event.to_string(),
+                message: application_audio.message,
+                status: snapshot,
+                timestamp: timestamp(),
+            },
+        );
+    }
+
     fn log(&self, app: &AppHandle, level: &str, event: &str, message: impl Into<String>) {
         let message = message.into();
         let _ = app.emit(
@@ -272,6 +493,8 @@ enum WorkerCommand {
     Stop,
     Skip,
     SetMicrophoneLive(bool),
+    SetLineInputLive(bool),
+    SetApplicationAudioLive(bool),
 }
 
 struct WorkerHandle {
@@ -332,7 +555,9 @@ impl BroadcastManager {
         if !preflight.ready {
             return Err(preflight.message);
         }
-        if profile.microphone_enabled && !preflight.microphone_input_available {
+        if (profile.microphone_enabled || profile.line_input_enabled)
+            && !preflight.microphone_input_available
+        {
             return Err("No hay un dispositivo de entrada de audio disponible.".to_string());
         }
 
@@ -418,6 +643,38 @@ impl BroadcastManager {
             .map_err(|_| "El motor de broadcast ya se detuvo.".to_string())?;
         Ok(self.runtime.snapshot())
     }
+
+    fn set_line_input_live(&self, live: bool) -> Result<BroadcastStatus, String> {
+        self.cleanup_finished_worker();
+        let worker = self
+            .worker
+            .lock()
+            .map_err(|_| "No se pudo bloquear el motor de broadcast.".to_string())?;
+        let Some(worker) = worker.as_ref() else {
+            return Err("La radio no esta transmitiendo.".to_string());
+        };
+        worker
+            .commands
+            .send(WorkerCommand::SetLineInputLive(live))
+            .map_err(|_| "El motor de broadcast ya se detuvo.".to_string())?;
+        Ok(self.runtime.snapshot())
+    }
+
+    fn set_application_audio_live(&self, live: bool) -> Result<BroadcastStatus, String> {
+        self.cleanup_finished_worker();
+        let worker = self
+            .worker
+            .lock()
+            .map_err(|_| "No se pudo bloquear el motor de broadcast.".to_string())?;
+        let Some(worker) = worker.as_ref() else {
+            return Err("La radio no esta transmitiendo.".to_string());
+        };
+        worker
+            .commands
+            .send(WorkerCommand::SetApplicationAudioLive(live))
+            .map_err(|_| "El motor de broadcast ya se detuvo.".to_string())?;
+        Ok(self.runtime.snapshot())
+    }
 }
 
 #[tauri::command]
@@ -437,8 +694,11 @@ pub fn broadcast_save_profile(
         "INSERT INTO broadcast_profiles (
            id, host, port, mount, username, station_name, description,
            bitrate_kbps, tls, public, microphone_enabled, microphone_device,
-           microphone_gain_percent, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+           microphone_gain_percent, line_input_enabled, line_input_device,
+           line_input_channel, line_input_stereo, line_input_gain_percent,
+           application_audio_enabled, application_audio_bundle_id,
+           application_audio_gain_percent, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
          ON CONFLICT(id) DO UPDATE SET
            host = excluded.host,
            port = excluded.port,
@@ -452,6 +712,14 @@ pub fn broadcast_save_profile(
            microphone_enabled = excluded.microphone_enabled,
            microphone_device = excluded.microphone_device,
            microphone_gain_percent = excluded.microphone_gain_percent,
+           line_input_enabled = excluded.line_input_enabled,
+           line_input_device = excluded.line_input_device,
+           line_input_channel = excluded.line_input_channel,
+           line_input_stereo = excluded.line_input_stereo,
+           line_input_gain_percent = excluded.line_input_gain_percent,
+           application_audio_enabled = excluded.application_audio_enabled,
+           application_audio_bundle_id = excluded.application_audio_bundle_id,
+           application_audio_gain_percent = excluded.application_audio_gain_percent,
            updated_at = excluded.updated_at",
         params![
             PROFILE_ID,
@@ -467,6 +735,14 @@ pub fn broadcast_save_profile(
             input.microphone_enabled,
             input.microphone_device,
             input.microphone_gain_percent,
+            input.line_input_enabled,
+            input.line_input_device,
+            input.line_input_channel,
+            input.line_input_stereo,
+            input.line_input_gain_percent,
+            input.application_audio_enabled,
+            input.application_audio_bundle_id,
+            input.application_audio_gain_percent,
             now,
         ],
     )
@@ -497,6 +773,26 @@ pub fn broadcast_microphone_devices(
 }
 
 #[tauri::command]
+pub fn broadcast_application_audio_devices() -> Result<Vec<BroadcastApplicationAudioDevice>, String>
+{
+    application_audio::list_applications().map(|applications| {
+        applications
+            .into_iter()
+            .map(|application| BroadcastApplicationAudioDevice {
+                id: application.id,
+                label: application.label,
+                process_id: application.process_id,
+            })
+            .collect()
+    })
+}
+
+#[tauri::command]
+pub fn broadcast_open_application_audio_settings() -> Result<(), String> {
+    application_audio::open_permission_settings()
+}
+
+#[tauri::command]
 pub fn broadcast_queue(app: AppHandle) -> Result<Vec<BroadcastQueueEntry>, String> {
     let conn = open_db(&app)?;
     list_queue(&conn)
@@ -510,6 +806,25 @@ pub fn broadcast_append_playlist(
 ) -> Result<BroadcastQueueAppendResult, String> {
     let mut conn = open_db(&app)?;
     append_playlist(&mut conn, &library_id, &playlist_path)
+}
+
+#[tauri::command]
+pub fn broadcast_append_draft(
+    app: AppHandle,
+    draft_id: String,
+) -> Result<BroadcastQueueAppendResult, String> {
+    let mut conn = open_db(&app)?;
+    append_draft(&mut conn, &draft_id)
+}
+
+#[tauri::command]
+pub fn broadcast_append_track(
+    app: AppHandle,
+    library_id: String,
+    track_id: String,
+) -> Result<BroadcastQueueEntry, String> {
+    let mut conn = open_db(&app)?;
+    append_track(&mut conn, &library_id, &track_id)
 }
 
 #[tauri::command]
@@ -572,6 +887,22 @@ pub fn broadcast_set_microphone_live(
     manager.set_microphone_live(live)
 }
 
+#[tauri::command]
+pub fn broadcast_set_line_input_live(
+    manager: State<'_, BroadcastManager>,
+    live: bool,
+) -> Result<BroadcastStatus, String> {
+    manager.set_line_input_live(live)
+}
+
+#[tauri::command]
+pub fn broadcast_set_application_audio_live(
+    manager: State<'_, BroadcastManager>,
+    live: bool,
+) -> Result<BroadcastStatus, String> {
+    manager.set_application_audio_live(live)
+}
+
 fn validate_profile(mut input: BroadcastProfileInput) -> Result<BroadcastProfileInput, String> {
     input.host = input.host.trim().to_string();
     input.mount = input.mount.trim().to_string();
@@ -579,6 +910,8 @@ fn validate_profile(mut input: BroadcastProfileInput) -> Result<BroadcastProfile
     input.station_name = input.station_name.trim().to_string();
     input.description = input.description.trim().to_string();
     input.microphone_device = input.microphone_device.trim().to_string();
+    input.line_input_device = input.line_input_device.trim().to_string();
+    input.application_audio_bundle_id = input.application_audio_bundle_id.trim().to_string();
     input.password = input
         .password
         .map(|value| value.trim().to_string())
@@ -623,6 +956,34 @@ fn validate_profile(mut input: BroadcastProfileInput) -> Result<BroadcastProfile
     if input.microphone_gain_percent > 200 {
         return Err("La ganancia del micrófono debe estar entre 0% y 200%.".to_string());
     }
+    if input.line_input_device.is_empty()
+        || input.line_input_device.len() > 512
+        || input.line_input_device.chars().any(char::is_control)
+    {
+        return Err("Dispositivo de línea directa inválido.".to_string());
+    }
+    if !(1..=64).contains(&input.line_input_channel) {
+        return Err("El canal de línea debe estar entre 1 y 64.".to_string());
+    }
+    if input.line_input_gain_percent > 200 {
+        return Err("La ganancia de línea debe estar entre 0% y 200%.".to_string());
+    }
+    if input.application_audio_bundle_id.len() > 512
+        || input
+            .application_audio_bundle_id
+            .chars()
+            .any(char::is_control)
+    {
+        return Err("La fuente de audio del Mac seleccionada es inválida.".to_string());
+    }
+    if input.application_audio_enabled && input.application_audio_bundle_id.is_empty() {
+        return Err(
+            "Selecciona la salida completa del Mac o una aplicación específica.".to_string(),
+        );
+    }
+    if input.application_audio_gain_percent > 200 {
+        return Err("La ganancia del audio del Mac debe estar entre 0% y 200%.".to_string());
+    }
     Ok(input)
 }
 
@@ -632,7 +993,11 @@ fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
         .query_row(
             "SELECT id, host, port, mount, username, station_name, description,
                     bitrate_kbps, tls, public, microphone_enabled,
-                    microphone_device, microphone_gain_percent, updated_at
+                    microphone_device, microphone_gain_percent, line_input_enabled,
+                    line_input_device, line_input_channel, line_input_stereo,
+                    line_input_gain_percent, application_audio_enabled,
+                    application_audio_bundle_id, application_audio_gain_percent,
+                    updated_at
              FROM broadcast_profiles WHERE id = ?1",
             params![PROFILE_ID],
             |row| {
@@ -650,7 +1015,15 @@ fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
                     row.get::<_, bool>(10)?,
                     row.get::<_, String>(11)?,
                     row.get::<_, u16>(12)?,
-                    row.get::<_, String>(13)?,
+                    row.get::<_, bool>(13)?,
+                    row.get::<_, String>(14)?,
+                    row.get::<_, u16>(15)?,
+                    row.get::<_, bool>(16)?,
+                    row.get::<_, u16>(17)?,
+                    row.get::<_, bool>(18)?,
+                    row.get::<_, String>(19)?,
+                    row.get::<_, u16>(20)?,
+                    row.get::<_, String>(21)?,
                 ))
             },
         )
@@ -670,6 +1043,14 @@ fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
         microphone_enabled,
         microphone_device,
         microphone_gain_percent,
+        line_input_enabled,
+        line_input_device,
+        line_input_channel,
+        line_input_stereo,
+        line_input_gain_percent,
+        application_audio_enabled,
+        application_audio_bundle_id,
+        application_audio_gain_percent,
         updated_at,
     ) = stored.unwrap_or_else(|| {
         (
@@ -685,6 +1066,14 @@ fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
             false,
             false,
             "default".to_string(),
+            100,
+            false,
+            "default".to_string(),
+            1,
+            true,
+            100,
+            false,
+            String::new(),
             100,
             timestamp(),
         )
@@ -706,6 +1095,14 @@ fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
         microphone_enabled,
         microphone_device,
         microphone_gain_percent,
+        line_input_enabled,
+        line_input_device,
+        line_input_channel,
+        line_input_stereo,
+        line_input_gain_percent,
+        application_audio_enabled,
+        application_audio_bundle_id,
+        application_audio_gain_percent,
         password_configured,
         listener_url,
         updated_at,
@@ -766,11 +1163,15 @@ fn microphone_devices(_app: &AppHandle) -> Result<Vec<BroadcastMicrophoneDevice>
     let host = cpal::default_host();
     let default_device = host.default_input_device();
     let mut result = Vec::new();
-    if default_device.is_some() {
+    if let Some(default_device) = default_device.as_ref() {
         result.push(BroadcastMicrophoneDevice {
             id: "default".to_string(),
-            label: "Micrófono predeterminado del sistema".to_string(),
+            label: "Entrada predeterminada del sistema".to_string(),
             is_default: true,
+            input_channels: default_device
+                .default_input_config()
+                .map(|config| config.channels())
+                .unwrap_or(0),
         });
     }
     let devices = host
@@ -789,6 +1190,10 @@ fn microphone_devices(_app: &AppHandle) -> Result<Vec<BroadcastMicrophoneDevice>
             id,
             label,
             is_default: false,
+            input_channels: device
+                .default_input_config()
+                .map(|config| config.channels())
+                .unwrap_or(0),
         });
     }
     Ok(result)
@@ -869,8 +1274,14 @@ fn decoder_args(path: &str) -> Vec<String> {
     ]
 }
 
-struct MicrophoneCapture {
-    _stream: cpal::Stream,
+enum AudioInputOwner {
+    Device { _stream: cpal::Stream },
+    Application(application_audio::ApplicationAudioCapture),
+}
+
+struct AudioInputCapture {
+    owner: AudioInputOwner,
+    label: String,
     buffer: Arc<Mutex<VecDeque<[i16; 2]>>>,
     stream_error: Arc<Mutex<Option<String>>>,
     input_sample_rate: u32,
@@ -880,18 +1291,18 @@ struct MicrophoneCapture {
     music_gain_percent: f32,
 }
 
-struct MicrophoneMix {
+struct AudioInputMix {
     mixed_frames: usize,
     peak_percent: u8,
     buffering: bool,
 }
 
-impl MicrophoneCapture {
-    fn mix_into(&mut self, output: &mut [u8], gain_percent: u16) -> Result<MicrophoneMix, String> {
+impl AudioInputCapture {
+    fn mix_into(&mut self, output: &mut [u8], gain_percent: u16) -> Result<AudioInputMix, String> {
         if let Some(error) = self
             .stream_error
             .lock()
-            .map_err(|_| "No se pudo revisar el micrófono.".to_string())?
+            .map_err(|_| format!("No se pudo revisar la {}.", self.label))?
             .take()
         {
             return Err(error);
@@ -899,7 +1310,7 @@ impl MicrophoneCapture {
         let mut microphone = self
             .buffer
             .lock()
-            .map_err(|_| "No se pudo leer el buffer del micrófono.".to_string())?;
+            .map_err(|_| format!("No se pudo leer el buffer de {}.", self.label))?;
         let output_frames = output.len() / 4;
         let input_per_output = self.input_sample_rate as f64 / PCM_SAMPLE_RATE as f64;
         let required_frames = (output_frames as f64 * input_per_output).ceil() as usize + 1;
@@ -908,7 +1319,7 @@ impl MicrophoneCapture {
         let target_frames = required_frames + prebuffer_frames;
         if self.buffering {
             if microphone.len() < target_frames {
-                return Ok(MicrophoneMix {
+                return Ok(AudioInputMix {
                     mixed_frames: 0,
                     peak_percent: 0,
                     buffering: true,
@@ -920,7 +1331,7 @@ impl MicrophoneCapture {
             self.resample_position = 0.0;
             self.microphone_envelope = 0.0;
             self.music_gain_percent = 100.0;
-            return Ok(MicrophoneMix {
+            return Ok(AudioInputMix {
                 mixed_frames: 0,
                 peak_percent: 0,
                 buffering: true,
@@ -975,11 +1386,22 @@ impl MicrophoneCapture {
         let consumed = (position.floor() as usize).min(microphone.len());
         microphone.drain(..consumed);
         self.resample_position = position - consumed as f64;
-        Ok(MicrophoneMix {
+        Ok(AudioInputMix {
             mixed_frames,
             peak_percent: ((u32::from(peak) * 100 / i16::MAX as u32).min(100)) as u8,
             buffering: false,
         })
+    }
+
+    fn write_direct(
+        &mut self,
+        output: &mut [u8],
+        gain_percent: u16,
+    ) -> Result<AudioInputMix, String> {
+        output.fill(0);
+        self.microphone_envelope = 0.0;
+        self.music_gain_percent = 100.0;
+        self.mix_into(output, gain_percent)
     }
 
     fn clear(&mut self) {
@@ -992,7 +1414,11 @@ impl MicrophoneCapture {
         self.music_gain_percent = 100.0;
     }
 
-    fn terminate(self) {}
+    fn terminate(self) {
+        if let AudioInputOwner::Application(capture) = self.owner {
+            capture.stop();
+        }
+    }
 }
 
 fn mix_pcm_sample(music: i16, microphone: i16, gain_percent: u16, music_gain_percent: u16) -> i16 {
@@ -1003,29 +1429,32 @@ fn mix_pcm_sample(music: i16, microphone: i16, gain_percent: u16, music_gain_per
         .clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
-fn spawn_microphone_capture(
+fn spawn_audio_input_capture(
     _app: &AppHandle,
     device: &str,
+    first_channel: u16,
+    stereo: Option<bool>,
+    input_label: &str,
     _runtime: &Arc<RuntimeState>,
-) -> Result<MicrophoneCapture, String> {
+) -> Result<AudioInputCapture, String> {
     let host = cpal::default_host();
     let selected = if device == "default" {
         host.default_input_device()
-            .ok_or_else(|| "No hay un micrófono predeterminado disponible.".to_string())?
+            .ok_or_else(|| format!("No hay una {input_label} predeterminada disponible."))?
     } else {
         host.input_devices()
-            .map_err(|error| format!("No se pudieron consultar micrófonos: {error}"))?
+            .map_err(|error| format!("No se pudieron consultar entradas de audio: {error}"))?
             .find(|candidate| {
                 candidate
                     .id()
                     .map(|id| id.to_string() == device)
                     .unwrap_or(false)
             })
-            .ok_or_else(|| "El micrófono seleccionado ya no está disponible.".to_string())?
+            .ok_or_else(|| format!("La {input_label} seleccionada ya no está disponible."))?
     };
     let supported = selected
         .default_input_config()
-        .map_err(|error| format!("No se pudo obtener el formato del micrófono: {error}"))?;
+        .map_err(|error| format!("No se pudo obtener el formato de {input_label}: {error}"))?;
     let sample_format = supported.sample_format();
     if !matches!(
         sample_format,
@@ -1039,43 +1468,69 @@ fn spawn_microphone_capture(
             | SampleFormat::U32
     ) {
         return Err(format!(
-            "El formato {sample_format} del micrófono no está soportado."
+            "El formato {sample_format} de {input_label} no está soportado."
         ));
     }
     let config: cpal::StreamConfig = supported.into();
     let input_sample_rate = config.sample_rate;
     let input_channels = usize::from(config.channels);
+    let first_channel_index = usize::from(first_channel.saturating_sub(1));
+    let stereo = stereo.unwrap_or(input_channels > 1);
+    if first_channel == 0
+        || first_channel_index >= input_channels
+        || (stereo && first_channel_index + 1 >= input_channels)
+    {
+        let requested = if stereo {
+            format!("{first_channel}–{}", first_channel.saturating_add(1))
+        } else {
+            first_channel.to_string()
+        };
+        return Err(format!(
+            "La {input_label} tiene {input_channels} canal(es); no se puede usar {requested}."
+        ));
+    }
     let buffer = Arc::new(Mutex::new(VecDeque::new()));
     let callback_buffer = Arc::clone(&buffer);
     let stream_error = Arc::new(Mutex::new(None));
     let callback_error = Arc::clone(&stream_error);
+    let callback_input_label = input_label.to_string();
     let maximum_frames = input_sample_rate as usize * MICROPHONE_BUFFER_SECONDS;
     let stream = selected
         .build_input_stream_raw(
             config,
             sample_format,
             move |data, _| {
-                push_microphone_data(data, input_channels, maximum_frames, &callback_buffer)
+                push_audio_input_data(
+                    data,
+                    input_channels,
+                    first_channel_index,
+                    stereo,
+                    maximum_frames,
+                    &callback_buffer,
+                )
             },
             move |error| {
                 if let Ok(mut target) = callback_error.lock() {
-                    *target = Some(format!("La captura de micrófono falló: {error}"));
+                    *target = Some(format!(
+                        "La captura de {callback_input_label} falló: {error}"
+                    ));
                 }
             },
             None,
         )
         .map_err(|error| {
             format!(
-                "No se pudo abrir el micrófono. Revisa el permiso de macOS para Rau Studio: {error}"
+                "No se pudo abrir la {input_label}. Revisa el permiso de audio de macOS para Rau Studio: {error}"
             )
         })?;
     stream.play().map_err(|error| {
         format!(
-            "No se pudo activar el micrófono. Revisa el permiso de macOS para Rau Studio: {error}"
+            "No se pudo activar la {input_label}. Revisa el permiso de audio de macOS para Rau Studio: {error}"
         )
     })?;
-    Ok(MicrophoneCapture {
-        _stream: stream,
+    Ok(AudioInputCapture {
+        owner: AudioInputOwner::Device { _stream: stream },
+        label: input_label.to_string(),
         buffer,
         stream_error,
         input_sample_rate,
@@ -1086,9 +1541,33 @@ fn spawn_microphone_capture(
     })
 }
 
-fn push_microphone_data(
+fn spawn_application_audio_capture(
+    bundle_id: &str,
+    label: &str,
+) -> Result<AudioInputCapture, String> {
+    let parts = application_audio::start_capture(bundle_id)?;
+    Ok(AudioInputCapture {
+        owner: AudioInputOwner::Application(parts.capture),
+        label: if bundle_id == application_audio::SYSTEM_AUDIO_TARGET_ID {
+            "salida de audio del Mac".to_string()
+        } else {
+            format!("audio de {label}")
+        },
+        buffer: parts.buffer,
+        stream_error: parts.stream_error,
+        input_sample_rate: application_audio::APPLICATION_AUDIO_SAMPLE_RATE,
+        resample_position: 0.0,
+        buffering: true,
+        microphone_envelope: 0.0,
+        music_gain_percent: 100.0,
+    })
+}
+
+fn push_audio_input_data(
     data: &Data,
     channels: usize,
+    first_channel: usize,
+    stereo: bool,
     maximum_frames: usize,
     buffer: &Arc<Mutex<VecDeque<[i16; 2]>>>,
 ) {
@@ -1096,51 +1575,67 @@ fn push_microphone_data(
         return;
     };
     match data.sample_format() {
-        SampleFormat::F32 => append_microphone_frames(
+        SampleFormat::F32 => append_audio_input_frames(
             data.as_slice::<f32>().unwrap_or_default(),
             channels,
+            first_channel,
+            stereo,
             &mut target,
             |sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16,
         ),
-        SampleFormat::F64 => append_microphone_frames(
+        SampleFormat::F64 => append_audio_input_frames(
             data.as_slice::<f64>().unwrap_or_default(),
             channels,
+            first_channel,
+            stereo,
             &mut target,
             |sample| (sample.clamp(-1.0, 1.0) * i16::MAX as f64).round() as i16,
         ),
-        SampleFormat::I8 => append_microphone_frames(
+        SampleFormat::I8 => append_audio_input_frames(
             data.as_slice::<i8>().unwrap_or_default(),
             channels,
+            first_channel,
+            stereo,
             &mut target,
             |sample| i16::from(sample) << 8,
         ),
-        SampleFormat::I16 => append_microphone_frames(
+        SampleFormat::I16 => append_audio_input_frames(
             data.as_slice::<i16>().unwrap_or_default(),
             channels,
+            first_channel,
+            stereo,
             &mut target,
             |sample| sample,
         ),
-        SampleFormat::I32 => append_microphone_frames(
+        SampleFormat::I32 => append_audio_input_frames(
             data.as_slice::<i32>().unwrap_or_default(),
             channels,
+            first_channel,
+            stereo,
             &mut target,
             |sample| (sample >> 16) as i16,
         ),
-        SampleFormat::U8 => append_microphone_frames(
+        SampleFormat::U8 => append_audio_input_frames(
             data.as_slice::<u8>().unwrap_or_default(),
             channels,
+            first_channel,
+            stereo,
             &mut target,
             |sample| (i16::from(sample) - 128) << 8,
         ),
-        SampleFormat::U16 => append_microphone_frames(
+        SampleFormat::U16 => append_audio_input_frames(
             data.as_slice::<u16>().unwrap_or_default(),
             channels,
+            first_channel,
+            stereo,
             &mut target,
             |sample| (i32::from(sample) - 32_768) as i16,
         ),
-        SampleFormat::U32 => append_microphone_frames(
+        SampleFormat::U32 => append_audio_input_frames(
             data.as_slice::<u32>().unwrap_or_default(),
             channels,
+            first_channel,
+            stereo,
             &mut target,
             |sample| ((i64::from(sample) - 2_147_483_648) >> 16) as i16,
         ),
@@ -1152,19 +1647,21 @@ fn push_microphone_data(
     }
 }
 
-fn append_microphone_frames<T: Copy>(
+fn append_audio_input_frames<T: Copy>(
     samples: &[T],
     channels: usize,
+    first_channel: usize,
+    stereo: bool,
     target: &mut VecDeque<[i16; 2]>,
     convert: impl Fn(T) -> i16,
 ) {
-    if channels == 0 {
+    if channels == 0 || first_channel >= channels {
         return;
     }
     for frame in samples.chunks_exact(channels) {
-        let left = convert(frame[0]);
-        let right = if channels > 1 {
-            convert(frame[1])
+        let left = convert(frame[first_channel]);
+        let right = if stereo && first_channel + 1 < channels {
+            convert(frame[first_channel + 1])
         } else {
             left
         };
@@ -1176,11 +1673,30 @@ struct WorkerAudio {
     configured: bool,
     device: Option<String>,
     gain_percent: u16,
-    microphone: Option<MicrophoneCapture>,
+    microphone: Option<AudioInputCapture>,
     microphone_live: bool,
     microphone_receiving_audio: bool,
     microphone_level_percent: u8,
     last_meter_emit: Instant,
+    line_configured: bool,
+    line_device: Option<String>,
+    line_channel: u16,
+    line_stereo: bool,
+    line_gain_percent: u16,
+    line_input: Option<AudioInputCapture>,
+    line_live: bool,
+    line_receiving_audio: bool,
+    line_level_percent: u8,
+    last_line_meter_emit: Instant,
+    application_configured: bool,
+    application_bundle_id: Option<String>,
+    application_label: Option<String>,
+    application_gain_percent: u16,
+    application_input: Option<AudioInputCapture>,
+    application_live: bool,
+    application_receiving_audio: bool,
+    application_level_percent: u8,
+    last_application_meter_emit: Instant,
 }
 
 impl WorkerAudio {
@@ -1196,6 +1712,29 @@ impl WorkerAudio {
             microphone_receiving_audio: false,
             microphone_level_percent: 0,
             last_meter_emit: Instant::now(),
+            line_configured: profile.line_input_enabled,
+            line_device: profile
+                .line_input_enabled
+                .then(|| profile.line_input_device.clone()),
+            line_channel: profile.line_input_channel,
+            line_stereo: profile.line_input_stereo,
+            line_gain_percent: profile.line_input_gain_percent,
+            line_input: None,
+            line_live: false,
+            line_receiving_audio: false,
+            line_level_percent: 0,
+            last_line_meter_emit: Instant::now(),
+            application_configured: profile.application_audio_enabled,
+            application_bundle_id: profile
+                .application_audio_enabled
+                .then(|| profile.application_audio_bundle_id.clone()),
+            application_label: None,
+            application_gain_percent: profile.application_audio_gain_percent,
+            application_input: None,
+            application_live: false,
+            application_receiving_audio: false,
+            application_level_percent: 0,
+            last_application_meter_emit: Instant::now(),
         }
     }
 
@@ -1218,6 +1757,12 @@ impl WorkerAudio {
         runtime: &Arc<RuntimeState>,
         live: bool,
     ) -> Result<(), String> {
+        if live && (self.line_live || self.application_live) {
+            return Err(
+                "El micrófono no puede activarse mientras una fuente directa está al aire."
+                    .to_string(),
+            );
+        }
         if live && self.microphone.is_none() {
             return Err(
                 "El micrófono no está preparado. Detén la radio y revisa su configuración."
@@ -1240,6 +1785,162 @@ impl WorkerAudio {
         };
         runtime.update_microphone(app, self.status(message), "info", "microphone_live");
         Ok(())
+    }
+
+    fn line_status(&self, message: impl Into<String>) -> BroadcastLineInputStatus {
+        BroadcastLineInputStatus {
+            configured: self.line_configured,
+            ready: self.line_input.is_some(),
+            live: self.line_live,
+            receiving_audio: self.line_receiving_audio,
+            level_percent: self.line_level_percent,
+            device: self.line_device.clone(),
+            channel: self.line_channel,
+            stereo: self.line_stereo,
+            gain_percent: self.line_gain_percent,
+            message: message.into(),
+        }
+    }
+
+    fn application_status(&self, message: impl Into<String>) -> BroadcastApplicationAudioStatus {
+        BroadcastApplicationAudioStatus {
+            configured: self.application_configured,
+            ready: self.application_input.is_some(),
+            live: self.application_live,
+            receiving_audio: self.application_receiving_audio,
+            level_percent: self.application_level_percent,
+            application: self.application_bundle_id.clone(),
+            label: self.application_label.clone(),
+            gain_percent: self.application_gain_percent,
+            message: message.into(),
+        }
+    }
+
+    fn set_line_live(
+        &mut self,
+        app: &AppHandle,
+        runtime: &Arc<RuntimeState>,
+        live: bool,
+    ) -> Result<(), String> {
+        if live && self.line_input.is_none() {
+            return Err(
+                "La línea directa no está preparada. Detén la radio y revisa su configuración."
+                    .to_string(),
+            );
+        }
+        if live && self.application_live {
+            self.application_live = false;
+            self.application_receiving_audio = false;
+            self.application_level_percent = 0;
+            if let Some(application_input) = self.application_input.as_mut() {
+                application_input.clear();
+            }
+            runtime.update_application_audio(
+                app,
+                self.application_status("Audio del Mac detenido al activar línea directa."),
+                "info",
+                "application_audio_live",
+            );
+        }
+        if live && self.microphone_live {
+            self.microphone_live = false;
+            self.microphone_receiving_audio = false;
+            self.microphone_level_percent = 0;
+            if let Some(microphone) = self.microphone.as_mut() {
+                microphone.clear();
+            }
+            runtime.update_microphone(
+                app,
+                self.status("Micrófono silenciado al activar línea directa."),
+                "info",
+                "microphone_live",
+            );
+        }
+        self.line_live = live;
+        self.line_receiving_audio = false;
+        self.line_level_percent = 0;
+        self.last_line_meter_emit = Instant::now();
+        if let Some(line_input) = self.line_input.as_mut() {
+            line_input.clear();
+        }
+        let message = if live {
+            "Línea directa al aire."
+        } else {
+            "Fuente Playlist al aire."
+        };
+        runtime.update_line_input(app, self.line_status(message), "info", "line_input_live");
+        Ok(())
+    }
+
+    fn set_application_live(
+        &mut self,
+        app: &AppHandle,
+        runtime: &Arc<RuntimeState>,
+        live: bool,
+    ) -> Result<(), String> {
+        if live && self.application_input.is_none() {
+            return Err(
+                "El audio del Mac no está preparado. Detén la radio y revisa su configuración."
+                    .to_string(),
+            );
+        }
+        if live && self.microphone_live {
+            self.microphone_live = false;
+            self.microphone_receiving_audio = false;
+            self.microphone_level_percent = 0;
+            if let Some(microphone) = self.microphone.as_mut() {
+                microphone.clear();
+            }
+            runtime.update_microphone(
+                app,
+                self.status("Micrófono silenciado al activar audio del Mac."),
+                "info",
+                "microphone_live",
+            );
+        }
+        if live && self.line_live {
+            self.line_live = false;
+            self.line_receiving_audio = false;
+            self.line_level_percent = 0;
+            if let Some(line_input) = self.line_input.as_mut() {
+                line_input.clear();
+            }
+            runtime.update_line_input(
+                app,
+                self.line_status("Línea directa detenida al activar audio del Mac."),
+                "info",
+                "line_input_live",
+            );
+        }
+        self.application_live = live;
+        self.application_receiving_audio = false;
+        self.application_level_percent = 0;
+        self.last_application_meter_emit = Instant::now();
+        if let Some(application_input) = self.application_input.as_mut() {
+            application_input.clear();
+        }
+        let message = if live {
+            format!(
+                "{} al aire.",
+                application_audio_title(
+                    self.application_bundle_id.as_deref(),
+                    self.application_label.as_deref()
+                )
+            )
+        } else {
+            "Fuente Playlist al aire.".to_string()
+        };
+        runtime.update_application_audio(
+            app,
+            self.application_status(message),
+            "info",
+            "application_audio_live",
+        );
+        Ok(())
+    }
+
+    fn direct_source_live(&self) -> bool {
+        self.line_live || self.application_live
     }
 
     fn process_chunk(&mut self, app: &AppHandle, runtime: &Arc<RuntimeState>, output: &mut [u8]) {
@@ -1292,12 +1993,139 @@ impl WorkerAudio {
         }
     }
 
+    fn process_line_chunk(
+        &mut self,
+        app: &AppHandle,
+        runtime: &Arc<RuntimeState>,
+        output: &mut [u8],
+    ) {
+        let Some(line_input) = self.line_input.as_mut() else {
+            output.fill(0);
+            return;
+        };
+        match line_input.write_direct(output, self.line_gain_percent) {
+            Ok(mixed) => {
+                self.line_receiving_audio = mixed.mixed_frames > 0;
+                self.line_level_percent = mixed.peak_percent;
+                if self.last_line_meter_emit.elapsed() >= Duration::from_millis(500) {
+                    let message = if mixed.buffering {
+                        "Línea directa · estabilizando señal.".to_string()
+                    } else if self.line_receiving_audio {
+                        format!("Línea directa · señal {}%.", self.line_level_percent)
+                    } else {
+                        "Línea directa · sin señal de entrada.".to_string()
+                    };
+                    runtime.update_line_input(
+                        app,
+                        self.line_status(message),
+                        "info",
+                        "line_input_level",
+                    );
+                    self.last_line_meter_emit = Instant::now();
+                }
+            }
+            Err(error) => {
+                self.line_live = false;
+                self.line_receiving_audio = false;
+                self.line_level_percent = 0;
+                runtime.log(app, "error", "line_input", error.clone());
+                if let Some(line_input) = self.line_input.take() {
+                    line_input.terminate();
+                }
+                runtime.update_line_input(
+                    app,
+                    self.line_status(format!("Línea directa no disponible: {error}")),
+                    "error",
+                    "line_input_failed",
+                );
+            }
+        }
+    }
+
+    fn process_application_chunk(
+        &mut self,
+        app: &AppHandle,
+        runtime: &Arc<RuntimeState>,
+        output: &mut [u8],
+    ) {
+        let Some(application_input) = self.application_input.as_mut() else {
+            output.fill(0);
+            return;
+        };
+        match application_input.write_direct(output, self.application_gain_percent) {
+            Ok(mixed) => {
+                self.application_receiving_audio = mixed.mixed_frames > 0;
+                self.application_level_percent = mixed.peak_percent;
+                if self.last_application_meter_emit.elapsed() >= Duration::from_millis(500) {
+                    let prefix = application_audio_title(
+                        self.application_bundle_id.as_deref(),
+                        self.application_label.as_deref(),
+                    );
+                    let message = if mixed.buffering {
+                        format!("{prefix} · estabilizando señal.")
+                    } else if self.application_receiving_audio {
+                        format!("{prefix} · señal {}%.", self.application_level_percent)
+                    } else {
+                        format!("{prefix} · sin señal. Reproduce audio en el Mac.")
+                    };
+                    runtime.update_application_audio(
+                        app,
+                        self.application_status(message),
+                        "info",
+                        "application_audio_level",
+                    );
+                    self.last_application_meter_emit = Instant::now();
+                }
+            }
+            Err(error) => {
+                self.application_live = false;
+                self.application_receiving_audio = false;
+                self.application_level_percent = 0;
+                runtime.log(app, "error", "application_audio", error.clone());
+                if let Some(application_input) = self.application_input.take() {
+                    application_input.terminate();
+                }
+                runtime.update_application_audio(
+                    app,
+                    self.application_status(format!("Audio del Mac no disponible: {error}")),
+                    "error",
+                    "application_audio_failed",
+                );
+            }
+        }
+    }
+
+    fn process_direct_chunk(
+        &mut self,
+        app: &AppHandle,
+        runtime: &Arc<RuntimeState>,
+        output: &mut [u8],
+    ) {
+        if self.application_live {
+            self.process_application_chunk(app, runtime, output);
+        } else {
+            self.process_line_chunk(app, runtime, output);
+        }
+    }
+
     fn terminate(&mut self) {
         self.microphone_live = false;
         self.microphone_receiving_audio = false;
         self.microphone_level_percent = 0;
         if let Some(microphone) = self.microphone.take() {
             microphone.terminate();
+        }
+        self.line_live = false;
+        self.line_receiving_audio = false;
+        self.line_level_percent = 0;
+        if let Some(line_input) = self.line_input.take() {
+            line_input.terminate();
+        }
+        self.application_live = false;
+        self.application_receiving_audio = false;
+        self.application_level_percent = 0;
+        if let Some(application_input) = self.application_input.take() {
+            application_input.terminate();
         }
     }
 }
@@ -1368,6 +2196,14 @@ fn spawn_publisher(
 
 enum PlayOutcome {
     Completed,
+    Skipped,
+    Stop,
+    PublisherFailed(String),
+}
+
+enum DirectInputOutcome {
+    ResumePlaylist,
+    SourceChanged,
     Skipped,
     Stop,
     PublisherFailed(String),
@@ -1472,6 +2308,63 @@ fn play_entry(
             WorkerAction::None => {}
         }
 
+        if worker_audio.direct_source_live() {
+            let source_title = worker_audio
+                .application_live
+                .then(|| {
+                    application_audio_title(
+                        worker_audio.application_bundle_id.as_deref(),
+                        worker_audio.application_label.as_deref(),
+                    )
+                })
+                .unwrap_or_else(|| "Línea directa".to_string());
+            update_icecast_metadata_value_async(
+                session.profile.clone(),
+                session.password.to_string(),
+                source_title,
+                runtime,
+                app.clone(),
+            );
+            match stream_direct_input(app, publisher, runtime, commands, worker_audio) {
+                DirectInputOutcome::ResumePlaylist => {
+                    runtime.update(
+                        app,
+                        "live",
+                        format!("En vivo: {}", display_title(&playing)),
+                        Some(playing.clone()),
+                        Some(session.started_at.to_string()),
+                        ("info", "track_resumed"),
+                    );
+                    update_icecast_metadata_async(
+                        session.profile.clone(),
+                        session.password.to_string(),
+                        playing.clone(),
+                        runtime,
+                        app.clone(),
+                    );
+                }
+                DirectInputOutcome::SourceChanged => continue,
+                DirectInputOutcome::Skipped => {
+                    let _ = decoder.kill();
+                    let _ = decoder.wait();
+                    let _ = update_entry_status(app, &entry.id, "skipped", None);
+                    return PlayOutcome::Skipped;
+                }
+                DirectInputOutcome::Stop => {
+                    let _ = decoder.kill();
+                    let _ = decoder.wait();
+                    let _ = update_entry_status(app, &entry.id, "queued", None);
+                    return PlayOutcome::Stop;
+                }
+                DirectInputOutcome::PublisherFailed(error) => {
+                    let _ = decoder.kill();
+                    let _ = decoder.wait();
+                    let _ = update_entry_status(app, &entry.id, "queued", None);
+                    return PlayOutcome::PublisherFailed(error);
+                }
+            }
+        }
+
         match stdout.read(&mut buffer) {
             Ok(0) => break,
             Ok(read) => {
@@ -1535,7 +2428,7 @@ fn run_worker(
     let mut worker_audio = WorkerAudio::from_profile(&profile);
     if worker_audio.configured {
         let device = profile.microphone_device.clone();
-        match spawn_microphone_capture(&app, &device, &runtime) {
+        match spawn_audio_input_capture(&app, &device, 1, None, "entrada de micrófono", &runtime) {
             Ok(microphone) => {
                 worker_audio.microphone = Some(microphone);
                 runtime.update_microphone(
@@ -1560,6 +2453,91 @@ fn run_worker(
             worker_audio.status("Micrófono desactivado."),
             "info",
             "microphone_disabled",
+        );
+    }
+    if worker_audio.line_configured {
+        let device = profile.line_input_device.clone();
+        match spawn_audio_input_capture(
+            &app,
+            &device,
+            profile.line_input_channel,
+            Some(profile.line_input_stereo),
+            "entrada de línea",
+            &runtime,
+        ) {
+            Ok(line_input) => {
+                worker_audio.line_input = Some(line_input);
+                runtime.update_line_input(
+                    &app,
+                    worker_audio.line_status("Línea directa preparada y en espera."),
+                    "info",
+                    "line_input_ready",
+                );
+            }
+            Err(error) => {
+                runtime.update_line_input(
+                    &app,
+                    worker_audio
+                        .line_status(format!("No se pudo preparar la línea directa: {error}")),
+                    "error",
+                    "line_input_failed",
+                );
+            }
+        }
+    } else {
+        runtime.update_line_input(
+            &app,
+            worker_audio.line_status("Línea directa desactivada."),
+            "info",
+            "line_input_disabled",
+        );
+    }
+    if worker_audio.application_configured {
+        let bundle_id = profile.application_audio_bundle_id.clone();
+        let selected = if bundle_id == application_audio::SYSTEM_AUDIO_TARGET_ID {
+            Ok(application_audio::SYSTEM_AUDIO_LABEL.to_string())
+        } else {
+            application_audio::list_applications().and_then(|applications| {
+                applications
+                    .into_iter()
+                    .find(|application| application.id == bundle_id)
+                    .map(|application| application.label)
+                    .ok_or_else(|| {
+                        "La aplicación seleccionada no está abierta o ya no está disponible."
+                            .to_string()
+                    })
+            })
+        };
+        match selected.and_then(|label| {
+            spawn_application_audio_capture(&bundle_id, &label).map(|capture| (capture, label))
+        }) {
+            Ok((application_input, label)) => {
+                worker_audio.application_label = Some(label);
+                worker_audio.application_input = Some(application_input);
+                runtime.update_application_audio(
+                    &app,
+                    worker_audio.application_status("Audio del Mac preparado y en espera."),
+                    "info",
+                    "application_audio_ready",
+                );
+            }
+            Err(error) => {
+                runtime.update_application_audio(
+                    &app,
+                    worker_audio.application_status(format!(
+                        "No se pudo preparar el audio del Mac: {error}"
+                    )),
+                    "error",
+                    "application_audio_failed",
+                );
+            }
+        }
+    } else {
+        runtime.update_application_audio(
+            &app,
+            worker_audio.application_status("Audio del Mac desactivado."),
+            "info",
+            "application_audio_disabled",
         );
     }
 
@@ -1600,6 +2578,63 @@ fn run_worker(
                     continue;
                 }
             }
+        }
+
+        if worker_audio.direct_source_live() {
+            let source_title = worker_audio
+                .application_live
+                .then(|| {
+                    application_audio_title(
+                        worker_audio.application_bundle_id.as_deref(),
+                        worker_audio.application_label.as_deref(),
+                    )
+                })
+                .unwrap_or_else(|| "Línea directa".to_string());
+            update_icecast_metadata_value_async(
+                profile.clone(),
+                password.clone(),
+                source_title,
+                &runtime,
+                app.clone(),
+            );
+            match stream_direct_input(
+                &app,
+                publisher.as_mut().expect("publisher initialized"),
+                &runtime,
+                &commands,
+                &mut worker_audio,
+            ) {
+                DirectInputOutcome::Stop => break,
+                DirectInputOutcome::PublisherFailed(error) => {
+                    if let Some(publisher) = publisher.take() {
+                        publisher.terminate();
+                    }
+                    reconnect_attempt = reconnect_attempt.saturating_add(1);
+                    if !wait_before_reconnect(
+                        &app,
+                        &runtime,
+                        &commands,
+                        &started_at,
+                        reconnect_attempt,
+                        &error,
+                        &mut worker_audio,
+                    ) {
+                        break;
+                    }
+                }
+                DirectInputOutcome::ResumePlaylist => {
+                    update_icecast_metadata_value_async(
+                        profile.clone(),
+                        password.clone(),
+                        "Playlist".to_string(),
+                        &runtime,
+                        app.clone(),
+                    );
+                }
+                DirectInputOutcome::SourceChanged => {}
+                DirectInputOutcome::Skipped => {}
+            }
+            continue;
         }
 
         let next = open_db(&app).and_then(|conn| next_queue_entry(&conn));
@@ -1689,6 +2724,26 @@ fn run_worker(
         "info",
         "microphone_stopped",
     );
+    runtime.update_line_input(
+        &app,
+        worker_audio.line_status(if worker_audio.line_configured {
+            "Línea directa detenida."
+        } else {
+            "Línea directa desactivada."
+        }),
+        "info",
+        "line_input_stopped",
+    );
+    runtime.update_application_audio(
+        &app,
+        worker_audio.application_status(if worker_audio.application_configured {
+            "Audio del Mac detenido."
+        } else {
+            "Audio del Mac desactivado."
+        }),
+        "info",
+        "application_audio_stopped",
+    );
     runtime.update(
         &app,
         "idle",
@@ -1754,13 +2809,57 @@ fn poll_worker_commands(
                     runtime.log(app, "error", "microphone", error);
                 }
             }
+            Ok(WorkerCommand::SetLineInputLive(live)) => {
+                if let Err(error) = worker_audio.set_line_live(app, runtime, live) {
+                    runtime.log(app, "error", "line_input", error);
+                }
+            }
+            Ok(WorkerCommand::SetApplicationAudioLive(live)) => {
+                if let Err(error) = worker_audio.set_application_live(app, runtime, live) {
+                    runtime.log(app, "error", "application_audio", error);
+                }
+            }
             Err(TryRecvError::Empty) => return action,
         }
     }
 }
 
+fn stream_direct_input(
+    app: &AppHandle,
+    publisher: &mut Publisher,
+    runtime: &Arc<RuntimeState>,
+    commands: &Receiver<WorkerCommand>,
+    worker_audio: &mut WorkerAudio,
+) -> DirectInputOutcome {
+    let started_as_application = worker_audio.application_live;
+    while worker_audio.direct_source_live() {
+        match poll_worker_commands(commands, app, runtime, worker_audio) {
+            WorkerAction::Stop => return DirectInputOutcome::Stop,
+            WorkerAction::Skip => return DirectInputOutcome::Skipped,
+            WorkerAction::None => {}
+        }
+        if !worker_audio.direct_source_live() {
+            break;
+        }
+        if worker_audio.application_live != started_as_application {
+            return DirectInputOutcome::SourceChanged;
+        }
+        let mut output = silence_chunk_millis(LINE_INPUT_CHUNK_MILLIS);
+        worker_audio.process_direct_chunk(app, runtime, &mut output);
+        if let Err(error) = publisher.write(&output) {
+            return DirectInputOutcome::PublisherFailed(error);
+        }
+        thread::sleep(Duration::from_millis(LINE_INPUT_CHUNK_MILLIS as u64));
+    }
+    DirectInputOutcome::ResumePlaylist
+}
+
 fn silence_chunk() -> Vec<u8> {
-    let bytes = PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_BYTES_PER_SAMPLE * SILENCE_CHUNK_MILLIS / 1000;
+    silence_chunk_millis(SILENCE_CHUNK_MILLIS)
+}
+
+fn silence_chunk_millis(millis: usize) -> Vec<u8> {
+    let bytes = PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_BYTES_PER_SAMPLE * millis / 1000;
     vec![0; bytes]
 }
 
@@ -1777,6 +2876,16 @@ fn update_icecast_metadata_async(
     profile: BroadcastProfile,
     password: String,
     entry: BroadcastQueueEntry,
+    runtime: &Arc<RuntimeState>,
+    app: AppHandle,
+) {
+    update_icecast_metadata_value_async(profile, password, display_title(&entry), runtime, app);
+}
+
+fn update_icecast_metadata_value_async(
+    profile: BroadcastProfile,
+    password: String,
+    song: String,
     runtime: &Arc<RuntimeState>,
     app: AppHandle,
 ) {
@@ -1797,7 +2906,7 @@ fn update_icecast_metadata_async(
                     .query(&[
                         ("mount", profile.mount.as_str()),
                         ("mode", "updinfo"),
-                        ("song", display_title(&entry).as_str()),
+                        ("song", song.as_str()),
                         ("charset", "UTF-8"),
                     ])
                     .send()
@@ -1872,6 +2981,97 @@ fn append_playlist(
         return Err("La playlist no contiene pistas indexadas.".to_string());
     }
 
+    let (appended_total, skipped_missing_total) =
+        append_track_snapshots(&tx, library_id, playlist_path, &playlist_name, tracks)?;
+    tx.commit()
+        .map_err(|error| format!("No se pudo confirmar cola de broadcast: {error}"))?;
+    Ok(BroadcastQueueAppendResult {
+        appended_total,
+        skipped_missing_total,
+        queue: list_queue(conn)?,
+    })
+}
+
+fn append_draft(
+    conn: &mut Connection,
+    draft_id: &str,
+) -> Result<BroadcastQueueAppendResult, String> {
+    let draft_id = draft_id.trim();
+    if draft_id.is_empty() || draft_id.len() > 512 || draft_id.chars().any(char::is_control) {
+        return Err("Selecciona una playlist local válida.".to_string());
+    }
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("No se pudo iniciar transacción de broadcast: {error}"))?;
+    let (library_id, playlist_name) = tx
+        .query_row(
+            "SELECT library_id, name FROM playlist_drafts WHERE id = ?1",
+            params![draft_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| format!("No se pudo leer playlist local: {error}"))?
+        .ok_or_else(|| "Playlist local no encontrada.".to_string())?;
+    let tracks = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT dt.track_id, t.source_path, t.name, t.artist, t.total_time, t.source_exists
+                 FROM playlist_draft_tracks dt
+                 JOIN playlist_index_tracks t
+                   ON t.library_id = ?2 AND t.track_id = dt.track_id
+                 WHERE dt.draft_id = ?1
+                 ORDER BY dt.position, dt.track_id",
+            )
+            .map_err(|error| {
+                format!("No se pudo preparar playlist local para broadcast: {error}")
+            })?;
+        let rows = stmt
+            .query_map(params![draft_id, &library_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<u64>>(4)?,
+                    row.get::<_, bool>(5)?,
+                ))
+            })
+            .map_err(|error| format!("No se pudieron leer tracks de playlist local: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("No se pudieron mapear tracks de playlist local: {error}"))?
+    };
+    if tracks.is_empty() {
+        return Err("La playlist local no contiene pistas indexadas.".to_string());
+    }
+
+    let playlist_path = format!("__local_draft__:{draft_id}");
+    let (appended_total, skipped_missing_total) =
+        append_track_snapshots(&tx, &library_id, &playlist_path, &playlist_name, tracks)?;
+    tx.commit()
+        .map_err(|error| format!("No se pudo confirmar cola de broadcast: {error}"))?;
+    Ok(BroadcastQueueAppendResult {
+        appended_total,
+        skipped_missing_total,
+        queue: list_queue(conn)?,
+    })
+}
+
+type BroadcastTrackSnapshot = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<u64>,
+    bool,
+);
+
+fn append_track_snapshots(
+    tx: &rusqlite::Transaction<'_>,
+    library_id: &str,
+    playlist_path: &str,
+    playlist_name: &str,
+    tracks: Vec<BroadcastTrackSnapshot>,
+) -> Result<(usize, usize), String> {
     let mut position = tx
         .query_row(
             "SELECT COALESCE(MAX(position), 0) FROM broadcast_queue_entries",
@@ -1914,13 +3114,102 @@ fn append_playlist(
         .map_err(|error| format!("No se pudo agregar pista al broadcast: {error}"))?;
         appended_total += 1;
     }
+    Ok((appended_total, skipped_missing_total))
+}
+
+fn append_track(
+    conn: &mut Connection,
+    library_id: &str,
+    track_id: &str,
+) -> Result<BroadcastQueueEntry, String> {
+    let library_id = library_id.trim();
+    let track_id = track_id.trim();
+    if library_id.is_empty() || track_id.is_empty() {
+        return Err("No se pudo identificar la pista indexada.".to_string());
+    }
+    if library_id.len() > 512
+        || track_id.len() > 512
+        || library_id.chars().any(char::is_control)
+        || track_id.chars().any(char::is_control)
+    {
+        return Err("La pista seleccionada es inválida.".to_string());
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("No se pudo iniciar transacción de broadcast: {error}"))?;
+    let track = tx
+        .query_row(
+            "SELECT source_path, name, artist, total_time, source_exists
+             FROM playlist_index_tracks
+             WHERE library_id = ?1 AND track_id = ?2",
+            params![library_id, track_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<u64>>(3)?,
+                    row.get::<_, bool>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("No se pudo leer la pista para broadcast: {error}"))?
+        .ok_or_else(|| "La pista indexada ya no existe.".to_string())?;
+    let (source_path, title, artist, duration_seconds, source_exists) = track;
+    let source_path = source_path
+        .filter(|value| !value.trim().is_empty())
+        .filter(|_| source_exists)
+        .ok_or_else(|| "La pista no tiene un archivo local disponible.".to_string())?;
+    let position = tx
+        .query_row(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM broadcast_queue_entries",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("No se pudo calcular posición de broadcast: {error}"))?;
+    let now = timestamp();
+    let entry = BroadcastQueueEntry {
+        id: Uuid::new_v4().to_string(),
+        library_id: library_id.to_string(),
+        track_id: track_id.to_string(),
+        playlist_path: MANUAL_QUEUE_PATH.to_string(),
+        playlist_name: MANUAL_QUEUE_NAME.to_string(),
+        source_path,
+        title: title.unwrap_or_else(|| "Sin título".to_string()),
+        artist,
+        duration_seconds,
+        position,
+        status: "queued".to_string(),
+        error: None,
+        inserted_at: now.clone(),
+        updated_at: now,
+    };
+    tx.execute(
+        "INSERT INTO broadcast_queue_entries (
+           id, library_id, track_id, playlist_path, playlist_name, source_path,
+           title, artist, duration_seconds, position, status, error, inserted_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL, ?12, ?12)",
+        params![
+            entry.id,
+            entry.library_id,
+            entry.track_id,
+            entry.playlist_path,
+            entry.playlist_name,
+            entry.source_path,
+            entry.title,
+            entry.artist,
+            entry.duration_seconds,
+            entry.position,
+            entry.status,
+            entry.inserted_at,
+        ],
+    )
+    .map_err(|error| format!("No se pudo agregar la pista al broadcast: {error}"))?;
     tx.commit()
-        .map_err(|error| format!("No se pudo confirmar cola de broadcast: {error}"))?;
-    Ok(BroadcastQueueAppendResult {
-        appended_total,
-        skipped_missing_total,
-        queue: list_queue(conn)?,
-    })
+        .map_err(|error| format!("No se pudo confirmar la cola de broadcast: {error}"))?;
+    Ok(entry)
 }
 
 fn list_queue(conn: &Connection) -> Result<Vec<BroadcastQueueEntry>, String> {
@@ -2021,6 +3310,14 @@ fn init_db(conn: &Connection) -> Result<(), String> {
           microphone_enabled INTEGER NOT NULL DEFAULT 0,
           microphone_device TEXT NOT NULL DEFAULT 'default',
           microphone_gain_percent INTEGER NOT NULL DEFAULT 100,
+          line_input_enabled INTEGER NOT NULL DEFAULT 0,
+          line_input_device TEXT NOT NULL DEFAULT 'default',
+          line_input_channel INTEGER NOT NULL DEFAULT 1,
+          line_input_stereo INTEGER NOT NULL DEFAULT 1,
+          line_input_gain_percent INTEGER NOT NULL DEFAULT 100,
+          application_audio_enabled INTEGER NOT NULL DEFAULT 0,
+          application_audio_bundle_id TEXT NOT NULL DEFAULT '',
+          application_audio_gain_percent INTEGER NOT NULL DEFAULT 100,
           updated_at TEXT NOT NULL
         );
 
@@ -2051,6 +3348,30 @@ fn init_db(conn: &Connection) -> Result<(), String> {
     ensure_broadcast_profile_column(
         conn,
         "microphone_gain_percent",
+        "INTEGER NOT NULL DEFAULT 100",
+    )?;
+    ensure_broadcast_profile_column(conn, "line_input_enabled", "INTEGER NOT NULL DEFAULT 0")?;
+    ensure_broadcast_profile_column(conn, "line_input_device", "TEXT NOT NULL DEFAULT 'default'")?;
+    ensure_broadcast_profile_column(conn, "line_input_channel", "INTEGER NOT NULL DEFAULT 1")?;
+    ensure_broadcast_profile_column(conn, "line_input_stereo", "INTEGER NOT NULL DEFAULT 1")?;
+    ensure_broadcast_profile_column(
+        conn,
+        "line_input_gain_percent",
+        "INTEGER NOT NULL DEFAULT 100",
+    )?;
+    ensure_broadcast_profile_column(
+        conn,
+        "application_audio_enabled",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_broadcast_profile_column(
+        conn,
+        "application_audio_bundle_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_broadcast_profile_column(
+        conn,
+        "application_audio_gain_percent",
         "INTEGER NOT NULL DEFAULT 100",
     )?;
     Ok(())
@@ -2108,6 +3429,14 @@ mod tests {
             microphone_enabled: true,
             microphone_device: "default".to_string(),
             microphone_gain_percent: 100,
+            line_input_enabled: true,
+            line_input_device: "default".to_string(),
+            line_input_channel: 1,
+            line_input_stereo: true,
+            line_input_gain_percent: 100,
+            application_audio_enabled: true,
+            application_audio_bundle_id: application_audio::SYSTEM_AUDIO_TARGET_ID.to_string(),
+            application_audio_gain_percent: 100,
             password: Some("secret".to_string()),
             clear_password: false,
         }
@@ -2128,6 +3457,14 @@ mod tests {
             microphone_enabled: true,
             microphone_device: "default".to_string(),
             microphone_gain_percent: 100,
+            line_input_enabled: true,
+            line_input_device: "default".to_string(),
+            line_input_channel: 1,
+            line_input_stereo: true,
+            line_input_gain_percent: 100,
+            application_audio_enabled: true,
+            application_audio_bundle_id: application_audio::SYSTEM_AUDIO_TARGET_ID.to_string(),
+            application_audio_gain_percent: 100,
             password_configured: true,
             listener_url: "https://radio.example.com:8443/live.mp3".to_string(),
             updated_at: timestamp(),
@@ -2142,6 +3479,18 @@ mod tests {
         assert!(validate_profile(invalid).is_err());
         let mut invalid = profile_input();
         invalid.bitrate_kbps = 32;
+        assert!(validate_profile(invalid).is_err());
+        let mut invalid = profile_input();
+        invalid.line_input_channel = 0;
+        assert!(validate_profile(invalid).is_err());
+        let mut invalid = profile_input();
+        invalid.line_input_gain_percent = 201;
+        assert!(validate_profile(invalid).is_err());
+        let mut invalid = profile_input();
+        invalid.application_audio_bundle_id.clear();
+        assert!(validate_profile(invalid).is_err());
+        let mut invalid = profile_input();
+        invalid.application_audio_gain_percent = 201;
         assert!(validate_profile(invalid).is_err());
     }
 
@@ -2171,14 +3520,28 @@ mod tests {
     }
 
     #[test]
-    fn microphone_input_normalizes_mono_frames_to_stereo() {
+    fn audio_input_normalizes_mono_frames_to_stereo() {
         let mut target = VecDeque::new();
-        append_microphone_frames(&[-1.0_f32, 0.5, 1.0], 1, &mut target, |sample| {
+        append_audio_input_frames(&[-1.0_f32, 0.5, 1.0], 1, 0, false, &mut target, |sample| {
             (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16
         });
         assert_eq!(target.len(), 3);
         assert_eq!(target[0], [-i16::MAX, -i16::MAX]);
         assert_eq!(target[2], [i16::MAX, i16::MAX]);
+    }
+
+    #[test]
+    fn audio_input_selects_a_stereo_pair() {
+        let mut target = VecDeque::new();
+        append_audio_input_frames(
+            &[10_i16, 20, 30, 40, 11, 21, 31, 41],
+            4,
+            2,
+            true,
+            &mut target,
+            |sample| sample,
+        );
+        assert_eq!(target.into_iter().collect::<Vec<_>>(), [[30, 40], [31, 41]]);
     }
 
     #[test]
@@ -2222,5 +3585,69 @@ mod tests {
         assert_eq!(result.skipped_missing_total, 1);
         assert_eq!(result.queue[0].title, "One");
         assert_eq!(result.queue[0].position, 1);
+    }
+
+    #[test]
+    fn append_draft_snapshots_local_playlist_tracks_in_order() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE playlist_drafts (
+              id TEXT PRIMARY KEY, library_id TEXT NOT NULL, name TEXT NOT NULL
+            );
+            CREATE TABLE playlist_draft_tracks (
+              draft_id TEXT NOT NULL, track_id TEXT NOT NULL, position INTEGER NOT NULL
+            );
+            CREATE TABLE playlist_index_tracks (
+              library_id TEXT NOT NULL, track_id TEXT NOT NULL, source_path TEXT,
+              name TEXT, artist TEXT, total_time INTEGER, source_exists INTEGER NOT NULL,
+              PRIMARY KEY(library_id, track_id)
+            );
+            INSERT INTO playlist_drafts VALUES ('draft-1', 'lib', 'Selección local');
+            INSERT INTO playlist_index_tracks VALUES ('lib', '1', '/music/one.wav', 'One', 'Artist', 10, 1);
+            INSERT INTO playlist_index_tracks VALUES ('lib', '2', NULL, 'Missing', NULL, 20, 0);
+            INSERT INTO playlist_draft_tracks VALUES ('draft-1', '1', 0);
+            INSERT INTO playlist_draft_tracks VALUES ('draft-1', '2', 1);
+            ",
+        )
+        .unwrap();
+
+        let result = append_draft(&mut conn, "draft-1").unwrap();
+        assert_eq!(result.appended_total, 1);
+        assert_eq!(result.skipped_missing_total, 1);
+        assert_eq!(result.queue[0].playlist_name, "Selección local");
+        assert_eq!(result.queue[0].playlist_path, "__local_draft__:draft-1");
+        assert_eq!(result.queue[0].title, "One");
+    }
+
+    #[test]
+    fn append_track_adds_one_available_track_to_the_end_of_the_queue() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE playlist_index_tracks (
+              library_id TEXT NOT NULL, track_id TEXT NOT NULL, source_path TEXT,
+              name TEXT, artist TEXT, total_time INTEGER, source_exists INTEGER NOT NULL,
+              PRIMARY KEY(library_id, track_id)
+            );
+            INSERT INTO playlist_index_tracks VALUES
+              ('lib', '1', '/music/one.wav', 'One', 'Artist', 10, 1),
+              ('lib', '2', '/music/two.wav', 'Two', NULL, 20, 1),
+              ('lib', '3', NULL, 'Missing', NULL, 30, 0);
+            ",
+        )
+        .unwrap();
+
+        let first = append_track(&mut conn, "lib", "1").unwrap();
+        let second = append_track(&mut conn, "lib", "2").unwrap();
+
+        assert_eq!(first.playlist_path, MANUAL_QUEUE_PATH);
+        assert_eq!(first.playlist_name, MANUAL_QUEUE_NAME);
+        assert_eq!(first.position, 1);
+        assert_eq!(second.position, 2);
+        assert_eq!(list_queue(&conn).unwrap().len(), 2);
+        assert!(append_track(&mut conn, "lib", "3").is_err());
     }
 }

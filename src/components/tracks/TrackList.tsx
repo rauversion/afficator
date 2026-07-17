@@ -4,6 +4,7 @@ import { useI18n } from "../../i18n";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { TrackCover } from "./TrackCover";
+import { BroadcastAddButton } from "./BroadcastAddButton";
 import type { TrackListColumn, TrackListItem, TrackPlaybackContext } from "./types";
 
 const defaultColumns: TrackListColumn[] = ["artist", "album", "genre", "bpm", "key"];
@@ -41,7 +42,7 @@ export function TrackTable({
   showPosition?: boolean;
 }) {
   const { t } = useI18n();
-  const hasActions = Boolean(onOpenFolder || renderActions);
+  const hasActions = true;
   const template = trackGridTemplate(columns, Boolean(onToggleTrack), hasActions, showPosition);
   const trackPlaybackContext: TrackPlaybackContext = {
     id: playbackContext?.id ?? "track-table",
@@ -170,14 +171,19 @@ export function TrackListRow({
         </span>
       ))}
       {onOpenFolder || actions ? (
-        <div className="sticky right-0 z-10 flex h-full items-center justify-end border-l border-border bg-inherit px-2">
-          {actions ?? (
+        <div className="sticky right-0 z-10 flex h-full items-center justify-end gap-1 border-l border-border bg-inherit px-2">
+          <BroadcastAddButton track={track} />
+          {actions ?? (onOpenFolder ? (
             <Button variant="secondary" size="icon" disabled={!track.source_path} onClick={onOpenFolder}>
               <FolderOpen className="h-3.5 w-3.5" />
             </Button>
-          )}
+          ) : null)}
         </div>
-      ) : null}
+      ) : (
+        <div className="sticky right-0 z-10 flex h-full items-center justify-end border-l border-border bg-inherit px-2">
+          <BroadcastAddButton track={track} />
+        </div>
+      )}
     </div>
   );
 }
@@ -190,7 +196,7 @@ function trackGridTemplate(columns: TrackListColumn[], selectable: boolean, acti
     "44px",
     "minmax(220px,1.35fr)",
     ...columns.map((column) => trackColumnWidth(column)),
-    actions ? "48px" : null
+    actions ? "minmax(48px,max-content)" : null
   ]
     .filter(Boolean)
     .join(" ");

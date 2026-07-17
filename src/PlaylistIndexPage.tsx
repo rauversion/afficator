@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger
 } from "./components/ui/dropdown-menu";
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
+import { BroadcastAddButton } from "./components/tracks/BroadcastAddButton";
 import { TrackTable } from "./components/tracks/TrackList";
 import type { TrackListItem } from "./components/tracks/types";
 import { cn } from "./lib/utils";
@@ -1708,6 +1709,7 @@ function TrackRow({
         );
       })}
       <div className="sticky right-0 z-10 flex h-full items-center justify-end gap-1 border-l border-border bg-inherit px-2">
+        <BroadcastAddButton track={track} />
         <Button variant="secondary" size="icon" disabled={!track.source_path} title={t("Mostrar en Finder")} onClick={onReveal}>
           <ChevronRight className="h-3.5 w-3.5" />
         </Button>
@@ -2426,12 +2428,12 @@ function trackTableTemplate(columns: Array<{ key: TrackTableColumnKey; label: st
     "36px",
     "minmax(520px, 1fr)",
     ...columns.map((column) => `${column.width}px`),
-    "168px"
+    "204px"
   ].join(" ");
 }
 
 function trackTableWidth(columns: Array<{ key: TrackTableColumnKey; label: string; width: number }>) {
-  const baseWidth = 28 + 36 + 520 + 168;
+  const baseWidth = 28 + 36 + 520 + 204;
   const columnWidth = columns.reduce((total, column) => total + column.width, 0);
   const gapWidth = (columns.length + 3) * 8;
   return baseWidth + columnWidth + gapWidth;

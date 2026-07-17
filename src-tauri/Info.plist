@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Rau Studio usa el micrófono que selecciones para mezclar tu voz con la transmisión de radio.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Rau Studio captura el audio de la aplicación que selecciones para enviarlo a tu transmisión de radio.</string>
 </dict>
 </plist>

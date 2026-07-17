@@ -121,8 +121,8 @@ Release options:
 Example:
 
 ```sh
-git tag v0.1.16
-git push origin v0.1.16
+git tag v0.1.19
+git push origin v0.1.19
 ```
 
 Expected artifacts:

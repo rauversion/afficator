@@ -15,6 +15,7 @@ import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
 import { PlaylistAddDialog } from "./components/tracks/PlaylistAddDialog";
+import { BroadcastAddButton } from "./components/tracks/BroadcastAddButton";
 import { TrackCover } from "./components/tracks/TrackCover";
 import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
@@ -625,7 +626,7 @@ function BrowseTrackRow({
 
   return (
     <div className={cn(
-      "grid min-h-14 grid-cols-[24px_36px_44px_minmax(0,1.35fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_92px_40px] items-center gap-2 border-b border-border px-3 text-xs",
+      "grid min-h-14 grid-cols-[24px_36px_44px_minmax(0,1.35fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_92px_76px] items-center gap-2 border-b border-border px-3 text-xs",
       !track.source_exists && "bg-red-50 dark:bg-red-950/30"
     )}>
       <input type="checkbox" checked={selected} onChange={onToggle} />
@@ -649,9 +650,12 @@ function BrowseTrackRow({
       <span className="truncate" title={track.artist ?? ""}>{track.artist ?? ""}</span>
       <span className="truncate" title={track.album ?? ""}>{track.album ?? ""}</span>
       <span className="truncate text-muted-foreground">{track.total_time ? formatTime(track.total_time) : track.kind ?? ""}</span>
-      <Button variant="secondary" size="icon" disabled={!track.source_path} onClick={onOpenFolder}>
-        <FolderOpen className="h-3.5 w-3.5" />
-      </Button>
+      <div className="flex items-center justify-end gap-1">
+        <BroadcastAddButton track={track} />
+        <Button variant="secondary" size="icon" disabled={!track.source_path} onClick={onOpenFolder}>
+          <FolderOpen className="h-3.5 w-3.5" />
+        </Button>
+      </div>
     </div>
   );
 }

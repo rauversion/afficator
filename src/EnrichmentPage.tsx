@@ -16,6 +16,7 @@ import { Link } from "react-router-dom";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
+import { BroadcastAddButton } from "./components/tracks/BroadcastAddButton";
 import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
 import type { EnrichmentProviderDescriptor } from "./enrichmentProviders";
@@ -593,16 +594,17 @@ export function EnrichmentPage() {
             </CardHeader>
             <CardContent className="p-0">
               <div className="max-h-[520px] overflow-auto">
-                <div className="grid min-w-[780px] grid-cols-[36px_minmax(220px,1.4fr)_minmax(160px,1fr)_160px_220px] border-b border-border bg-secondary px-3 py-2 text-xs font-semibold text-muted-foreground">
+                <div className="grid min-w-[840px] grid-cols-[36px_minmax(220px,1.4fr)_minmax(160px,1fr)_160px_220px_44px] border-b border-border bg-secondary px-3 py-2 text-xs font-semibold text-muted-foreground">
                   <span />
                   <span>{t("Track")}</span>
                   <span>{t("Album")}</span>
                   <span>{t("Metadata")}</span>
                   <span>{t("Gaps")}</span>
+                  <span className="text-right">{t("Acciones")}</span>
                 </div>
                 {candidates.length === 0 ? <EmptyRow>{t("Sin candidatos.")}</EmptyRow> : null}
                 {candidates.map((track) => (
-                  <div key={track.track_id} className="grid min-h-12 min-w-[780px] grid-cols-[36px_minmax(220px,1.4fr)_minmax(160px,1fr)_160px_220px] items-center gap-2 border-b border-border px-3 py-2 text-xs">
+                  <div key={track.track_id} className="grid min-h-12 min-w-[840px] grid-cols-[36px_minmax(220px,1.4fr)_minmax(160px,1fr)_160px_220px_44px] items-center gap-2 border-b border-border px-3 py-2 text-xs">
                     <input
                       type="checkbox"
                       checked={selectedTrackIds.has(track.track_id)}
@@ -616,6 +618,7 @@ export function EnrichmentPage() {
                     <span className="truncate text-muted-foreground">{track.album ?? ""}</span>
                     <span className="truncate text-muted-foreground">{trackMetadata(track)}</span>
                     <span className="truncate text-amber-700 dark:text-amber-300">{trackGaps(track).join(" · ")}</span>
+                    <BroadcastAddButton track={track} />
                   </div>
                 ))}
               </div>

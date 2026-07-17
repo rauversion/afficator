@@ -21,6 +21,7 @@ use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
+mod application_audio;
 mod broadcast;
 mod enrichment;
 mod local_conversion;
@@ -1464,8 +1465,12 @@ pub fn run() {
             broadcast::broadcast_save_profile,
             broadcast::broadcast_preflight,
             broadcast::broadcast_microphone_devices,
+            broadcast::broadcast_application_audio_devices,
+            broadcast::broadcast_open_application_audio_settings,
             broadcast::broadcast_queue,
             broadcast::broadcast_append_playlist,
+            broadcast::broadcast_append_draft,
+            broadcast::broadcast_append_track,
             broadcast::broadcast_remove_queue_entry,
             broadcast::broadcast_clear_queue,
             broadcast::broadcast_status,
@@ -1473,6 +1478,8 @@ pub fn run() {
             broadcast::broadcast_stop,
             broadcast::broadcast_skip,
             broadcast::broadcast_set_microphone_live,
+            broadcast::broadcast_set_line_input_live,
+            broadcast::broadcast_set_application_audio_live,
             import_rekordbox_xml,
             plan_conversion,
             export_rekordbox_xml,

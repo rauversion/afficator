@@ -139,11 +139,12 @@ Mac directly. An outbound connection publishes to a reachable Icecast server,
 which owns the public listener URL and fan-out.
 
 ```text
-Indexed playlist -> SQLite queue -> per-track FFmpeg decoder --\
-                                                               +-> Rust PCM mixer
-Native microphone (CPAL/CoreAudio) -> bounded PCM buffer ------/
-                                                                   |
-                                                                   v
+Indexed playlist -> SQLite queue -> per-track FFmpeg decoder ----\
+Native line input (CPAL/CoreAudio) -> bounded PCM buffer ---------+-> primary source selector --\
+Mac/system audio (ScreenCaptureKit) -> bounded PCM buffer -------/                            +-> Rust PCM mixer
+Native microphone (CPAL/CoreAudio) -> bounded PCM buffer ------------------------------------/
+                                                                                                   |
+                                                                                                   v
 PCM pipe -> persistent FFmpeg/libmp3lame publisher -> Icecast -> listeners
 ```
 
@@ -159,10 +160,21 @@ PCM pipe -> persistent FFmpeg/libmp3lame publisher -> Icecast -> listeners
    so macOS associates capture permission with Rau Studio instead of the FFmpeg
    sidecar. Native samples are resampled into a bounded stereo PCM buffer and
    mixed into music or silence only while the operator marks it live.
-6. Track transitions update Icecast metadata through its admin endpoint.
-7. Stop, skip, and microphone-live commands travel over an in-process channel. Interrupted
+6. The optional direct line input is a second CoreAudio capture with explicit
+   mono-channel or stereo-pair routing. It replaces the playlist as the primary
+   source without ducking. The active track decoder is held while line is live,
+   so the queue does not advance, and resumes when the operator returns to the
+   Playlist source.
+7. The optional Mac-output source uses ScreenCaptureKit on macOS 13+ to capture
+   the complete system output by default, excluding Rau Studio itself to avoid
+   feedback. It can alternatively filter capture to one selected running
+   application. It is stereo, does not apply ducking or mix the microphone, and
+   holds the playlist decoder just as direct line does. The OS Screen & System
+   Audio Recording permission gates capture and application discovery.
+8. Track transitions update Icecast metadata through its admin endpoint.
+9. Stop, skip, microphone-live, and source-mode commands travel over an in-process channel. Interrupted
    `playing` rows return to `queued` when a new session starts.
-8. A lost publisher is terminated and recreated with bounded reconnect delays;
+10. A lost publisher is terminated and recreated with bounded reconnect delays;
    the current track returns to the queue instead of being marked as played.
 
 See [Radio Broadcast](radio-broadcast.md) for setup, operation, and network
