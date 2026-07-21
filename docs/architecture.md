@@ -148,7 +148,7 @@ Native microphone (CPAL/CoreAudio) -> bounded PCM buffer -----------------------
                                                                                                    v
                                                       /-> libmp3lame -> Icecast -> listeners
 PCM pipe -> persistent destination publisher --------+
-                                                      \-> AAC + paced branded video/libx264 -> RTMP service -> viewers
+                                                      \-> AAC + paced branded video + camera layer/libx264 -> RTMP service -> viewers
 ```
 
 1. The user saves one Broadcast profile with an `output_kind`. Icecast stores
@@ -166,26 +166,33 @@ PCM pipe -> persistent destination publisher --------+
    without `drawtext` retain the animated visual as a compatibility fallback.
    RTMP emits silence while the queue is empty so the destination remains
    connected.
-5. The optional microphone is opened by the Rust process through CPAL/CoreAudio,
+5. The optional macOS camera compositor keeps a half-resolution transparent,
+   paced BGRA program canvas connected to that same publisher through a named
+   pipe. Preview/Program fader commands change its alpha frame by frame.
+   AVFoundation remains warm while RTMP is active. Position, size, device,
+   mirror, and effect changes restart only camera capture and redraw that canvas;
+   the publisher connection remains intact. Frame activity is monitored so a
+   missing or repeated camera feed can be restarted independently.
+6. The optional microphone is opened by the Rust process through CPAL/CoreAudio,
    so macOS associates capture permission with Rau Studio instead of the FFmpeg
    sidecar. Native samples are resampled into a bounded stereo PCM buffer and
    mixed into music or silence only while the operator marks it live.
-6. The optional direct line input is a second CoreAudio capture with explicit
+7. The optional direct line input is a second CoreAudio capture with explicit
    mono-channel or stereo-pair routing. It replaces the playlist as the primary
    source without ducking. The active track decoder is held while line is live,
    so the queue does not advance, and resumes when the operator returns to the
    Playlist source.
-7. The optional Mac-output source uses ScreenCaptureKit on macOS 13+ to capture
+8. The optional Mac-output source uses ScreenCaptureKit on macOS 13+ to capture
    the complete system output by default, excluding Rau Studio itself to avoid
    feedback. It can alternatively filter capture to one selected running
    application. It is stereo, does not apply ducking or mix the microphone, and
    holds the playlist decoder just as direct line does. The OS Screen & System
    Audio Recording permission gates capture and application discovery.
-8. Track transitions update metadata through the Icecast admin endpoint only;
+9. Track transitions update metadata through the Icecast admin endpoint only;
    RTMP destinations keep the continuous audio/video signal without that call.
-9. Stop, skip, microphone-live, and source-mode commands travel over an in-process channel. Interrupted
+10. Stop, skip, microphone-live, source-mode, and camera-fader commands travel over an in-process channel. Interrupted
    `playing` rows return to `queued` when a new session starts.
-10. A lost publisher is terminated and recreated with bounded reconnect delays;
+11. A lost publisher is terminated and recreated with bounded reconnect delays;
     the current track returns to the queue instead of being marked as played.
     Logs redact the active Icecast password or RTMP stream key.
 

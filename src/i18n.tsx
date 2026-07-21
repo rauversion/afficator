@@ -81,6 +81,51 @@ const translations: Record<Locale, Record<string, string>> = {
       "Rau generates an animated TV test pattern at 30 fps, independently from audio.",
     "Rau genera una señal visual monocroma con identidad de la radio y la pista actual, actualizada sin cortar el Live.":
       "Rau generates a monochrome visual signal with the station identity and current track, updated without interrupting the Live.",
+    "Video Studio": "Video Studio",
+    "Video Studio · Preview / Program": "Video Studio · Preview / Program",
+    "Prepara la fuente y usa el fader para enviarla sin reiniciar RTMP.":
+      "Prepare the source and use the fader to send it without restarting RTMP.",
+    "Fuente de cámara": "Camera source",
+    "Usar cámara": "Use camera",
+    "Cámara": "Camera",
+    "Selecciona una cámara": "Select a camera",
+    "Refrescar cámaras": "Refresh cameras",
+    "Posición": "Position",
+    "Arriba izquierda": "Top left",
+    "Arriba derecha": "Top right",
+    "Centro": "Center",
+    "Abajo izquierda": "Bottom left",
+    "Abajo derecha": "Bottom right",
+    "Pequeña": "Small",
+    "Mediana": "Medium",
+    "Grande": "Large",
+    "Efecto": "Effect",
+    "Limpio": "Clean",
+    "Monocromo": "Monochrome",
+    "Contraste editorial": "Editorial contrast",
+    "Dream blur": "Dream blur",
+    "Espejar cámara": "Mirror camera",
+    "Opacidad máxima: {value}%": "Maximum opacity: {value}%",
+    "Duración AUTO: {value} ms": "AUTO duration: {value} ms",
+    "Guardar composición": "Save composition",
+    "Cámara en Program": "Camera in Program",
+    "AUTO · Enviar a Program": "AUTO · Send to Program",
+    "Volver a gráfica": "Return to graphic",
+    "Fader Preview a Program": "Preview to Program fader",
+    "El fader controla la señal que recibe Instagram.": "The fader controls the signal received by Instagram.",
+    "Esperando que el compositor quede listo...": "Waiting for the compositor to become ready...",
+    "El fader se habilita al iniciar el broadcast; la cámara comienza fuera de Program.":
+      "The fader is enabled when the broadcast starts; the camera begins outside Program.",
+    "Preparada · inicia apagada": "Prepared · starts off",
+    "Preparada · inicia fuera de Program": "Prepared · starts outside Program",
+    "Capturando · fuera de Program": "Capturing · outside Program",
+    "Vista previa no disponible": "Preview unavailable",
+    "Preparando cámara...": "Preparing camera...",
+    "Durante el Live puedes usar el fader; encuadre y efectos se fijan al iniciar para mantener estable RTMP.":
+      "During the Live you can use the fader; framing and effects are fixed at startup to keep RTMP stable.",
+    "Los cambios de cámara se aplican y guardan en vivo sin reiniciar RTMP.":
+      "Camera changes are applied and saved live without restarting RTMP.",
+    "WAITING FOR NEXT TRACK": "WAITING FOR NEXT TRACK",
     "Crea el Live en Instagram.com, copia su URL y clave, envía la señal desde Rau y confirma la vista previa en Live Producer. Para terminar, finaliza primero en Instagram.":
       "Create the Live on Instagram.com, copy its URL and key, send the signal from Rau, and confirm the preview in Live Producer. To stop, end it on Instagram first.",
     "Configura la URL RTMP": "Configure the RTMP URL",
@@ -193,8 +238,27 @@ const translations: Record<Locale, Record<string, string>> = {
       "FFmpeg does not include the FLV muxer required for RTMP.",
     "FFmpeg no incluye el filtro requerido para la carta de prueba RTMP.":
       "FFmpeg does not include the filter required for the RTMP test pattern.",
+    "FFmpeg no incluye entrada AVFoundation para capturar la cámara.":
+      "FFmpeg does not include the AVFoundation input required to capture the camera.",
+    "FFmpeg no incluye el filtro overlay requerido por el compositor de cámara.":
+      "FFmpeg does not include the overlay filter required by the camera compositor.",
     "Este FFmpeg no incluye drawtext; se enviará la gráfica sin información de la radio ni de la pista.":
       "This FFmpeg build does not include drawtext; the visual will be sent without station or track information.",
+    "Cámara desactivada.": "Camera disabled.",
+    "Cámara preparada en Preview; hardware apagado.": "Camera ready in Preview; hardware off.",
+    "Cámara capturando en Preview; fuera de Program.": "Camera capturing in Preview; outside Program.",
+    "No se pudo preparar la cámara; se reintentará al enviarla a Program.":
+      "The camera could not be prepared; it will retry when sent to Program.",
+    "Transición de Preview a Program en curso.": "Preview to Program transition in progress.",
+    "Transición de Program a la gráfica de Rau en curso.": "Program to Rau graphic transition in progress.",
+    "Cámara en Program.": "Camera in Program.",
+    "Cámara en Preview; hardware apagado.": "Camera in Preview; hardware off.",
+    "La cámara dejó de entregar cuadros; reiniciando captura sin cortar RTMP.":
+      "The camera stopped delivering frames; restarting capture without interrupting RTMP.",
+    "Ajustes de cámara aplicados; captura reiniciada sin cortar RTMP.":
+      "Camera settings applied; capture restarted without interrupting RTMP.",
+    "Ajustes de cámara aplicados en vivo.": "Camera settings applied live.",
+    "Cámara detenida.": "Camera stopped.",
     "FFmpeg no incluye el protocolo RTMPS requerido por este destino.":
       "FFmpeg does not include the RTMPS protocol required by this destination.",
     "FFmpeg no incluye el protocolo RTMP requerido por este destino.":

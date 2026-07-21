@@ -107,15 +107,23 @@ until cleared. The active row cannot be removed, but it can be skipped.
 4. Paste the stream key into **Clave de transmisión · solo esta sesión**. It is
    kept only in the current frontend session and cleared when the broadcast is
    stopped.
-5. Add tracks to the queue, configure any local inputs, confirm the FFmpeg
+5. Optional: open **Video Studio**, enable a camera, choose its device,
+   position, size, effect, mirror, opacity, and AUTO duration, then save the
+   composition. The camera stays out of Program when the broadcast starts.
+6. Add tracks to the queue, configure any local inputs, confirm the FFmpeg
    preflight is ready, and choose **Salir al aire**.
-6. Rau Studio sends a 720 × 1280, 30 fps H.264 video with AAC audio and an
+7. Rau Studio sends a 720 × 1280, 30 fps H.264 video with AAC audio and an
    independently paced monochrome broadcast graphic. It shows the configured
    station name, encoding information, and the current artist/title. Wait for
    the image to appear in Live Producer.
-7. Review the preview, title, and audience in Instagram, then click **Go live**
+8. Open **Video Studio** while the signal is running. **PREVIEW** shows the
+   prepared camera; **PROGRAM** represents the composition being sent. Use the
+   fader for an immediate manual mix, or **AUTO** for the saved timed dissolve.
+   Returning the fader to zero makes the camera layer transparent while the
+   branded RTMP video and warmed camera capture continue uninterrupted.
+9. Review the preview, title, and audience in Instagram, then click **Go live**
    there. Starting the signal in Rau Studio does not publish the Live by itself.
-8. To finish, end the Live in Instagram first and then stop Broadcast in Rau
+10. To finish, end the Live in Instagram first and then stop Broadcast in Rau
    Studio. This avoids leaving Instagram waiting on an abruptly closed signal.
 
 Instagram controls account eligibility, feature availability, preview timing,
@@ -138,6 +146,16 @@ service's bitrate, resolution, and keyframe requirements before going live.
   text file. FFmpeg reloads it while the publisher remains open, so track
   transitions, direct line input, Mac audio, and the idle state update on screen
   without interrupting the Live.
+- When the camera compositor is enabled, the persistent publisher receives a
+  paced BGRA camera layer through a local named pipe. At zero mix the layer is
+  transparent, while the selected AVFoundation camera remains warm for a clean
+  take. Moving the fader changes the layer alpha frame by frame without
+  replacing the publisher. Rau detects missing or repeated frames and restarts
+  only camera capture when it freezes.
+- Camera position, size, mirror, effect, maximum opacity, and AUTO duration are
+  persisted with the Broadcast profile and can be changed while live. Layout,
+  device, mirror, and effect changes rebuild only the transparent camera layer;
+  opacity and Preview/Program mix update directly.
 - The destination receives one continuous connection across track transitions.
   When the queue runs out, Rau Studio transmits silence rather than closing the
   connection. New playlists can be appended while it is live.
@@ -224,6 +242,13 @@ Confirm that the server URL starts with `rtmps://`, paste the current Live's
 stream key again, and check the Rau terminal for reconnect messages. A key from
 an older Live may no longer be valid. Rau Studio only sends the signal; the
 operator must still click **Go live** in Live Producer after the preview loads.
+
+**The camera preview is unavailable**
+
+Allow Camera access for Rau Studio in macOS Privacy & Security, close the app
+completely, and reopen it. Confirm that the camera is not already locked by
+another application. The local PREVIEW releases its browser capture before
+FFmpeg takes the camera into PROGRAM.
 
 **The station reconnects repeatedly**
 
