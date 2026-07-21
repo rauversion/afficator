@@ -57,9 +57,90 @@ const translations: Record<Locale, Record<string, string>> = {
     "Studio": "Studio",
     "Broadcast": "Broadcast",
     "Radio desde casa": "Radio from home",
+    "Broadcast desde casa": "Broadcast from home",
     "Rau Studio reproduce tu cola local y mantiene un stream MP3 persistente hacia Icecast.":
       "Rau Studio plays your local queue and keeps a persistent MP3 stream connected to Icecast.",
+    "Transmite tu cola y entradas locales por Icecast o como video RTMP para Instagram Live.":
+      "Stream your queue and local inputs through Icecast or as RTMP video for Instagram Live.",
+    "Rau Studio mezcla tu cola y entradas locales para transmitir por Icecast o RTMP.":
+      "Rau Studio mixes your queue and local inputs for Icecast or RTMP streaming.",
     "Destino Icecast": "Icecast destination",
+    "Destino de salida": "Output destination",
+    "Tipo de destino": "Destination type",
+    "Video en vivo": "Live video",
+    "Plataforma": "Platform",
+    "RTMP personalizado": "Custom RTMP",
+    "URL del servidor RTMP": "RTMP server URL",
+    "Clave de transmisión · solo esta sesión": "Stream key · this session only",
+    "Pégala antes de enviar la señal": "Paste it before sending the signal",
+    "Bitrate de video": "Video bitrate",
+    "Bitrate AAC": "AAC bitrate",
+    "Rau genera una escena vertical con un visualizador de audio en tiempo real.":
+      "Rau generates a vertical scene with a real-time audio visualizer.",
+    "Rau genera una carta de televisión animada a 30 fps, separada del audio.":
+      "Rau generates an animated TV test pattern at 30 fps, independently from audio.",
+    "Rau genera una señal visual monocroma con identidad de la radio y la pista actual, actualizada sin cortar el Live.":
+      "Rau generates a monochrome visual signal with the station identity and current track, updated without interrupting the Live.",
+    "Video Studio": "Video Studio",
+    "Video Studio · Preview / Program": "Video Studio · Preview / Program",
+    "Prepara la fuente y usa el fader para enviarla sin reiniciar RTMP.":
+      "Prepare the source and use the fader to send it without restarting RTMP.",
+    "Fuente de cámara": "Camera source",
+    "Usar cámara": "Use camera",
+    "Cámara": "Camera",
+    "Selecciona una cámara": "Select a camera",
+    "Refrescar cámaras": "Refresh cameras",
+    "Composición": "Composition",
+    "Tarjeta": "Card",
+    "Ancho completo": "Full width",
+    "Posición": "Position",
+    "Arriba izquierda": "Top left",
+    "Arriba derecha": "Top right",
+    "Centro": "Center",
+    "Abajo izquierda": "Bottom left",
+    "Abajo derecha": "Bottom right",
+    "Pequeña": "Small",
+    "Mediana": "Medium",
+    "Grande": "Large",
+    "Efecto": "Effect",
+    "Limpio": "Clean",
+    "Monocromo": "Monochrome",
+    "Contraste editorial": "Editorial contrast",
+    "Dream blur": "Dream blur",
+    "Orientación": "Orientation",
+    "Normal · 0°": "Normal · 0°",
+    "Girar 90°": "Rotate 90°",
+    "Girar 180°": "Rotate 180°",
+    "Girar 270°": "Rotate 270°",
+    "Espejar cámara": "Mirror camera",
+    "Encuadre": "Framing",
+    "Ajustar · mostrar imagen completa": "Fit · show full image",
+    "Rellenar · recortar bordes": "Fill · crop edges",
+    "Opacidad máxima: {value}%": "Maximum opacity: {value}%",
+    "Duración AUTO: {value} ms": "AUTO duration: {value} ms",
+    "Guardar composición": "Save composition",
+    "Cámara en Program": "Camera in Program",
+    "AUTO · Enviar a Program": "AUTO · Send to Program",
+    "Volver a gráfica": "Return to graphic",
+    "Fader Preview a Program": "Preview to Program fader",
+    "El fader controla la señal que recibe Instagram.": "The fader controls the signal received by Instagram.",
+    "Esperando que el compositor quede listo...": "Waiting for the compositor to become ready...",
+    "El fader se habilita al iniciar el broadcast; la cámara comienza fuera de Program.":
+      "The fader is enabled when the broadcast starts; the camera begins outside Program.",
+    "Preparada · inicia apagada": "Prepared · starts off",
+    "Preparada · inicia fuera de Program": "Prepared · starts outside Program",
+    "Capturando · fuera de Program": "Capturing · outside Program",
+    "Vista previa no disponible": "Preview unavailable",
+    "Preparando cámara...": "Preparing camera...",
+    "Durante el Live puedes usar el fader; encuadre y efectos se fijan al iniciar para mantener estable RTMP.":
+      "During the Live you can use the fader; framing and effects are fixed at startup to keep RTMP stable.",
+    "Los cambios de cámara se aplican y guardan en vivo sin reiniciar RTMP.":
+      "Camera changes are applied and saved live without restarting RTMP.",
+    "WAITING FOR NEXT TRACK": "WAITING FOR NEXT TRACK",
+    "Crea el Live en Instagram.com, copia su URL y clave, envía la señal desde Rau y confirma la vista previa en Live Producer. Para terminar, finaliza primero en Instagram.":
+      "Create the Live on Instagram.com, copy its URL and key, send the signal from Rau, and confirm the preview in Live Producer. To stop, end it on Instagram first.",
+    "Configura la URL RTMP": "Configure the RTMP URL",
+    "Guarda los cambios del destino antes de iniciar.": "Save destination changes before starting.",
     "Fuentes de audio": "Audio sources",
     "Micrófono": "Microphone",
     "Línea": "Line",
@@ -81,6 +162,7 @@ const translations: Record<Locale, Record<string, string>> = {
     "Eliminar contraseña guardada": "Delete saved password",
     "Guardar perfil": "Save profile",
     "Perfil Icecast guardado.": "Icecast profile saved.",
+    "Perfil de broadcast guardado.": "Broadcast profile saved.",
     "Agregar al broadcast": "Add to broadcast",
     "Agregando al broadcast...": "Adding to broadcast...",
     "Pista agregada al broadcast": "Track added to broadcast",
@@ -93,6 +175,8 @@ const translations: Record<Locale, Record<string, string>> = {
     "Ahora al aire": "Now on air",
     "Configura Icecast, agrega una playlist y sal al aire.":
       "Configure Icecast, add a playlist, and go live.",
+    "Configura un destino, agrega una playlist y sal al aire.":
+      "Configure a destination, add a playlist, and go live.",
     "La conexión sigue viva transmitiendo silencio hasta que haya una pista.":
       "The connection stays live by streaming silence until a track is available.",
     "Cola de broadcast": "Broadcast queue",
@@ -106,6 +190,18 @@ const translations: Record<Locale, Record<string, string>> = {
     "Local": "Local",
     "tracks": "tracks",
     "La cola está vacía.": "The queue is empty.",
+    "Ordenar pistas": "Sort tracks",
+    "Ordenar...": "Sort...",
+    "Ordenar próximas...": "Sort upcoming...",
+    "Título A–Z": "Title A–Z",
+    "Artista A–Z": "Artist A–Z",
+    "Duración menor primero": "Shortest first",
+    "Arrastrar para reordenar": "Drag to reorder",
+    "Mover hacia arriba": "Move up",
+    "Mover hacia abajo": "Move down",
+    "Reproducir ahora": "Play now",
+    "Pista al aire": "Track on air",
+    "Cambiando a {track}...": "Switching to {track}...",
     "Quitar de la cola": "Remove from queue",
     "Actividad reciente": "Recent activity",
     "Sin eventos todavía.": "No events yet.",
@@ -123,6 +219,25 @@ const translations: Record<Locale, Record<string, string>> = {
     "La radio no esta transmitiendo.": "The radio is not broadcasting.",
     "El broadcast ya esta iniciado o deteniendose.": "The broadcast is already running or stopping.",
     "Iniciando transmisión a Icecast.": "Starting Icecast broadcast.",
+    "Enviando señal RTMP. Revisa la vista previa antes de salir al aire.":
+      "Sending the RTMP signal. Check the preview before going live.",
+    "Pega una clave de transmisión RTMP válida para esta sesión.":
+      "Paste a valid RTMP stream key for this session.",
+    "En Clave de transmisión pega solo la clave, no la URL RTMP completa.":
+      "Paste only the stream key in Stream key, not the full RTMP URL.",
+    "Instagram rechazó la publicación antes de recibir la señal. Crea un Live nuevo y pega por separado la URL del servidor y la clave de esa misma sesión.":
+      "Instagram rejected the publish request before receiving the signal. Create a new Live and paste the server URL and stream key from that same session into their separate fields.",
+    "El servidor RTMP rechazó la publicación antes de recibir la señal. Revisa la URL y la clave de transmisión.":
+      "The RTMP server rejected the publish request before receiving the signal. Check the server URL and stream key.",
+    "Instagram aceptó la publicación, pero cerró antes de recibir dos segundos continuos de audio y video. Prueba otro motor FFmpeg o crea un Live nuevo.":
+      "Instagram accepted the publish request but closed before receiving two continuous seconds of audio and video. Try another FFmpeg engine or create a new Live.",
+    "El servidor RTMP aceptó la publicación, pero cerró antes de recibir un flujo multimedia continuo.":
+      "The RTMP server accepted the publish request but closed before receiving a continuous media stream.",
+    "Señal enviada a Instagram · revisa la vista previa y pulsa Go live en Live Producer.":
+      "Signal sent to Instagram · check the preview and click Go live in Live Producer.",
+    "Señal RTMP conectada · esperando audio.": "RTMP signal connected · waiting for audio.",
+    "Instagram aceptó la publicación · verificando flujo continuo...":
+      "Instagram accepted the publish request · verifying continuous media flow...",
     "Se agregaron {count} pistas al broadcast. {skipped} omitidas.":
       "Added {count} tracks to the broadcast. {skipped} skipped.",
     "Se quitaron {count} entradas de la cola.": "Removed {count} queue entries.",
@@ -134,6 +249,43 @@ const translations: Record<Locale, Record<string, string>> = {
       "FFmpeg does not include the Icecast output protocol.",
     "FFmpeg no incluye TLS, pero el perfil Icecast exige conexión segura.":
       "FFmpeg does not include TLS, but the Icecast profile requires a secure connection.",
+    "FFmpeg está listo para transmitir video H.264 y audio AAC por RTMP.":
+      "FFmpeg is ready to stream H.264 video and AAC audio over RTMP.",
+    "FFmpeg está listo para RTMP, pero no incluye drawtext; el video saldrá sin información de la radio ni de la pista.":
+      "FFmpeg is ready for RTMP but does not include drawtext; the video will not show station or track information.",
+    "FFmpeg no incluye el encoder libx264 requerido para RTMP.":
+      "FFmpeg does not include the libx264 encoder required for RTMP.",
+    "FFmpeg no incluye el encoder AAC requerido para RTMP.":
+      "FFmpeg does not include the AAC encoder required for RTMP.",
+    "FFmpeg no incluye el muxer FLV requerido para RTMP.":
+      "FFmpeg does not include the FLV muxer required for RTMP.",
+    "FFmpeg no incluye el filtro requerido para la carta de prueba RTMP.":
+      "FFmpeg does not include the filter required for the RTMP test pattern.",
+    "FFmpeg no incluye entrada AVFoundation para capturar la cámara.":
+      "FFmpeg does not include the AVFoundation input required to capture the camera.",
+    "FFmpeg no incluye el filtro overlay requerido por el compositor de cámara.":
+      "FFmpeg does not include the overlay filter required by the camera compositor.",
+    "Este FFmpeg no incluye drawtext; se enviará la gráfica sin información de la radio ni de la pista.":
+      "This FFmpeg build does not include drawtext; the visual will be sent without station or track information.",
+    "Cámara desactivada.": "Camera disabled.",
+    "Cámara preparada en Preview; hardware apagado.": "Camera ready in Preview; hardware off.",
+    "Cámara capturando en Preview; fuera de Program.": "Camera capturing in Preview; outside Program.",
+    "No se pudo preparar la cámara; se reintentará al enviarla a Program.":
+      "The camera could not be prepared; it will retry when sent to Program.",
+    "Transición de Preview a Program en curso.": "Preview to Program transition in progress.",
+    "Transición de Program a la gráfica de Rau en curso.": "Program to Rau graphic transition in progress.",
+    "Cámara en Program.": "Camera in Program.",
+    "Cámara en Preview; hardware apagado.": "Camera in Preview; hardware off.",
+    "La cámara dejó de entregar cuadros; reiniciando captura sin cortar RTMP.":
+      "The camera stopped delivering frames; restarting capture without interrupting RTMP.",
+    "Ajustes de cámara aplicados; captura reiniciada sin cortar RTMP.":
+      "Camera settings applied; capture restarted without interrupting RTMP.",
+    "Ajustes de cámara aplicados en vivo.": "Camera settings applied live.",
+    "Cámara detenida.": "Camera stopped.",
+    "FFmpeg no incluye el protocolo RTMPS requerido por este destino.":
+      "FFmpeg does not include the RTMPS protocol required by this destination.",
+    "FFmpeg no incluye el protocolo RTMP requerido por este destino.":
+      "FFmpeg does not include the RTMP protocol required by this destination.",
     "Entrada de micrófono": "Microphone input",
     "Entrada predeterminada del sistema": "Default system input",
     "Preparar micrófono al iniciar": "Prepare microphone on start",
@@ -171,6 +323,9 @@ const translations: Record<Locale, Record<string, string>> = {
     "Ganancia de línea: {gain}%": "Line gain: {gain}%",
     "La línea reemplaza temporalmente la playlist y pasa directo a Icecast, sin ducking.":
       "The line input temporarily replaces the playlist and goes directly to Icecast without ducking.",
+    "La línea reemplaza temporalmente la playlist y pasa directo al destino, sin ducking.":
+      "The line input temporarily replaces the playlist and goes directly to the destination without ducking.",
+    "ffmpeg / destinos / entradas de audio": "ffmpeg / destinations / audio inputs",
     "Activa esta opción para preparar una interfaz o entrada de línea.":
       "Enable this option to prepare an audio interface or line input.",
     "Línea directa al aire": "Direct line live",
@@ -1122,6 +1277,9 @@ export function translateBackendMessage(locale: Locale, message: string) {
 
   const replacements: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
     [/^Conectando con (.+)\.\.\.$/, (match) => `Connecting to ${match[1]}...`],
+    [/^Conectando la señal con (.+)\.\.\.$/, (match) => `Connecting the signal to ${match[1]}...`],
+    [/^FFmpeg inició la salida; esperando confirmación de (.+)\.\.\.$/, (match) => `FFmpeg started the output; waiting for ${match[1]} to confirm...`],
+    [/^Preparando señal: (.+)$/, (match) => `Preparing signal: ${match[1]}`],
     [/^En vivo: (.+)$/, (match) => `Live: ${match[1]}`],
     [/^Línea directa · señal (\d+)%\.$/, (match) => `Direct line · signal ${match[1]}%.`],
     [/^Audio de (.+) al aire\.$/, (match) => `Audio from ${match[1]} live.`],
@@ -1135,6 +1293,8 @@ export function translateBackendMessage(locale: Locale, message: string) {
     [/^Saltada: (.+)$/, (match) => `Skipped: ${match[1]}`],
     [/^Reproducida: (.+)$/, (match) => `Played: ${match[1]}`],
     [/^Icecast desconectado\. Reintentando en (\d+)s: (.+)$/, (match) => `Icecast disconnected. Retrying in ${match[1]}s: ${match[2]}`],
+    [/^Destino desconectado\. Reintentando en (\d+)s: (.+)$/, (match) => `Destination disconnected. Retrying in ${match[1]}s: ${match[2]}`],
+    [/^Se perdió la conexión con (.+): (.+)$/, (match) => `Lost connection to ${match[1]}: ${match[2]}`],
     [/^Icecast rechazo metadata con HTTP (.+)\.$/, (match) => `Icecast rejected metadata with HTTP ${match[1]}.`],
     [/^No se pudo actualizar metadata Icecast: (.+)$/, (match) => `Could not update Icecast metadata: ${match[1]}`],
     [/^Conversion local iniciada: (\d+) archivo\(s\), concurrencia maxima (\d+)$/, (match) => `Local conversion started: ${match[1]} file(s), max concurrency ${match[2]}`],

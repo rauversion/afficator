@@ -66,7 +66,7 @@ const homeModules = [
   },
   {
     title: "Broadcast",
-    description: "Rau Studio reproduce tu cola local y mantiene un stream MP3 persistente hacia Icecast.",
+    description: "Transmite tu cola y entradas locales por Icecast o como video RTMP para Instagram Live.",
     to: "/broadcast",
     icon: Radio,
     accent: "from-pink-500/22 via-rose-500/10 to-transparent",

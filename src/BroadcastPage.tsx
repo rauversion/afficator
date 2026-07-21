@@ -2,9 +2,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   AudioLines,
+  Camera,
   Check,
   ChevronsUpDown,
+  GripVertical,
   Library,
   LoaderCircle,
   Mic,
@@ -14,6 +18,7 @@ import {
   Radio,
   RefreshCcw,
   Save,
+  SlidersHorizontal,
   SkipForward,
   Square,
   Trash2,
@@ -39,6 +44,7 @@ const SYSTEM_AUDIO_TARGET_ID = "__system_audio__";
 
 type BroadcastProfile = {
   id: string;
+  output_kind: "icecast" | "rtmp" | string;
   host: string;
   port: number;
   mount: string;
@@ -59,9 +65,28 @@ type BroadcastProfile = {
   application_audio_enabled: boolean;
   application_audio_bundle_id: string;
   application_audio_gain_percent: number;
+  rtmp_platform: "instagram" | "custom" | string;
+  rtmp_server_url: string;
+  rtmp_video_bitrate_kbps: number;
+  rtmp_audio_bitrate_kbps: number;
+  video_compositor: BroadcastVideoCompositor;
   password_configured: boolean;
   listener_url: string;
   updated_at: string;
+};
+
+type BroadcastVideoCompositor = {
+  enabled: boolean;
+  cameraDevice: string;
+  cameraPosition: "top_left" | "top_right" | "center" | "bottom_left" | "bottom_right" | string;
+  cameraSize: "small" | "medium" | "large" | string;
+  cameraEffect: "clean" | "mono" | "contrast" | "dream" | string;
+  cameraMirror: boolean;
+  cameraRotationDegrees: 0 | 90 | 180 | 270 | number;
+  cameraFraming: "contain" | "cover" | string;
+  cameraLayout: "card" | "wide" | "background" | string;
+  cameraOpacityPercent: number;
+  transitionMillis: number;
 };
 
 type BroadcastPreflight = {
@@ -69,6 +94,15 @@ type BroadcastPreflight = {
   mp3_encoder_available: boolean;
   icecast_protocol_available: boolean;
   tls_protocol_available: boolean;
+  h264_encoder_available: boolean;
+  aac_encoder_available: boolean;
+  rtmp_protocol_available: boolean;
+  rtmps_protocol_available: boolean;
+  flv_muxer_available: boolean;
+  visualizer_filter_available: boolean;
+  overlay_filter_available: boolean;
+  camera_input_available: boolean;
+  camera_filter_available: boolean;
   microphone_input_available: boolean;
   ready: boolean;
   message: string;
@@ -85,6 +119,11 @@ type BroadcastApplicationAudioDevice = {
   id: string;
   label: string;
   process_id: number;
+};
+
+type BroadcastCameraDevice = {
+  id: string;
+  label: string;
 };
 
 type BroadcastMicrophoneStatus = {
@@ -149,6 +188,16 @@ type BroadcastStatus = {
   microphone: BroadcastMicrophoneStatus;
   line_input: BroadcastLineInputStatus;
   application_audio: BroadcastApplicationAudioStatus;
+  camera: {
+    configured: boolean;
+    ready: boolean;
+    live: boolean;
+    mix_percent: number;
+    device?: string | null;
+    label?: string | null;
+    transition_millis: number;
+    message: string;
+  };
   updated_at: string;
 };
 
@@ -201,6 +250,22 @@ type QueueAppendResult = {
 
 type BusyAction = "loading" | "saving" | "starting" | "stopping" | "skipping" | "appending" | "clearing" | string | null;
 type BroadcastSourceTab = "microphone" | "line_input" | "system_audio";
+type BroadcastOutputKind = "icecast" | "rtmp";
+type RtmpPlatform = "instagram" | "custom";
+
+const defaultVideoCompositor: BroadcastVideoCompositor = {
+  enabled: false,
+  cameraDevice: "",
+  cameraPosition: "top_right",
+  cameraSize: "medium",
+  cameraEffect: "mono",
+  cameraMirror: true,
+  cameraRotationDegrees: 180,
+  cameraFraming: "contain",
+  cameraLayout: "wide",
+  cameraOpacityPercent: 100,
+  transitionMillis: 800
+};
 
 const fieldClass =
   "h-10 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-foreground/35 focus:ring-2 focus:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-60";
@@ -250,6 +315,7 @@ export function BroadcastPage() {
   const [playlistSources, setPlaylistSources] = useState<BroadcastPlaylistSource[]>([]);
   const [microphoneDevices, setMicrophoneDevices] = useState<BroadcastMicrophoneDevice[]>([]);
   const [applicationAudioDevices, setApplicationAudioDevices] = useState<BroadcastApplicationAudioDevice[]>([]);
+  const [cameraDevices, setCameraDevices] = useState<BroadcastCameraDevice[]>([]);
   const [playlistSourceKey, setPlaylistSourceKey] = useState("");
   const [playlistComboboxOpen, setPlaylistComboboxOpen] = useState(false);
   const [terminalLogs, setTerminalLogs] = useState<TerminalLogEntry[]>([]);
@@ -257,7 +323,9 @@ export function BroadcastPage() {
   const [busy, setBusy] = useState<BusyAction>("loading");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [draggedQueueEntryId, setDraggedQueueEntryId] = useState<string | null>(null);
 
+  const [outputKind, setOutputKind] = useState<BroadcastOutputKind>("icecast");
   const [host, setHost] = useState("");
   const [port, setPort] = useState("8000");
   const [mount, setMount] = useState("/live.mp3");
@@ -269,6 +337,11 @@ export function BroadcastPage() {
   const [isPublic, setIsPublic] = useState(false);
   const [password, setPassword] = useState("");
   const [clearPassword, setClearPassword] = useState(false);
+  const [rtmpPlatform, setRtmpPlatform] = useState<RtmpPlatform>("instagram");
+  const [rtmpServerUrl, setRtmpServerUrl] = useState("");
+  const [rtmpVideoBitrate, setRtmpVideoBitrate] = useState("3500");
+  const [rtmpAudioBitrate, setRtmpAudioBitrate] = useState("128");
+  const [streamKey, setStreamKey] = useState("");
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [microphoneDevice, setMicrophoneDevice] = useState("default");
   const [microphoneGain, setMicrophoneGain] = useState("100");
@@ -280,12 +353,25 @@ export function BroadcastPage() {
   const [applicationAudioEnabled, setApplicationAudioEnabled] = useState(false);
   const [applicationAudioBundleId, setApplicationAudioBundleId] = useState("");
   const [applicationAudioGain, setApplicationAudioGain] = useState("100");
+  const [videoCompositor, setVideoCompositor] = useState<BroadcastVideoCompositor>(defaultVideoCompositor);
+  const [videoStudioOpen, setVideoStudioOpen] = useState(false);
+  const [cameraMix, setCameraMix] = useState(0);
   const [sourceTab, setSourceTab] = useState<BroadcastSourceTab>("microphone");
   const terminalElement = useRef<HTMLDivElement | null>(null);
   const nextTerminalLogId = useRef(1);
 
   const running = status ? ["connecting", "live", "reconnecting", "stopping"].includes(status.status) : false;
-  const queuedTotal = queue.filter((entry) => entry.status === "queued").length;
+  const destinationNeedsSave = !profile
+    || outputKind !== (profile.output_kind === "rtmp" ? "rtmp" : "icecast")
+    || (outputKind === "rtmp" && (
+      rtmpPlatform !== (profile.rtmp_platform === "custom" ? "custom" : "instagram")
+      || rtmpServerUrl.trim() !== profile.rtmp_server_url
+      || Number(rtmpVideoBitrate) !== profile.rtmp_video_bitrate_kbps
+      || Number(rtmpAudioBitrate) !== profile.rtmp_audio_bitrate_kbps
+      || JSON.stringify(videoCompositor) !== JSON.stringify(profile.video_compositor)
+    ));
+  const queuedEntries = queue.filter((entry) => entry.status === "queued");
+  const queuedTotal = queuedEntries.length;
   const completedTotal = queue.filter((entry) => entry.status === "played").length;
   const failedTotal = queue.filter((entry) => entry.status === "failed").length;
   const applicationAudioDetail = translateBackendMessage(
@@ -304,6 +390,7 @@ export function BroadcastPage() {
 
   const hydrateProfile = useCallback((next: BroadcastProfile) => {
     setProfile(next);
+    setOutputKind(next.output_kind === "rtmp" ? "rtmp" : "icecast");
     setHost(next.host);
     setPort(String(next.port));
     setMount(next.mount);
@@ -324,6 +411,11 @@ export function BroadcastPage() {
     setApplicationAudioEnabled(next.application_audio_enabled);
     setApplicationAudioBundleId(next.application_audio_bundle_id || SYSTEM_AUDIO_TARGET_ID);
     setApplicationAudioGain(String(next.application_audio_gain_percent));
+    setRtmpPlatform(next.rtmp_platform === "custom" ? "custom" : "instagram");
+    setRtmpServerUrl(next.rtmp_server_url);
+    setRtmpVideoBitrate(String(next.rtmp_video_bitrate_kbps));
+    setRtmpAudioBitrate(String(next.rtmp_audio_bitrate_kbps));
+    setVideoCompositor(next.video_compositor ?? defaultVideoCompositor);
     setSourceTab(next.application_audio_enabled ? "system_audio" : next.line_input_enabled ? "line_input" : "microphone");
     setPassword("");
     setClearPassword(false);
@@ -336,6 +428,7 @@ export function BroadcastPage() {
       invoke<BroadcastPreflight>("broadcast_preflight")
     ]);
     setStatus(nextStatus);
+    setCameraMix(nextStatus.camera?.mix_percent ?? 0);
     setQueue(nextQueue);
     setPreflight(nextPreflight);
   }, []);
@@ -355,9 +448,10 @@ export function BroadcastPage() {
       invoke<BroadcastQueueEntry[]>("broadcast_queue"),
       invoke<BroadcastPreflight>("broadcast_preflight"),
       loadBroadcastPlaylistSources(),
-      invoke<BroadcastMicrophoneDevice[]>("broadcast_microphone_devices")
+      invoke<BroadcastMicrophoneDevice[]>("broadcast_microphone_devices"),
+      invoke<BroadcastCameraDevice[]>("broadcast_camera_devices").catch(() => [])
     ])
-      .then(([nextProfile, nextStatus, nextQueue, nextPreflight, nextPlaylistSources, nextMicrophones]) => {
+      .then(([nextProfile, nextStatus, nextQueue, nextPreflight, nextPlaylistSources, nextMicrophones, nextCameras]) => {
         if (disposed) return;
         hydrateProfile(nextProfile);
         setStatus(nextStatus);
@@ -365,6 +459,8 @@ export function BroadcastPage() {
         setPreflight(nextPreflight);
         setPlaylistSources(nextPlaylistSources);
         setMicrophoneDevices(nextMicrophones);
+        setCameraDevices(nextCameras);
+        setCameraMix(nextStatus.camera?.mix_percent ?? 0);
         if (!nextMicrophones.some((device) => device.id === nextProfile.microphone_device)) {
           setMicrophoneDevice(nextMicrophones[0]?.id ?? "default");
         }
@@ -377,6 +473,7 @@ export function BroadcastPage() {
 
     void listen<BroadcastProgressEvent>("broadcast-progress", ({ payload }) => {
       setStatus(payload.status);
+      setCameraMix(payload.status.camera?.mix_percent ?? 0);
       if (!payload.event.endsWith("_level")) {
         const level: TerminalLogEntry["level"] = payload.level === "error"
           ? "error"
@@ -406,7 +503,10 @@ export function BroadcastPage() {
 
     const timer = window.setInterval(() => {
       void Promise.all([
-        invoke<BroadcastStatus>("broadcast_status").then(setStatus),
+        invoke<BroadcastStatus>("broadcast_status").then((nextStatus) => {
+          setStatus(nextStatus);
+          setCameraMix(nextStatus.camera?.mix_percent ?? 0);
+        }),
         invoke<BroadcastQueueEntry[]>("broadcast_queue").then(setQueue)
       ]).catch(() => undefined);
     }, 2500);
@@ -448,12 +548,17 @@ export function BroadcastPage() {
 
   async function saveProfile(event: FormEvent) {
     event.preventDefault();
+    await persistProfile();
+  }
+
+  async function persistProfile(): Promise<boolean> {
     setBusy("saving");
     setError(null);
     setNotice(null);
     try {
       const saved = await invoke<BroadcastProfile>("broadcast_save_profile", {
         profile: {
+          outputKind,
           host,
           port: Number(port),
           mount,
@@ -474,6 +579,11 @@ export function BroadcastPage() {
           applicationAudioEnabled,
           applicationAudioBundleId,
           applicationAudioGainPercent: Number(applicationAudioGain),
+          rtmpPlatform,
+          rtmpServerUrl,
+          rtmpVideoBitrateKbps: Number(rtmpVideoBitrate),
+          rtmpAudioBitrateKbps: Number(rtmpAudioBitrate),
+          videoCompositor,
           password: password || null,
           clearPassword
         }
@@ -481,9 +591,11 @@ export function BroadcastPage() {
       hydrateProfile(saved);
       const nextPreflight = await invoke<BroadcastPreflight>("broadcast_preflight");
       setPreflight(nextPreflight);
-      setNotice(t("Perfil Icecast guardado."));
+      setNotice(t("Perfil de broadcast guardado."));
+      return true;
     } catch (cause) {
       setError(errorMessage(cause, locale));
+      return false;
     } finally {
       setBusy(null);
     }
@@ -517,20 +629,32 @@ export function BroadcastPage() {
 
   async function startBroadcast() {
     await runAction("starting", async () => {
-      setStatus(await invoke<BroadcastStatus>("broadcast_start"));
-      setNotice(t("Iniciando transmisión a Icecast."));
+      setStatus(await invoke<BroadcastStatus>("broadcast_start", {
+        streamKey: outputKind === "rtmp" ? streamKey : null
+      }));
+      setNotice(outputKind === "rtmp"
+        ? t("Enviando señal RTMP. Revisa la vista previa antes de salir al aire.")
+        : t("Iniciando transmisión a Icecast."));
     });
   }
 
   async function stopBroadcast() {
     await runAction("stopping", async () => {
       setStatus(await invoke<BroadcastStatus>("broadcast_stop"));
+      if (outputKind === "rtmp") setStreamKey("");
     });
   }
 
   async function skipTrack() {
     await runAction("skipping", async () => {
       setStatus(await invoke<BroadcastStatus>("broadcast_skip"));
+    });
+  }
+
+  async function playQueueEntry(entry: BroadcastQueueEntry) {
+    await runAction(`play:${entry.id}`, async () => {
+      setStatus(await invoke<BroadcastStatus>("broadcast_play_queue_entry", { entryId: entry.id }));
+      setNotice(t("Cambiando a {track}...", { track: entryTitle(entry) }));
     });
   }
 
@@ -622,6 +746,47 @@ export function BroadcastPage() {
     });
   }
 
+  async function sendCameraMix(mixPercent: number, transitionMillis: number) {
+    const normalized = Math.max(0, Math.min(100, Math.round(mixPercent)));
+    setCameraMix(normalized);
+    await runAction("camera-mix", async () => {
+      const nextStatus = await invoke<BroadcastStatus>("broadcast_set_camera_mix", {
+        mixPercent: normalized,
+        transitionMillis
+      });
+      setStatus(nextStatus);
+    });
+  }
+
+  async function changeVideoCompositor(next: BroadcastVideoCompositor) {
+    const previous = videoCompositor;
+    setVideoCompositor(next);
+    if (!running) return;
+    try {
+      const nextStatus = await invoke<BroadcastStatus>("broadcast_update_camera_settings", {
+        config: next
+      });
+      setStatus(nextStatus);
+      setProfile((current) => current ? { ...current, video_compositor: next } : current);
+    } catch (cause) {
+      setVideoCompositor(previous);
+      setError(errorMessage(cause, locale));
+    }
+  }
+
+  async function refreshCameras() {
+    await runAction("cameras", async () => {
+      const devices = await invoke<BroadcastCameraDevice[]>("broadcast_camera_devices");
+      setCameraDevices(devices);
+      if (!devices.some((device) => device.id === videoCompositor.cameraDevice)) {
+        setVideoCompositor((current) => ({
+          ...current,
+          cameraDevice: devices[0]?.id ?? ""
+        }));
+      }
+    });
+  }
+
   async function refreshMicrophones() {
     await runAction("microphones", async () => {
       const devices = await invoke<BroadcastMicrophoneDevice[]>("broadcast_microphone_devices");
@@ -667,6 +832,47 @@ export function BroadcastPage() {
     });
   }
 
+  async function persistQueuedOrder(entryIds: string[]) {
+    await runAction("reordering", async () => {
+      setQueue(await invoke<BroadcastQueueEntry[]>("broadcast_reorder_queue", { entryIds }));
+    });
+  }
+
+  async function moveQueuedEntry(entryId: string, direction: -1 | 1) {
+    const entryIds = queue.filter((entry) => entry.status === "queued").map((entry) => entry.id);
+    const currentIndex = entryIds.indexOf(entryId);
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= entryIds.length) return;
+    [entryIds[currentIndex], entryIds[nextIndex]] = [entryIds[nextIndex], entryIds[currentIndex]];
+    await persistQueuedOrder(entryIds);
+  }
+
+  async function moveQueuedEntryToTarget(entryId: string, targetId: string) {
+    if (entryId === targetId) return;
+    const entryIds = queue.filter((entry) => entry.status === "queued").map((entry) => entry.id);
+    const currentIndex = entryIds.indexOf(entryId);
+    const targetIndex = entryIds.indexOf(targetId);
+    if (currentIndex < 0 || targetIndex < 0) return;
+    entryIds.splice(currentIndex, 1);
+    const adjustedTargetIndex = entryIds.indexOf(targetId);
+    entryIds.splice(currentIndex < targetIndex ? adjustedTargetIndex + 1 : adjustedTargetIndex, 0, entryId);
+    await persistQueuedOrder(entryIds);
+  }
+
+  async function sortQueuedEntries(sort: "title" | "artist" | "duration") {
+    const collator = new Intl.Collator(locale, { numeric: true, sensitivity: "base" });
+    const sorted = queue.filter((entry) => entry.status === "queued").sort((left, right) => {
+      if (sort === "duration") {
+        return (left.duration_seconds ?? Number.MAX_SAFE_INTEGER) - (right.duration_seconds ?? Number.MAX_SAFE_INTEGER)
+          || collator.compare(entryTitle(left), entryTitle(right));
+      }
+      const leftValue = sort === "artist" ? left.artist ?? left.title : left.title;
+      const rightValue = sort === "artist" ? right.artist ?? right.title : right.title;
+      return collator.compare(leftValue, rightValue) || collator.compare(entryTitle(left), entryTitle(right));
+    });
+    await persistQueuedOrder(sorted.map((entry) => entry.id));
+  }
+
   async function runAction(action: BusyAction, callback: () => Promise<void>) {
     setBusy(action);
     setError(null);
@@ -706,9 +912,9 @@ export function BroadcastPage() {
               <Radio className="h-4 w-4" />
               <span className="text-xs font-semibold uppercase tracking-[0.18em]">{t("Broadcast")}</span>
             </div>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("Radio desde casa")}</h1>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("Broadcast desde casa")}</h1>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              {t("Rau Studio reproduce tu cola local y mantiene un stream MP3 persistente hacia Icecast.")}
+              {t("Rau Studio mezcla tu cola y entradas locales para transmitir por Icecast o RTMP.")}
             </p>
           </div>
           <StatusBadge status={status?.status ?? "idle"} label={status?.message ?? t("Radio detenida.")} />
@@ -735,7 +941,7 @@ export function BroadcastPage() {
         <section className="grid gap-4 xl:grid-cols-[minmax(360px,0.8fr)_minmax(520px,1.2fr)]">
           <Card>
             <CardHeader>
-              <CardTitle>{t("Destino Icecast")}</CardTitle>
+              <CardTitle>{t("Destino de salida")}</CardTitle>
               <span className={cn(
                 "rounded-full px-2 py-1 text-[11px] font-semibold",
                 preflight?.ready
@@ -747,60 +953,130 @@ export function BroadcastPage() {
             </CardHeader>
             <CardContent className="p-3">
               <form className="grid gap-3" onSubmit={saveProfile}>
-                <div className="grid gap-3 sm:grid-cols-[1fr_110px]">
-                  <Field label={t("Host")}>
-                    <input className={fieldClass} value={host} required disabled={running} onChange={(event) => setHost(event.target.value)} />
-                  </Field>
-                  <Field label={t("Puerto")}>
-                    <input className={fieldClass} type="number" min={1} max={65535} value={port} required disabled={running} onChange={(event) => setPort(event.target.value)} />
-                  </Field>
-                </div>
-                <Field label={t("Mountpoint MP3")}>
-                  <input className={fieldClass} value={mount} required disabled={running} placeholder="/live.mp3" onChange={(event) => setMount(event.target.value)} />
+                <Field label={t("Tipo de destino")}>
+                  <select className={fieldClass} value={outputKind} disabled={running} onChange={(event) => setOutputKind(event.target.value as BroadcastOutputKind)}>
+                    <option value="icecast">Icecast · MP3</option>
+                    <option value="rtmp">RTMP / RTMPS · {t("Video en vivo")}</option>
+                  </select>
                 </Field>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label={t("Usuario source")}>
-                    <input className={fieldClass} value={username} required disabled={running} onChange={(event) => setUsername(event.target.value)} />
-                  </Field>
-                  <Field label={t("Bitrate MP3")}>
-                    <select className={fieldClass} value={bitrate} disabled={running} onChange={(event) => setBitrate(event.target.value)}>
-                      {[96, 128, 160, 192, 256, 320].map((value) => <option key={value} value={value}>{value} kbps</option>)}
-                    </select>
-                  </Field>
-                </div>
+                {outputKind === "icecast" ? (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-[1fr_110px]">
+                      <Field label={t("Host")}>
+                        <input className={fieldClass} value={host} required disabled={running} onChange={(event) => setHost(event.target.value)} />
+                      </Field>
+                      <Field label={t("Puerto")}>
+                        <input className={fieldClass} type="number" min={1} max={65535} value={port} required disabled={running} onChange={(event) => setPort(event.target.value)} />
+                      </Field>
+                    </div>
+                    <Field label={t("Mountpoint MP3")}>
+                      <input className={fieldClass} value={mount} required disabled={running} placeholder="/live.mp3" onChange={(event) => setMount(event.target.value)} />
+                    </Field>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label={t("Usuario source")}>
+                        <input className={fieldClass} value={username} required disabled={running} onChange={(event) => setUsername(event.target.value)} />
+                      </Field>
+                      <Field label={t("Bitrate MP3")}>
+                        <select className={fieldClass} value={bitrate} disabled={running} onChange={(event) => setBitrate(event.target.value)}>
+                          {[96, 128, 160, 192, 256, 320].map((value) => <option key={value} value={value}>{value} kbps</option>)}
+                        </select>
+                      </Field>
+                    </div>
+                    <Field label={profile?.password_configured ? t("Nueva contraseña source (opcional)") : t("Contraseña source")}>
+                      <input
+                        className={fieldClass}
+                        type="password"
+                        value={password}
+                        required={!profile?.password_configured && !clearPassword}
+                        disabled={running || clearPassword}
+                        autoComplete="new-password"
+                        onChange={(event) => setPassword(event.target.value)}
+                      />
+                    </Field>
+                    <div className="grid gap-2 text-sm sm:grid-cols-2">
+                      <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
+                        <input type="checkbox" checked={tls} disabled={running} onChange={(event) => setTls(event.target.checked)} />
+                        {t("Usar TLS")}
+                      </label>
+                      <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
+                        <input type="checkbox" checked={isPublic} disabled={running} onChange={(event) => setIsPublic(event.target.checked)} />
+                        {t("Listar públicamente")}
+                      </label>
+                      {profile?.password_configured ? (
+                        <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2 sm:col-span-2">
+                          <input type="checkbox" checked={clearPassword} disabled={running} onChange={(event) => setClearPassword(event.target.checked)} />
+                          {t("Eliminar contraseña guardada")}
+                        </label>
+                      ) : null}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Field label={t("Plataforma")}>
+                      <select className={fieldClass} value={rtmpPlatform} disabled={running} onChange={(event) => setRtmpPlatform(event.target.value as RtmpPlatform)}>
+                        <option value="instagram">Instagram Live</option>
+                        <option value="custom">{t("RTMP personalizado")}</option>
+                      </select>
+                    </Field>
+                    <Field label={t("URL del servidor RTMP")}>
+                      <input
+                        className={fieldClass}
+                        type="url"
+                        value={rtmpServerUrl}
+                        required
+                        disabled={running}
+                        placeholder="rtmps://live-upload.instagram.com:443/rtmp/"
+                        onChange={(event) => setRtmpServerUrl(event.target.value)}
+                      />
+                    </Field>
+                    <Field label={t("Clave de transmisión · solo esta sesión")}>
+                      <input
+                        className={fieldClass}
+                        type="password"
+                        value={streamKey}
+                        disabled={running}
+                        autoComplete="off"
+                        placeholder={t("Pégala antes de enviar la señal")}
+                        onChange={(event) => setStreamKey(event.target.value)}
+                      />
+                    </Field>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label={t("Bitrate de video")}>
+                        <select className={fieldClass} value={rtmpVideoBitrate} disabled={running} onChange={(event) => setRtmpVideoBitrate(event.target.value)}>
+                          {[2250, 3000, 3500, 4500, 6000].map((value) => <option key={value} value={value}>{value} kbps</option>)}
+                        </select>
+                      </Field>
+                      <Field label={t("Bitrate AAC")}>
+                        <select className={fieldClass} value={rtmpAudioBitrate} disabled={running} onChange={(event) => setRtmpAudioBitrate(event.target.value)}>
+                          {[96, 128, 160, 192, 256].map((value) => <option key={value} value={value}>{value} kbps</option>)}
+                        </select>
+                      </Field>
+                    </div>
+                    <div className="rounded-md border border-violet-500/25 bg-violet-500/5 px-3 py-2 text-xs text-muted-foreground">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <strong className="block text-foreground">720 × 1280 · 30 fps · H.264/AAC</strong>
+                          <span>{t("Rau genera una señal visual monocroma con identidad de la radio y la pista actual, actualizada sin cortar el Live.")}</span>
+                        </div>
+                        <Button type="button" size="sm" variant="secondary" onClick={() => setVideoStudioOpen(true)}>
+                          <SlidersHorizontal className="h-4 w-4" />
+                          {t("Video Studio")}
+                        </Button>
+                      </div>
+                    </div>
+                    {rtmpPlatform === "instagram" ? (
+                      <div className="rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
+                        {t("Crea el Live en Instagram.com, copia su URL y clave, envía la señal desde Rau y confirma la vista previa en Live Producer. Para terminar, finaliza primero en Instagram.")}
+                      </div>
+                    ) : null}
+                  </>
+                )}
                 <Field label={t("Nombre de estación")}>
                   <input className={fieldClass} value={stationName} required maxLength={120} disabled={running} onChange={(event) => setStationName(event.target.value)} />
                 </Field>
                 <Field label={t("Descripción")}>
                   <input className={fieldClass} value={description} maxLength={240} disabled={running} onChange={(event) => setDescription(event.target.value)} />
                 </Field>
-                <Field label={profile?.password_configured ? t("Nueva contraseña source (opcional)") : t("Contraseña source")}>
-                  <input
-                    className={fieldClass}
-                    type="password"
-                    value={password}
-                    required={!profile?.password_configured && !clearPassword}
-                    disabled={running || clearPassword}
-                    autoComplete="new-password"
-                    onChange={(event) => setPassword(event.target.value)}
-                  />
-                </Field>
-                <div className="grid gap-2 text-sm sm:grid-cols-2">
-                  <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
-                    <input type="checkbox" checked={tls} disabled={running} onChange={(event) => setTls(event.target.checked)} />
-                    {t("Usar TLS")}
-                  </label>
-                  <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
-                    <input type="checkbox" checked={isPublic} disabled={running} onChange={(event) => setIsPublic(event.target.checked)} />
-                    {t("Listar públicamente")}
-                  </label>
-                  {profile?.password_configured ? (
-                    <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2 sm:col-span-2">
-                      <input type="checkbox" checked={clearPassword} disabled={running} onChange={(event) => setClearPassword(event.target.checked)} />
-                      {t("Eliminar contraseña guardada")}
-                    </label>
-                  ) : null}
-                </div>
                 <div className="overflow-hidden rounded-lg border border-border bg-muted/15">
                   <div className="grid grid-cols-3 gap-1 border-b border-border bg-secondary/70 p-1" role="tablist" aria-label={t("Fuentes de audio")}>
                     <SourceTabButton
@@ -961,7 +1237,7 @@ export function BroadcastPage() {
                         />
                       </Field>
                       <p className="text-xs text-muted-foreground">
-                        {t("La línea reemplaza temporalmente la playlist y pasa directo a Icecast, sin ducking.")}
+                        {t("La línea reemplaza temporalmente la playlist y pasa directo al destino, sin ducking.")}
                       </p>
                     </>
                   ) : (
@@ -1054,8 +1330,13 @@ export function BroadcastPage() {
                   </div>
                 </div>
                 <div className="rounded-md bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
-                  <strong className="block text-foreground">{profile?.listener_url ?? "—"}</strong>
+                  <strong className="block break-all text-foreground">
+                    {outputKind === "rtmp" ? (rtmpServerUrl || t("Configura la URL RTMP")) : (profile?.listener_url ?? "—")}
+                  </strong>
                   <span>{translateBackendMessage(locale, preflight?.message ?? t("Revisando motor FFmpeg..."))}</span>
+                  {destinationNeedsSave ? (
+                    <span className="mt-1 block font-medium text-amber-700 dark:text-amber-300">{t("Guarda los cambios del destino antes de iniciar.")}</span>
+                  ) : null}
                 </div>
                 <Button type="submit" disabled={busy === "saving" || running}>
                   {busy === "saving" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
@@ -1071,7 +1352,7 @@ export function BroadcastPage() {
                 <CardTitle>{t("Control de transmisión")}</CardTitle>
                 <div className="flex flex-wrap gap-2">
                   {!running ? (
-                    <Button size="sm" disabled={!preflight?.ready || ((microphoneEnabled || lineInputEnabled) && !preflight?.microphone_input_available) || busy !== null} onClick={() => void startBroadcast()}>
+                    <Button size="sm" disabled={destinationNeedsSave || !preflight?.ready || (outputKind === "rtmp" && !streamKey.trim()) || ((microphoneEnabled || lineInputEnabled) && !preflight?.microphone_input_available) || busy !== null} onClick={() => void startBroadcast()}>
                       {busy === "starting" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                       {t("Salir al aire")}
                     </Button>
@@ -1085,6 +1366,16 @@ export function BroadcastPage() {
                     <SkipForward className="h-4 w-4" />
                     {t("Saltar")}
                   </Button>
+                  {outputKind === "rtmp" ? (
+                    <Button
+                      size="sm"
+                      variant={status?.camera?.live ? "default" : "secondary"}
+                      onClick={() => setVideoStudioOpen(true)}
+                    >
+                      <Camera className={cn("h-4 w-4", status?.camera?.live && "animate-pulse")} />
+                      {status?.camera?.live ? t("Cámara en Program") : t("Video Studio")}
+                    </Button>
+                  ) : null}
                   {running && profile?.microphone_enabled ? (
                     <Button
                       size="sm"
@@ -1148,7 +1439,7 @@ export function BroadcastPage() {
                   </div>
                 ) : (
                   <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
-                    {running ? t("La conexión sigue viva transmitiendo silencio hasta que haya una pista.") : t("Configura Icecast, agrega una playlist y sal al aire.")}
+                    {running ? t("La conexión sigue viva transmitiendo silencio hasta que haya una pista.") : t("Configura un destino, agrega una playlist y sal al aire.")}
                   </div>
                 )}
                 {profile?.microphone_enabled ? (
@@ -1278,12 +1569,26 @@ export function BroadcastPage() {
             </Card>
 
             <Card className="flex h-[calc(100vh-3rem)] min-h-[420px] max-h-[860px] flex-col overflow-hidden">
-              <CardHeader>
+              <CardHeader className="flex-wrap py-2">
                 <CardTitle>{t("Cola de broadcast")}</CardTitle>
-                <Button size="sm" variant="ghost" disabled={queue.every((entry) => entry.status === "playing") || busy === "clearing"} onClick={() => void clearQueue()}>
-                  <Trash2 className="h-4 w-4" />
-                  {t("Limpiar")}
-                </Button>
+                <div className="ml-auto flex items-center gap-2">
+                  <select
+                    aria-label={t("Ordenar pistas")}
+                    className="h-8 max-w-36 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none disabled:opacity-50"
+                    value=""
+                    disabled={queuedTotal === 0 || busy === "reordering"}
+                    onChange={(event) => void sortQueuedEntries(event.currentTarget.value as "title" | "artist" | "duration")}
+                  >
+                    <option value="" disabled>{t("Ordenar próximas...")}</option>
+                    <option value="title">{t("Título A–Z")}</option>
+                    <option value="artist">{t("Artista A–Z")}</option>
+                    <option value="duration">{t("Duración menor primero")}</option>
+                  </select>
+                  <Button size="sm" variant="ghost" disabled={queue.every((entry) => entry.status === "playing") || busy === "clearing"} onClick={() => void clearQueue()}>
+                    <Trash2 className="h-4 w-4" />
+                    {t("Limpiar")}
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div className="grid shrink-0 gap-2 border-b border-border p-3 md:grid-cols-[minmax(260px,1fr)_auto]">
@@ -1362,8 +1667,51 @@ export function BroadcastPage() {
                   <div className="grid min-h-0 flex-1 place-items-center p-6 text-sm text-muted-foreground">{t("La cola está vacía.")}</div>
                 ) : (
                   <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto overscroll-contain">
-                    {queue.map((entry) => (
-                      <div key={entry.id} className={cn("grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-3 py-2.5", entry.status === "playing" && "bg-emerald-500/5")}>
+                    {queue.map((entry) => {
+                      const queuedIndex = queuedEntries.findIndex((queuedEntry) => queuedEntry.id === entry.id);
+                      const canSelectTrack = running
+                        && status?.status !== "stopping"
+                        && status?.source_mode === "playlist"
+                        && entry.status !== "playing";
+                      return (
+                      <div
+                        key={entry.id}
+                        className={cn(
+                          "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-2 py-2.5 transition-colors",
+                          entry.status === "playing" && "bg-emerald-500/5",
+                          draggedQueueEntryId && entry.status === "queued" && entry.id !== draggedQueueEntryId && "hover:bg-accent/60"
+                        )}
+                        onDragOver={(event) => {
+                          if (entry.status !== "queued" || !draggedQueueEntryId) return;
+                          event.preventDefault();
+                          event.dataTransfer.dropEffect = "move";
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const sourceId = draggedQueueEntryId ?? event.dataTransfer.getData("text/plain");
+                          setDraggedQueueEntryId(null);
+                          if (sourceId && entry.status === "queued") void moveQueuedEntryToTarget(sourceId, entry.id);
+                        }}
+                      >
+                        <button
+                          type="button"
+                          draggable={entry.status === "queued" && busy === null}
+                          className={cn(
+                            "grid h-8 w-6 shrink-0 place-items-center rounded text-muted-foreground",
+                            entry.status === "queued" ? "cursor-grab hover:bg-accent hover:text-foreground active:cursor-grabbing" : "cursor-not-allowed opacity-25"
+                          )}
+                          aria-label={t("Arrastrar para reordenar")}
+                          title={t("Arrastrar para reordenar")}
+                          onDragStart={(event) => {
+                            if (entry.status !== "queued") return;
+                            setDraggedQueueEntryId(entry.id);
+                            event.dataTransfer.effectAllowed = "move";
+                            event.dataTransfer.setData("text/plain", entry.id);
+                          }}
+                          onDragEnd={() => setDraggedQueueEntryId(null)}
+                        >
+                          <GripVertical className="h-4 w-4" />
+                        </button>
                         <div className="min-w-0">
                           <div className="flex min-w-0 items-center gap-2">
                             <span className="truncate text-sm font-medium">{entryTitle(entry)}</span>
@@ -1372,17 +1720,49 @@ export function BroadcastPage() {
                           <span className="mt-0.5 block truncate text-xs text-muted-foreground">{t(entry.playlist_name)} · {formatDuration(entry.duration_seconds)}</span>
                           {entry.error ? <span className="mt-1 block text-xs text-destructive">{entry.error}</span> : null}
                         </div>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          aria-label={t("Quitar de la cola")}
-                          disabled={entry.status === "playing" || busy === `remove:${entry.id}`}
-                          onClick={() => void removeEntry(entry.id)}
-                        >
-                          {busy === `remove:${entry.id}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                        </Button>
+                        <div className="flex items-center gap-0.5">
+                          <Button
+                            size="icon"
+                            variant={entry.status === "playing" ? "secondary" : "ghost"}
+                            aria-label={entry.status === "playing" ? t("Pista al aire") : t("Reproducir ahora")}
+                            title={entry.status === "playing" ? t("Pista al aire") : t("Reproducir ahora")}
+                            disabled={!canSelectTrack || busy === `play:${entry.id}`}
+                            onClick={() => void playQueueEntry(entry)}
+                          >
+                            {busy === `play:${entry.id}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            aria-label={t("Mover hacia arriba")}
+                            title={t("Mover hacia arriba")}
+                            disabled={queuedIndex <= 0 || busy === "reordering"}
+                            onClick={() => void moveQueuedEntry(entry.id, -1)}
+                          >
+                            <ArrowUp className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            aria-label={t("Mover hacia abajo")}
+                            title={t("Mover hacia abajo")}
+                            disabled={queuedIndex < 0 || queuedIndex >= queuedEntries.length - 1 || busy === "reordering"}
+                            onClick={() => void moveQueuedEntry(entry.id, 1)}
+                          >
+                            <ArrowDown className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            aria-label={t("Quitar de la cola")}
+                            disabled={entry.status === "playing" || busy === `remove:${entry.id}`}
+                            onClick={() => void removeEntry(entry.id)}
+                          >
+                            {busy === `remove:${entry.id}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                          </Button>
+                        </div>
                       </div>
-                    ))}
+                    )})}
                   </div>
                 )}
               </CardContent>
@@ -1391,16 +1771,433 @@ export function BroadcastPage() {
         </section>
 
       </div>
+      <VideoStudioModal
+        open={videoStudioOpen}
+        config={videoCompositor}
+        devices={cameraDevices}
+        stationName={stationName}
+        trackTitle={status?.now_playing ? entryTitle(status.now_playing) : t("WAITING FOR NEXT TRACK")}
+        running={running}
+        cameraReady={status?.camera?.ready ?? false}
+        mixPercent={cameraMix}
+        busy={busy}
+        onClose={() => setVideoStudioOpen(false)}
+        onChange={(next) => void changeVideoCompositor(next)}
+        onRefresh={() => void refreshCameras()}
+        onMix={sendCameraMix}
+        onSave={async () => {
+          if (await persistProfile()) setVideoStudioOpen(false);
+        }}
+      />
       <TerminalDrawer
         logs={terminalLogs}
         expanded={terminalExpanded}
         terminalRef={terminalElement}
-        subtitle={t("ffmpeg / icecast / entradas de audio")}
+        subtitle={t("ffmpeg / destinos / entradas de audio")}
         emptyMessage="Sin eventos todavía."
         onToggle={() => setTerminalExpanded((current) => !current)}
         onClear={clearTerminal}
       />
     </main>
+  );
+}
+
+function VideoStudioModal({
+  open,
+  config,
+  devices,
+  stationName,
+  trackTitle,
+  running,
+  cameraReady,
+  mixPercent,
+  busy,
+  onClose,
+  onChange,
+  onRefresh,
+  onMix,
+  onSave
+}: {
+  open: boolean;
+  config: BroadcastVideoCompositor;
+  devices: BroadcastCameraDevice[];
+  stationName: string;
+  trackTitle: string;
+  running: boolean;
+  cameraReady: boolean;
+  mixPercent: number;
+  busy: BusyAction;
+  onClose: () => void;
+  onChange: (config: BroadcastVideoCompositor) => void;
+  onRefresh: () => void;
+  onMix: (mixPercent: number, transitionMillis: number) => Promise<void>;
+  onSave: () => Promise<void>;
+}) {
+  const { t } = useI18n();
+  const previewVideo = useRef<HTMLVideoElement | null>(null);
+  const programVideo = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [draftMix, setDraftMix] = useState(mixPercent);
+  const [handoffPending, setHandoffPending] = useState(false);
+
+  const stopPreview = useCallback(() => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (previewVideo.current) previewVideo.current.srcObject = null;
+    if (programVideo.current) programVideo.current.srcObject = null;
+  }, []);
+
+  useEffect(() => setDraftMix(mixPercent), [mixPercent]);
+
+  useEffect(() => {
+    if (!open || !config.enabled) {
+      stopPreview();
+      return;
+    }
+    let disposed = false;
+    setPreviewError(null);
+    void (async () => {
+      try {
+        let stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+        const browserDevices = await navigator.mediaDevices.enumerateDevices();
+        const preferred = browserDevices.find((device) =>
+          device.kind === "videoinput" && device.label === config.cameraDevice
+        );
+        if (preferred && stream.getVideoTracks()[0]?.label !== preferred.label) {
+          stream.getTracks().forEach((track) => track.stop());
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: { deviceId: { exact: preferred.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+          });
+        }
+        if (disposed) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        streamRef.current = stream;
+        for (const video of [previewVideo.current, programVideo.current]) {
+          if (!video) continue;
+          video.srcObject = stream;
+          await video.play().catch(() => undefined);
+        }
+      } catch (cause) {
+        if (!disposed) setPreviewError(cause instanceof Error ? cause.message : String(cause));
+      }
+    })();
+    return () => {
+      disposed = true;
+      stopPreview();
+    };
+  }, [config.cameraDevice, config.enabled, open, stopPreview]);
+
+  useEffect(() => {
+    const stream = streamRef.current;
+    const video = programVideo.current;
+    if (!stream || !video) return;
+    video.srcObject = stream;
+    void video.play().catch(() => undefined);
+  }, [draftMix]);
+
+  if (!open) return null;
+
+  const update = (patch: Partial<BroadcastVideoCompositor>) => onChange({ ...config, ...patch });
+  const faderEnabled = running && config.enabled && cameraReady;
+  const take = async (nextMix: number, transitionMillis: number) => {
+    if (handoffPending || busy === "camera-mix") return;
+    setDraftMix(nextMix);
+    setHandoffPending(true);
+    try {
+      await onMix(nextMix, transitionMillis);
+    } finally {
+      setHandoffPending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-3" role="dialog" aria-modal="true" aria-labelledby="video-studio-title">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <section className="relative z-[85] flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-white/15 bg-[#090b0a] text-white shadow-2xl">
+        <header className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+          <div>
+            <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">
+              <SlidersHorizontal className="h-4 w-4" /> Rau Broadcast System
+            </div>
+            <h2 id="video-studio-title" className="mt-1 text-xl font-semibold">{t("Video Studio · Preview / Program")}</h2>
+            <p className="mt-1 text-xs text-white/50">{t("Prepara la fuente y usa el fader para enviarla sin reiniciar RTMP.")}</p>
+          </div>
+          <Button type="button" size="sm" variant="secondary" onClick={onClose}>{t("Cerrar")}</Button>
+        </header>
+
+        <div className="grid min-h-0 flex-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_310px]">
+          <div className="grid gap-4 p-4 sm:grid-cols-2">
+            <StudioMonitor
+              label="PREVIEW"
+              stationName={stationName}
+              trackTitle={trackTitle}
+              config={config}
+              cameraVisible={config.enabled}
+              videoRef={previewVideo}
+              cameraPlaceholder={previewError ? t("Vista previa no disponible") : t("Preparando cámara...")}
+            />
+            <StudioMonitor
+              label="PROGRAM"
+              stationName={stationName}
+              trackTitle={trackTitle}
+              config={config}
+              cameraVisible={config.enabled && draftMix > 0}
+              cameraOpacity={draftMix / 100}
+              cameraPlaceholder={t("Cámara en Program")}
+              videoRef={programVideo}
+              transitionMillis={config.transitionMillis}
+            />
+
+            <div className="rounded-lg border border-white/10 bg-white/[0.035] p-4 sm:col-span-2">
+              <div className="flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.16em] text-white/55">
+                <span>GRAPHIC</span><span>{draftMix}%</span><span>CAMERA</span>
+              </div>
+              <input
+                aria-label={t("Fader Preview a Program")}
+                className="mt-3 h-3 w-full cursor-ew-resize accent-white disabled:cursor-not-allowed disabled:opacity-35"
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={draftMix}
+                disabled={!faderEnabled || busy === "camera-mix" || handoffPending}
+                onChange={(event) => setDraftMix(Number(event.currentTarget.value))}
+                onPointerUp={() => void take(draftMix, 0)}
+                onKeyUp={() => void take(draftMix, 0)}
+              />
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <span className="text-xs text-white/45">
+                  {running
+                    ? cameraReady ? t("El fader controla la señal que recibe Instagram.") : t("Esperando que el compositor quede listo...")
+                    : t("El fader se habilita al iniciar el broadcast; la cámara comienza fuera de Program.")}
+                </span>
+                <Button
+                  type="button"
+                  disabled={!faderEnabled || busy === "camera-mix" || handoffPending}
+                  onClick={() => void take(draftMix > 0 ? 0 : 100, config.transitionMillis)}
+                >
+                  {busy === "camera-mix" || handoffPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  {draftMix > 0 ? t("Volver a gráfica") : t("AUTO · Enviar a Program")}
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <aside className="grid content-start gap-4 border-t border-white/10 bg-black/20 p-4 lg:border-l lg:border-t-0">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <strong className="text-sm">{t("Fuente de cámara")}</strong>
+                <span className="block text-xs text-white/40">{config.enabled ? running ? t("Capturando · fuera de Program") : t("Preparada · inicia fuera de Program") : t("Desactivada")}</span>
+              </div>
+              <label className="flex items-center gap-2 text-xs font-semibold">
+                <input
+                  type="checkbox"
+                  checked={config.enabled}
+                  disabled={running}
+                  onChange={(event) => update({
+                    enabled: event.currentTarget.checked,
+                    cameraDevice: config.cameraDevice || devices[0]?.id || ""
+                  })}
+                />
+                {t("Usar cámara")}
+              </label>
+            </div>
+
+            <Field label={t("Cámara") }>
+              <div className="flex gap-2">
+                <select
+                  className={cn(fieldClass, "border-white/15 bg-white/5 text-white")}
+                  value={config.cameraDevice}
+                  disabled={!config.enabled}
+                  onChange={(event) => update({ cameraDevice: event.currentTarget.value })}
+                >
+                  <option value="">{t("Selecciona una cámara")}</option>
+                  {devices.map((device) => <option key={device.id} value={device.id}>{device.label}</option>)}
+                </select>
+                <Button type="button" size="icon" variant="secondary" disabled={busy === "cameras"} onClick={onRefresh} aria-label={t("Refrescar cámaras") }>
+                  <RefreshCcw className={cn("h-4 w-4", busy === "cameras" && "animate-spin")} />
+                </Button>
+              </div>
+            </Field>
+
+            <Field label={t("Composición") }>
+              <select className={cn(fieldClass, "border-white/15 bg-white/5 text-white")} value={config.cameraLayout} disabled={!config.enabled} onChange={(event) => update({ cameraLayout: event.currentTarget.value })}>
+                <option value="card">{t("Tarjeta")}</option>
+                <option value="wide">{t("Ancho completo")}</option>
+                <option value="background">{t("Fondo")}</option>
+              </select>
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label={t("Posición") }>
+                <select className={cn(fieldClass, "border-white/15 bg-white/5 text-white")} value={config.cameraPosition} disabled={!config.enabled || config.cameraLayout !== "card"} onChange={(event) => update({ cameraPosition: event.currentTarget.value })}>
+                  <option value="top_left">{t("Arriba izquierda")}</option>
+                  <option value="top_right">{t("Arriba derecha")}</option>
+                  <option value="center">{t("Centro")}</option>
+                  <option value="bottom_left">{t("Abajo izquierda")}</option>
+                  <option value="bottom_right">{t("Abajo derecha")}</option>
+                </select>
+              </Field>
+              <Field label={t("Tamaño") }>
+                <select className={cn(fieldClass, "border-white/15 bg-white/5 text-white")} value={config.cameraSize} disabled={!config.enabled || config.cameraLayout !== "card"} onChange={(event) => update({ cameraSize: event.currentTarget.value })}>
+                  <option value="small">{t("Pequeña")}</option>
+                  <option value="medium">{t("Mediana")}</option>
+                  <option value="large">{t("Grande")}</option>
+                </select>
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label={t("Efecto") }>
+                <select className={cn(fieldClass, "border-white/15 bg-white/5 text-white")} value={config.cameraEffect} disabled={!config.enabled} onChange={(event) => update({ cameraEffect: event.currentTarget.value })}>
+                  <option value="clean">{t("Limpio")}</option>
+                  <option value="mono">{t("Monocromo")}</option>
+                  <option value="contrast">{t("Contraste editorial")}</option>
+                  <option value="dream">{t("Dream blur")}</option>
+                </select>
+              </Field>
+              <Field label={t("Orientación") }>
+                <select className={cn(fieldClass, "border-white/15 bg-white/5 text-white")} value={config.cameraRotationDegrees} disabled={!config.enabled} onChange={(event) => update({ cameraRotationDegrees: Number(event.currentTarget.value) })}>
+                  <option value={0}>{t("Normal · 0°")}</option>
+                  <option value={90}>{t("Girar 90°")}</option>
+                  <option value={180}>{t("Girar 180°")}</option>
+                  <option value={270}>{t("Girar 270°")}</option>
+                </select>
+              </Field>
+            </div>
+
+            <label className="flex items-center gap-2 text-xs text-white/65">
+              <input type="checkbox" checked={config.cameraMirror} disabled={!config.enabled} onChange={(event) => update({ cameraMirror: event.currentTarget.checked })} />
+              {t("Espejar cámara")}
+            </label>
+
+            <Field label={t("Encuadre") }>
+              <select className={cn(fieldClass, "border-white/15 bg-white/5 text-white")} value={config.cameraFraming} disabled={!config.enabled} onChange={(event) => update({ cameraFraming: event.currentTarget.value })}>
+                <option value="contain">{t("Ajustar · mostrar imagen completa")}</option>
+                <option value="cover">{t("Rellenar · recortar bordes")}</option>
+              </select>
+            </Field>
+
+            <Field label={t("Opacidad máxima: {value}%", { value: config.cameraOpacityPercent })}>
+              <input type="range" min={20} max={100} step={5} value={config.cameraOpacityPercent} disabled={!config.enabled} onChange={(event) => update({ cameraOpacityPercent: Number(event.currentTarget.value) })} />
+            </Field>
+            <Field label={t("Duración AUTO: {value} ms", { value: config.transitionMillis })}>
+              <input type="range" min={0} max={3000} step={100} value={config.transitionMillis} disabled={!config.enabled} onChange={(event) => update({ transitionMillis: Number(event.currentTarget.value) })} />
+            </Field>
+
+            {previewError ? <p className="rounded-md border border-amber-400/20 bg-amber-400/10 p-2 text-xs text-amber-100">{previewError}</p> : null}
+            {!running ? (
+              <Button type="button" disabled={busy === "saving" || (config.enabled && !config.cameraDevice)} onClick={() => void onSave()}>
+                {busy === "saving" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                {t("Guardar composición")}
+              </Button>
+            ) : (
+              <p className="text-xs text-white/40">{t("Los cambios de cámara se aplican y guardan en vivo sin reiniciar RTMP.")}</p>
+            )}
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function StudioMonitor({
+  label,
+  stationName,
+  trackTitle,
+  config,
+  cameraVisible,
+  cameraOpacity = 1,
+  cameraPlaceholder,
+  videoRef,
+  transitionMillis = 0
+}: {
+  label: string;
+  stationName: string;
+  trackTitle: string;
+  config: BroadcastVideoCompositor;
+  cameraVisible: boolean;
+  cameraOpacity?: number;
+  cameraPlaceholder: string;
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
+  transitionMillis?: number;
+}) {
+  const positionClass: Record<string, string> = {
+    top_left: "left-[7%] top-[19%]",
+    top_right: "right-[7%] top-[19%]",
+    center: "left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2",
+    bottom_left: "bottom-[4%] left-[7%]",
+    bottom_right: "bottom-[4%] right-[7%]"
+  };
+  const sizeClass: Record<string, string> = { small: "w-[30%]", medium: "w-[43%]", large: "w-[58%]" };
+  const cameraLayoutClass = config.cameraLayout === "background"
+    ? "inset-x-0 top-[17.2%] z-20 h-[53.1%] w-full border-y border-white/40"
+    : config.cameraLayout === "wide"
+      ? "inset-x-0 top-[18.75%] z-20 h-[35.15%] w-full border-y border-white/65"
+      : cn("z-20 aspect-square border border-white/65", positionClass[config.cameraPosition] ?? positionClass.top_right, sizeClass[config.cameraSize] ?? sizeClass.medium);
+  const cameraFilter: Record<string, string> = {
+    clean: "none",
+    mono: "grayscale(1)",
+    contrast: "contrast(1.35) saturate(.82)",
+    dream: "blur(1.5px) brightness(1.08) saturate(.72)"
+  };
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between text-[11px] font-bold tracking-[0.2em] text-white/55">
+        <span>{label}</span>
+        <span className={cn("h-2 w-2 rounded-full", label === "PROGRAM" ? "bg-red-500" : "bg-emerald-400")} />
+      </div>
+      <div
+        className="relative mx-auto aspect-[9/16] max-h-[58vh] overflow-hidden border border-white/15 bg-[#080b09] shadow-inner"
+        style={{
+          backgroundImage: "linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px)",
+          backgroundSize: "12.5% 7.03%"
+        }}
+      >
+        <div className="absolute inset-x-0 top-0 z-30 h-[1.6%] bg-white" />
+        <div className="absolute left-[5%] right-[5%] top-[3%] z-30 h-[11%] border border-white/40 bg-black/70 px-[2.5%] py-[1.5%]">
+          <strong className="block truncate text-[clamp(8px,1.8vw,17px)] font-medium uppercase">{stationName}</strong>
+          <span className="absolute bottom-[10%] left-[2.5%] font-mono text-[clamp(4px,.65vw,7px)] tracking-[0.16em] text-white/55">LIVE / RAU BROADCAST SYSTEM</span>
+        </div>
+        <div className="absolute left-[5%] top-[20%] z-10 h-[35%] w-[1.2%] bg-white/85" />
+        <div className="absolute left-[9.5%] right-[5%] top-[20%] z-10 h-[35%] border border-white/30 bg-gradient-to-br from-white/55 via-white/5 to-transparent" />
+        <div className="absolute inset-x-[5%] top-[70%] z-30 border-t border-white/55 bg-black/90 pt-[4%]">
+          <span className="font-mono text-[clamp(5px,.8vw,9px)] tracking-[0.13em] text-white/50">NOW PLAYING / CURRENT AUDIO</span>
+          <strong className="mt-[3%] block line-clamp-3 text-[clamp(9px,1.8vw,18px)] font-medium uppercase leading-tight">{trackTitle}</strong>
+        </div>
+        {cameraVisible ? (
+          <div
+            className={cn("absolute overflow-hidden bg-[#111]", cameraLayoutClass)}
+            style={{ opacity: cameraOpacity * config.cameraOpacityPercent / 100, transition: `opacity ${transitionMillis}ms linear` }}
+          >
+            {videoRef ? (
+              <video
+                ref={videoRef}
+                muted
+                playsInline
+                className={cn("h-full w-full bg-black", config.cameraFraming === "contain" ? "object-contain" : "object-cover")}
+                style={{
+                  filter: cameraFilter[config.cameraEffect] ?? "none",
+                  transform: `rotate(${config.cameraRotationDegrees ?? 0}deg) scaleX(${config.cameraMirror ? -1 : 1})`
+                }}
+              />
+            ) : (
+              <div className="grid h-full place-items-center bg-gradient-to-br from-zinc-300 via-zinc-700 to-black p-2 text-center">
+                <div><Camera className="mx-auto h-5 w-5 text-white/70" /><span className="mt-1 block text-[8px] uppercase tracking-wider text-white/55">{cameraPlaceholder}</span></div>
+              </div>
+            )}
+          </div>
+        ) : null}
+        <span className="absolute bottom-[3%] left-[5%] z-30 font-mono text-[clamp(5px,.7vw,8px)] tracking-[0.12em] text-white/35">H264 / AAC / 720X1280 / 30FPS</span>
+      </div>
+    </div>
   );
 }
 

@@ -7,7 +7,9 @@ use crate::{
     },
     settings, system,
 };
-use aifficator_core::exporter::{export_with_new_playlist_xml, path_to_rekordbox_location};
+use aifficator_core::exporter::{
+    export_track_ratings_xml, export_with_new_playlist_xml, path_to_rekordbox_location,
+};
 use aifficator_core::rekordbox::{parse_rekordbox_xml_file, Track};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1734,10 +1736,31 @@ pub fn playlist_index_export_draft_xml(
         fs::read_to_string(&library.source_path)
             .map_err(|error| format!("No se pudo leer XML original: {error}"))?
     };
-    let track_ids = tracks
-        .iter()
-        .map(|track| track.track_id.clone())
-        .collect::<Vec<_>>();
+    let local_rekordbox_ids = if library.id == LOCAL_CONVERSION_LIBRARY_ID {
+        Some(local_rekordbox_track_ids(&conn, &library.id)?)
+    } else {
+        None
+    };
+    let track_ids = if let Some(rekordbox_ids) = &local_rekordbox_ids {
+        tracks
+            .iter()
+            .map(|track| {
+                rekordbox_ids.get(&track.track_id).cloned().ok_or_else(|| {
+                    format!(
+                        "No se pudo asignar TrackID Rekordbox al track local: {}",
+                        track.track_id
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        tracks
+            .iter()
+            .map(|track| track.track_id.clone())
+            .collect::<Vec<_>>()
+    };
+    let ratings = playlist_export_ratings(&conn, &library.id, local_rekordbox_ids.as_ref())?;
+    let xml = export_track_ratings_xml(&xml, &ratings).map_err(|error| error.to_string())?;
     let exported_xml = export_with_new_playlist_xml(&xml, &draft.name, &track_ids)
         .map_err(|error| error.to_string())?;
     fs::write(&output_path, exported_xml)
@@ -1793,12 +1816,16 @@ fn local_library_rekordbox_xml(conn: &Connection, library_id: &str) -> Result<St
     let mut xml = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DJ_PLAYLISTS Version=\"1.0.0\">\n",
     );
+    xml.push_str("  <PRODUCT Name=\"rekordbox\" Version=\"7.2.3\" Company=\"AlphaTheta\"/>\n");
     xml.push_str(&format!("  <COLLECTION Entries=\"{}\">\n", tracks.len()));
-    for (track_id, name, artist, album, kind, location, size, total_time, sample_rate, bitrate) in
-        tracks
+    for (
+        index,
+        (_track_id, name, artist, album, kind, location, size, total_time, sample_rate, bitrate),
+    ) in tracks.into_iter().enumerate()
     {
+        let rekordbox_track_id = (index + 1).to_string();
         xml.push_str("    <TRACK");
-        push_xml_attribute(&mut xml, "TrackID", &track_id);
+        push_xml_attribute(&mut xml, "TrackID", &rekordbox_track_id);
         push_optional_xml_attribute(&mut xml, "Name", name.as_deref());
         push_optional_xml_attribute(&mut xml, "Artist", artist.as_deref());
         push_optional_xml_attribute(&mut xml, "Album", album.as_deref());
@@ -1830,6 +1857,71 @@ fn local_library_rekordbox_xml(conn: &Connection, library_id: &str) -> Result<St
         "  </COLLECTION>\n  <PLAYLISTS>\n    <NODE Type=\"0\" Name=\"ROOT\" Count=\"0\"/>\n  </PLAYLISTS>\n</DJ_PLAYLISTS>\n",
     );
     Ok(xml)
+}
+
+fn local_rekordbox_track_ids(
+    conn: &Connection,
+    library_id: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT track_id
+             FROM playlist_index_tracks
+             WHERE library_id = ?1
+             ORDER BY COALESCE(artist, ''), COALESCE(name, ''), track_id",
+        )
+        .map_err(|error| format!("No se pudieron preparar TrackID de Rekordbox: {error}"))?;
+    let rows = stmt
+        .query_map(params![library_id], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("No se pudieron leer TrackID locales: {error}"))?;
+    let track_ids = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("No se pudieron mapear TrackID locales: {error}"))?;
+
+    Ok(track_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, track_id)| (track_id, (index + 1).to_string()))
+        .collect())
+}
+
+fn playlist_export_ratings(
+    conn: &Connection,
+    library_id: &str,
+    exported_track_ids: Option<&BTreeMap<String, String>>,
+) -> Result<BTreeMap<String, u8>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT track_id, user_rating
+             FROM playlist_index_tracks
+             WHERE library_id = ?1 AND user_rating IS NOT NULL",
+        )
+        .map_err(|error| format!("No se pudieron preparar ratings para exportar: {error}"))?;
+    let rows = stmt
+        .query_map(params![library_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|error| format!("No se pudieron leer ratings para exportar: {error}"))?;
+    let rows = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("No se pudieron mapear ratings para exportar: {error}"))?;
+
+    rows.into_iter()
+        .map(|(track_id, rating)| {
+            let rating = u8::try_from(rating)
+                .ok()
+                .filter(|rating| *rating <= 5)
+                .ok_or_else(|| format!("Rating interno invalido para {track_id}: {rating}"))?;
+            let exported_track_id = if let Some(exported_track_ids) = exported_track_ids {
+                exported_track_ids.get(&track_id).cloned().ok_or_else(|| {
+                    format!("No se pudo asignar TrackID al rating local: {track_id}")
+                })?
+            } else {
+                track_id
+            };
+            Ok((exported_track_id, rating))
+        })
+        .collect()
 }
 
 fn push_optional_xml_attribute(output: &mut String, name: &str, value: Option<&str>) {
@@ -8516,24 +8608,55 @@ mod playlist_index_tests {
         conn.execute(
             "INSERT INTO playlist_index_tracks (
                 library_id, track_id, name, artist, kind, location, source_path,
-                source_exists, search_text, attributes_json, created_at, updated_at
+                source_exists, search_text, attributes_json, user_rating, created_at, updated_at
              ) VALUES (?1, 'local-1', 'A & B', 'Artist \"One\"', 'AIFF File',
                        'file://localhost/tmp/A%20%26%20B.aiff', '/tmp/A & B.aiff',
-                       1, 'A B', '{}', ?2, ?2)",
+                       1, 'A B', '{}', 4, ?2, ?2)",
             params![LOCAL_CONVERSION_LIBRARY_ID, &now],
         )
         .expect("insert local track");
 
         let base_xml = local_library_rekordbox_xml(&conn, LOCAL_CONVERSION_LIBRARY_ID)
             .expect("build local XML");
-        let exported =
-            export_with_new_playlist_xml(&base_xml, "Set & Friends", &["local-1".to_string()])
-                .expect("export playlist");
+        let rekordbox_ids = local_rekordbox_track_ids(&conn, LOCAL_CONVERSION_LIBRARY_ID)
+            .expect("map Rekordbox TrackID");
+        let ratings =
+            playlist_export_ratings(&conn, LOCAL_CONVERSION_LIBRARY_ID, Some(&rekordbox_ids))
+                .expect("load ratings");
+        let base_xml = export_track_ratings_xml(&base_xml, &ratings).expect("export ratings");
+        let exported = export_with_new_playlist_xml(
+            &base_xml,
+            "Set & Friends",
+            &[rekordbox_ids["local-1"].clone()],
+        )
+        .expect("export playlist");
 
+        assert!(exported
+            .contains("<PRODUCT Name=\"rekordbox\" Version=\"7.2.3\" Company=\"AlphaTheta\"/>"));
+        assert!(exported.contains("<COLLECTION Entries=\"1\">"));
+        assert!(exported.contains("TrackID=\"1\""));
+        assert!(exported.contains("Rating=\"204\""));
         assert!(exported.contains("Name=\"A &amp; B\""));
         assert!(exported.contains("Artist=\"Artist &quot;One&quot;\""));
         assert!(exported.contains("Name=\"Set &amp; Friends\""));
-        assert!(exported.contains("<TRACK Key=\"local-1\"/>"));
+        assert!(exported.contains("<TRACK Key=\"1\"/>"));
+
+        let parsed =
+            aifficator_core::rekordbox::parse_rekordbox_xml(&exported).expect("parse exported XML");
+        assert_eq!(parsed.product.unwrap().name.as_deref(), Some("rekordbox"));
+        assert_eq!(parsed.collection_entries_declared, Some(1));
+        assert_eq!(parsed.tracks.len(), 1);
+        assert_eq!(
+            parsed.tracks[0]
+                .attributes
+                .get("Rating")
+                .map(String::as_str),
+            Some("204")
+        );
+        assert_eq!(parsed.playlists.len(), 1);
+        assert_eq!(parsed.playlists[0].name, "ROOT");
+        assert_eq!(parsed.playlists[0].count, Some(1));
+        assert_eq!(parsed.playlists[0].children[0].name, "Rau Studio");
     }
 
     #[test]

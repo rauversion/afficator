@@ -15,7 +15,7 @@ Rau Studio uses Tauri 2, Rust, React, TypeScript, SQLite, OpenAI-compatible AI f
 - [Smart Playlists](docs/smart-playlists.md): index Rekordbox XML into SQLite, run lexical/vector search, browse artists/albums, inspect taxonomies, and generate playlist suggestions with Playlist Copilot.
 - [Metadata Enrichment](docs/enrichment.md): fill metadata gaps through capability-aware providers, encrypted credentials, durable observations, and field-level resolution.
 - [P2P Sharing Foundation](docs/p2p-sharing.md): encrypted device identity, authenticated Iroh connectivity, peer presence, and read-only shared-folder catalogs for Rau Connect.
-- [Radio Broadcast](docs/radio-broadcast.md): queue indexed playlists, mix an optional microphone, and publish a persistent MP3 source stream from the local desktop app to Icecast.
+- [Broadcast](docs/radio-broadcast.md): queue, sort, and jump between indexed tracks, mix local inputs, and publish either a persistent Icecast MP3 stream or a vertical RTMP video signal for Instagram Live.
 - [Import Rau Studio XML into Rekordbox](docs/rekordbox-import/README.md): visual guide for importing exported XML back into Rekordbox.
 - [macOS Signing and Notarization](docs/macos-signing.md): distribution notes for unsigned local builds and signed releases.
 - [Architecture](docs/architecture.md): technical notes about the desktop, Rust, SQLite, and UI structure.
@@ -56,8 +56,13 @@ use `ffmpeg`/`ffprobe` from `PATH` or **Settings**.
 Building the macOS app from source additionally requires Xcode command-line
 tools and `pkg-config`; Intel builds require `nasm`. The first native build
 downloads pinned FFmpeg, x264, and LAME source archives, verifies their SHA-256
-hashes, and compiles the sidecars locally. The bundled FFmpeg enables MP3
-encoding and the Icecast HTTP/HTTPS network protocols used by Broadcast.
+hashes, and compiles the sidecars locally. The bundled FFmpeg enables
+MP3/H.264/AAC encoding plus the Icecast and RTMP/RTMPS protocols used by
+Broadcast. Selecting a build with FFmpeg's `drawtext` filter also enables the
+dynamic station and current-track typography in RTMP video; Rau keeps a
+text-free visual fallback for lean builds. On macOS, Broadcast also exposes a
+Preview/Program video studio: the selected camera can run as a positionable card, a full-width strip, or a large
+edge-to-edge background, then be fitted or cropped, rotated, styled, and dissolved live without reconnecting RTMP.
 
 Prepare or validate the macOS sidecars explicitly:
 
