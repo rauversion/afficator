@@ -1,12 +1,13 @@
 {
   "name": "rau-studio",
   "private": true,
-  "version": "0.1.19",
+  "version": "0.1.20",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
     "build": "vite build",
     "preview": "vite preview",
+    "release": "bash scripts/release.sh",
     "sidecars:prepare": "./scripts/prepare-ffmpeg-sidecars.sh",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

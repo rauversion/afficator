@@ -540,6 +540,19 @@ const translations: Record<Locale, Record<string, string>> = {
     "Acciones": "Actions",
     "Agregar a playlist": "Add to playlist",
     "Agrega archivos o escanea una carpeta para empezar.": "Add files or scan a folder to get started.",
+    "Analizando e indexando {count} archivos seleccionados...": "Analyzing and indexing {count} selected files...",
+    "Arrastra archivos o carpetas aquí": "Drag files or folders here",
+    "Los arrastres se acumulan en el batch actual. Recursivo también se aplica a las carpetas.":
+      "Drops accumulate in the current batch. Recursive also applies to folders.",
+    "Suelta para importar este batch": "Drop to import this batch",
+    "Puedes mezclar archivos y carpetas.": "You can mix files and folders.",
+    "Espera a que termine la operación actual antes de importar otro batch.":
+      "Wait for the current operation to finish before importing another batch.",
+    "Importando batch arrastrado...": "Importing dropped batch...",
+    "No se encontraron archivos de audio compatibles en el arrastre.":
+      "No compatible audio files were found in the drop.",
+    "Arrastre": "Drop",
+    "Arrastre recursivo": "Recursive drop",
     "AI sin key": "AI without key",
     "Albums": "Albums",
     "Archivo": "File",
@@ -642,6 +655,9 @@ const translations: Record<Locale, Record<string, string>> = {
     "Playlist origen": "Source playlist",
     "Playlist nueva": "New playlist",
     "Playlists": "Playlists",
+    "Cargando playlists...": "Loading playlists...",
+    "No se pudieron cargar las playlists.": "Could not load playlists.",
+    "No pertenece a ninguna playlist indexada.": "This track is not in any indexed playlist.",
     "Taxonomias": "Taxonomies",
     "Indexa un XML para visualizar generos, BPM y relaciones.": "Index an XML to visualize genres, BPM, and relationships.",
     "Sin librerias indexadas": "No indexed libraries",
@@ -885,6 +901,13 @@ const translations: Record<Locale, Record<string, string>> = {
     "More known artists": "More known artists",
     "Nombre": "Name",
     "Playlist": "Playlist",
+    "Posicion de reproduccion": "Playback position",
+    "Playlist destino": "Destination playlist",
+    "Agregar a otra playlist": "Add to another playlist",
+    "Los tracks se agregaran al destino y permaneceran en {name}.":
+      "The tracks will be added to the destination and remain in {name}.",
+    "No hay otra playlist disponible. Crea una playlist de destino primero.":
+      "No other playlist is available. Create a destination playlist first.",
     "Playlist creada: {name}": "Playlist created: {name}",
     "Playlist creada: {name} con {count} tracks.": "Playlist created: {name} with {count} tracks.",
     "Playlists del XML": "XML playlists",

@@ -30,6 +30,7 @@ import {
 } from "./components/ui/dropdown-menu";
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
 import { BroadcastAddButton } from "./components/tracks/BroadcastAddButton";
+import { TrackPlaylistMemberships } from "./components/tracks/TrackPlaylistMemberships";
 import { TrackTable } from "./components/tracks/TrackList";
 import type { TrackListItem } from "./components/tracks/types";
 import { cn } from "./lib/utils";
@@ -199,6 +200,8 @@ export function PlaylistIndexPage() {
   const [drafts, setDrafts] = useState<PlaylistDraft[]>([]);
   const [activeDraftId, setActiveDraftId] = useState("");
   const [draftTracks, setDraftTracks] = useState<PlaylistIndexTrack[]>([]);
+  const [selectedDraftTrackIds, setSelectedDraftTrackIds] = useState<Set<string>>(new Set());
+  const [addDraftDialogOpen, setAddDraftDialogOpen] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [draftDescription, setDraftDescription] = useState("");
   const [message, setMessage] = useState("");
@@ -226,6 +229,15 @@ export function PlaylistIndexPage() {
   );
   const activePlaylist = playlists.find((playlist) => playlist.path === activePlaylistPath);
   const activeDraft = drafts.find((draft) => draft.id === activeDraftId) ?? null;
+  const selectedDraftTracks = useMemo(
+    () => draftTracks.filter((track) => selectedDraftTrackIds.has(track.track_id)),
+    [draftTracks, selectedDraftTrackIds]
+  );
+  const allDraftTracksSelected = draftTracks.length > 0 && selectedDraftTracks.length === draftTracks.length;
+  const addDraftTargets = useMemo(
+    () => drafts.filter((draft) => draft.id !== activeDraftId),
+    [activeDraftId, drafts]
+  );
   const indexablePlaylists = useMemo<PlaylistIndexPreviewPlaylist[]>(() => {
     if (xmlPreview) return xmlPreview.playlists;
     if (!activeLibrary) return [];
@@ -706,11 +718,13 @@ export function PlaylistIndexPage() {
 
   async function selectDraft(draftId: string) {
     setActiveDraftId(draftId);
+    setAddDraftDialogOpen(false);
     await loadDraftTracks(draftId);
   }
 
   async function loadDraftTracks(draftId = activeDraftId) {
     if (!draftId) return;
+    setSelectedDraftTrackIds(new Set());
 
     try {
       const tracks = await invoke<PlaylistIndexTrack[]>("playlist_index_draft_tracks", { draftId });
@@ -761,7 +775,52 @@ export function PlaylistIndexPage() {
         trackId
       });
       setDraftTracks(tracks);
+      setSelectedDraftTrackIds((current) => {
+        const next = new Set(current);
+        next.delete(trackId);
+        return next;
+      });
       await loadDrafts(activeLibraryId, activeDraftId);
+    } catch (error) {
+      setErrorMessage(translateBackendMessage(locale, String(error)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleDraftTrack(trackId: string) {
+    setSelectedDraftTrackIds((current) => {
+      const next = new Set(current);
+      if (next.has(trackId)) {
+        next.delete(trackId);
+      } else {
+        next.add(trackId);
+      }
+      return next;
+    });
+  }
+
+  function toggleAllDraftTracks() {
+    setSelectedDraftTrackIds(() => {
+      if (allDraftTracksSelected) return new Set();
+      return new Set(draftTracks.map((track) => track.track_id));
+    });
+  }
+
+  async function addSelectedDraftTracks(targetDraftId: string) {
+    if (!activeDraftId || !targetDraftId || selectedDraftTracks.length === 0) return;
+    setBusy(true);
+    setErrorMessage("");
+
+    try {
+      const targetTracks = await invoke<PlaylistIndexTrack[]>("playlist_index_add_tracks_to_draft", {
+        draftId: targetDraftId,
+        trackIds: selectedDraftTracks.map((track) => track.track_id)
+      });
+      setSelectedDraftTrackIds(new Set());
+      setAddDraftDialogOpen(false);
+      await loadDrafts(activeLibraryId, activeDraftId);
+      setMessage(t("{count} tracks en la playlist.", { count: targetTracks.length }));
     } catch (error) {
       setErrorMessage(translateBackendMessage(locale, String(error)));
     } finally {
@@ -779,6 +838,8 @@ export function PlaylistIndexPage() {
       await invoke<string>("playlist_index_delete_draft", { draftId: activeDraftId });
       setActiveDraftId("");
       setDraftTracks([]);
+      setSelectedDraftTrackIds(new Set());
+      setAddDraftDialogOpen(false);
       await loadDrafts(activeLibraryId, "");
     } catch (error) {
       setErrorMessage(translateBackendMessage(locale, String(error)));
@@ -1477,10 +1538,26 @@ export function PlaylistIndexPage() {
                     <div className="min-w-0">
                       <CardTitle>{activeDraft?.name ?? t("Playlist nueva")}</CardTitle>
                       <span className="block truncate text-xs text-muted-foreground">
-                        {draftTracks.length} {t("tracks")}
+                        {draftTracks.length} {t("tracks")} · {selectedDraftTracks.length} {t("seleccionados")}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={!activeDraftId || draftTracks.length === 0 || busy}
+                        onClick={toggleAllDraftTracks}
+                      >
+                        {allDraftTracksSelected ? t("Deseleccionar") : t("Todos")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        disabled={selectedDraftTracks.length === 0 || addDraftTargets.length === 0 || busy}
+                        onClick={() => setAddDraftDialogOpen(true)}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        {t("Agregar a otra playlist")}
+                      </Button>
                       <Button variant="secondary" size="sm" disabled={!activeDraftId || draftTracks.length === 0 || busy} onClick={() => void exportDraft()}>
                         <FileOutput className="h-3.5 w-3.5" />
                         {t("Exportar")}
@@ -1497,6 +1574,8 @@ export function PlaylistIndexPage() {
                       <TrackTable
                         tracks={draftTracks}
                         columns={["artist", "album", "kind"]}
+                        selectedTrackIds={selectedDraftTrackIds}
+                        onToggleTrack={(track) => toggleDraftTrack(track.track_id)}
                         showPosition
                         playbackContext={draftPlaybackContext}
                         isPlaying={(track) => audioPlayer.isPlaying(track.source_path)}
@@ -1601,6 +1680,16 @@ export function PlaylistIndexPage() {
         </div>
       ) : null}
 
+      <PlaylistAddAnotherDialog
+        open={addDraftDialogOpen}
+        busy={busy}
+        sourceName={activeDraft?.name ?? t("Playlist nueva")}
+        targets={addDraftTargets}
+        trackCount={selectedDraftTracks.length}
+        onClose={() => setAddDraftDialogOpen(false)}
+        onAdd={(targetDraftId) => void addSelectedDraftTracks(targetDraftId)}
+      />
+
       <PlaylistTrackDetailSheet
         open={detailSheetOpen}
         track={detailTrack}
@@ -1630,6 +1719,93 @@ export function PlaylistIndexPage() {
         onClear={() => setTerminalLogs([])}
       />
     </main>
+  );
+}
+
+function PlaylistAddAnotherDialog({
+  open,
+  busy,
+  sourceName,
+  targets,
+  trackCount,
+  onClose,
+  onAdd
+}: {
+  open: boolean;
+  busy: boolean;
+  sourceName: string;
+  targets: PlaylistDraft[];
+  trackCount: number;
+  onClose: () => void;
+  onAdd: (targetDraftId: string) => void;
+}) {
+  const { t } = useI18n();
+  const [targetDraftId, setTargetDraftId] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setTargetDraftId(targets[0]?.id ?? "");
+  }, [open, targets]);
+
+  if (!open) return null;
+
+  function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!targetDraftId || trackCount === 0) return;
+    onAdd(targetDraftId);
+  }
+
+  return (
+    <div className="fixed inset-0 z-[75] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/35 backdrop-blur-[1px]" onClick={onClose} />
+      <section className="relative z-[80] w-full max-w-md rounded-md border border-border bg-background shadow-2xl">
+        <header className="flex items-start justify-between gap-3 border-b border-border bg-card px-4 py-4">
+          <div className="min-w-0">
+            <h2 className="truncate text-base font-semibold">{t("Agregar a otra playlist")}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {trackCount} {t("tracks seleccionados")}
+            </p>
+          </div>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={onClose}>
+            {t("Cerrar")}
+          </Button>
+        </header>
+        <form className="grid gap-4 p-4" onSubmit={submit}>
+          <div className="rounded-md border border-border bg-secondary/60 p-3 text-sm">
+            {t("Los tracks se agregaran al destino y permaneceran en {name}.", { name: sourceName })}
+          </div>
+          {targets.length > 0 ? (
+            <label className="grid gap-1 text-sm">
+              <span className="font-semibold">{t("Playlist destino")}</span>
+              <select
+                className="h-10 rounded-md border border-input bg-background px-3 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                value={targetDraftId}
+                onChange={(event) => setTargetDraftId(event.currentTarget.value)}
+              >
+                {targets.map((draft) => (
+                  <option key={draft.id} value={draft.id}>
+                    {draft.name} ({draft.track_count})
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
+              {t("No hay otra playlist disponible. Crea una playlist de destino primero.")}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" disabled={busy} onClick={onClose}>
+              {t("Cancelar")}
+            </Button>
+            <Button disabled={busy || !targetDraftId || trackCount === 0}>
+              <Plus className="h-4 w-4" />
+              {t("Agregar {count} tracks", { count: trackCount })}
+            </Button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -1986,6 +2162,8 @@ function PlaylistTrackDetailSheet({
           <SheetBlock title={t("Tu rating")}>
             <TrackStarRating track={track} onTrackUpdated={onTrackUpdated} />
           </SheetBlock>
+
+          <TrackPlaylistMemberships track={track} />
 
           <SheetBlock title={t("Metadata")}>
             <div className="grid gap-2">

@@ -145,6 +145,61 @@ pub fn local_conversion_add_files(
 }
 
 #[tauri::command]
+pub fn local_conversion_import_paths(
+    app: AppHandle,
+    paths: Vec<String>,
+    recursive: bool,
+    group_id: Option<String>,
+) -> Result<LocalConversionImportResponse, String> {
+    let conn = open_db(&app)?;
+    let mut skipped_errors = Vec::new();
+    let candidates = collect_dropped_audio_paths(paths, recursive, &mut skipped_errors);
+    let existing_group = match group_id.as_deref() {
+        Some(group_id) => get_group(&conn, group_id)?.filter(|group| group.kind == "drop"),
+        None => None,
+    };
+    if candidates.is_empty() {
+        let items = if let Some(group) = &existing_group {
+            list_group_items(&conn, &group.id)?
+        } else {
+            Vec::new()
+        };
+        return Ok(LocalConversionImportResponse {
+            group: existing_group,
+            root_path: None,
+            recursive,
+            items,
+            skipped_errors,
+        });
+    }
+
+    let group = match existing_group {
+        Some(group) => group,
+        None => create_drop_group(&conn, candidates.len(), recursive)?,
+    };
+    for path in candidates {
+        match register_source_path(&conn, path) {
+            Ok(Some(item)) => {
+                link_group_item(&conn, &group.id, &item.id)?;
+            }
+            Ok(None) => {}
+            Err(error) => skipped_errors.push(error),
+        }
+    }
+
+    update_drop_group(&conn, &group.id, recursive)?;
+    let group = get_group(&conn, &group.id)?.unwrap_or(group);
+    let items = list_group_items(&conn, &group.id)?;
+    Ok(LocalConversionImportResponse {
+        group: Some(group),
+        root_path: None,
+        recursive,
+        items,
+        skipped_errors,
+    })
+}
+
+#[tauri::command]
 pub fn local_conversion_scan_folder(
     app: AppHandle,
     folder_path: String,
@@ -804,6 +859,8 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
     fs::create_dir_all(&dir).map_err(|error| format!("No se pudo crear app data dir: {error}"))?;
     let conn = Connection::open(dir.join(DB_FILE))
         .map_err(|error| format!("No se pudo abrir SQLite local conversion: {error}"))?;
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+        .map_err(|error| format!("No se pudo configurar SQLite local conversion: {error}"))?;
     init_db(&conn)?;
     Ok(conn)
 }
@@ -873,7 +930,33 @@ fn init_db(conn: &Connection) -> Result<(), String> {
     )
     .map_err(|error| format!("No se pudo migrar estados locales pendientes: {error}"))?;
 
+    cleanup_appledouble_items(conn)?;
+
     Ok(())
+}
+
+fn cleanup_appledouble_items(conn: &Connection) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM local_conversion_events
+         WHERE item_id IN (
+           SELECT id FROM local_conversion_items WHERE substr(source_name, 1, 2) = '._'
+         )",
+        [],
+    )
+    .map_err(|error| format!("No se pudieron limpiar eventos AppleDouble: {error}"))?;
+    conn.execute(
+        "DELETE FROM local_conversion_group_items
+         WHERE item_id IN (
+           SELECT id FROM local_conversion_items WHERE substr(source_name, 1, 2) = '._'
+         )",
+        [],
+    )
+    .map_err(|error| format!("No se pudieron limpiar grupos AppleDouble: {error}"))?;
+    conn.execute(
+        "DELETE FROM local_conversion_items WHERE substr(source_name, 1, 2) = '._'",
+        [],
+    )
+    .map_err(|error| format!("No se pudieron limpiar archivos AppleDouble: {error}"))
 }
 
 fn create_files_group(
@@ -892,6 +975,50 @@ fn create_files_group(
     .map_err(|error| format!("No se pudo crear grupo de archivos: {error}"))?;
 
     get_group(conn, &id)?.ok_or_else(|| "No se pudo leer grupo creado.".to_string())
+}
+
+fn create_drop_group(
+    conn: &Connection,
+    item_count: usize,
+    recursive: bool,
+) -> Result<LocalConversionGroup, String> {
+    let now = timestamp();
+    let id = Uuid::new_v4().to_string();
+    let name = format!("Arrastre - {item_count} archivo(s)");
+    conn.execute(
+        "INSERT INTO local_conversion_groups (id, kind, name, root_path, recursive, created_at, updated_at)
+         VALUES (?1, 'drop', ?2, NULL, ?3, ?4, ?4)",
+        params![&id, &name, if recursive { 1_i64 } else { 0_i64 }, &now],
+    )
+    .map_err(|error| format!("No se pudo crear grupo de arrastre: {error}"))?;
+
+    get_group(conn, &id)?.ok_or_else(|| "No se pudo leer grupo de arrastre.".to_string())
+}
+
+fn update_drop_group(conn: &Connection, group_id: &str, recursive: bool) -> Result<(), String> {
+    let item_count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM local_conversion_group_items WHERE group_id = ?1",
+            params![group_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("No se pudo contar el batch arrastrado: {error}"))?;
+    let name = format!("Arrastre - {item_count} archivo(s)");
+    conn.execute(
+        "UPDATE local_conversion_groups
+         SET name = ?2,
+             recursive = CASE WHEN recursive = 1 OR ?3 = 1 THEN 1 ELSE 0 END,
+             updated_at = ?4
+         WHERE id = ?1 AND kind = 'drop'",
+        params![
+            group_id,
+            &name,
+            if recursive { 1_i64 } else { 0_i64 },
+            timestamp()
+        ],
+    )
+    .map_err(|error| format!("No se pudo actualizar el batch arrastrado: {error}"))?;
+    Ok(())
 }
 
 fn upsert_folder_group(
@@ -1176,6 +1303,45 @@ fn emit_log(app: &AppHandle, event: LocalConversionLogEvent) {
     let _ = app.emit("local-conversion-log", event);
 }
 
+fn collect_dropped_audio_paths(
+    paths: Vec<String>,
+    recursive: bool,
+    skipped_errors: &mut Vec<String>,
+) -> Vec<PathBuf> {
+    let mut candidates = BTreeSet::new();
+    for raw_path in paths {
+        let path = PathBuf::from(raw_path);
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                skipped_errors.push(format!("No se pudo leer {}: {error}", path.display()));
+                continue;
+            }
+        };
+
+        if metadata.is_dir() {
+            let mut folder_paths = Vec::new();
+            collect_audio_paths(&path, &path, recursive, &mut folder_paths, skipped_errors);
+            candidates.extend(folder_paths);
+        } else if metadata.is_file() {
+            if is_appledouble_path(&path) || is_inside_any_converted_folder(&path) {
+                continue;
+            }
+            if is_audio_path(&path) {
+                candidates.insert(path);
+            } else {
+                skipped_errors.push(format!("Formato no soportado: {}", path.display()));
+            }
+        } else {
+            skipped_errors.push(format!(
+                "El path no es un archivo o carpeta: {}",
+                path.display()
+            ));
+        }
+    }
+    candidates.into_iter().collect()
+}
+
 fn collect_audio_paths(
     root: &Path,
     current: &Path,
@@ -1228,7 +1394,11 @@ fn collect_audio_paths(
     }
 }
 
-fn is_audio_path(path: &Path) -> bool {
+pub(crate) fn is_audio_path(path: &Path) -> bool {
+    if is_appledouble_path(path) {
+        return false;
+    }
+
     let extension = path
         .extension()
         .and_then(|value| value.to_str())
@@ -1239,6 +1409,12 @@ fn is_audio_path(path: &Path) -> bool {
         extension.as_str(),
         "aif" | "aiff" | "flac" | "mp3" | "wav" | "wave" | "m4a" | "alac" | "aac"
     )
+}
+
+fn is_appledouble_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.starts_with("._"))
 }
 
 fn is_aiff_path(path: &Path) -> bool {
@@ -1337,4 +1513,112 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn timestamp() -> String {
     Utc::now().to_rfc3339()
+}
+
+#[cfg(test)]
+mod local_conversion_tests {
+    use super::*;
+
+    #[test]
+    fn audio_detection_rejects_macos_appledouble_files() {
+        assert!(is_audio_path(Path::new("/music/Track.aiff")));
+        assert!(!is_audio_path(Path::new("/music/._Track.aiff")));
+        assert!(!is_audio_path(Path::new("/music/._Track.mp3")));
+    }
+
+    #[test]
+    fn cleanup_removes_only_appledouble_items() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_db(&conn).expect("initialize schema");
+        let now = timestamp();
+        for (id, name) in [("sidecar", "._Track.mp3"), ("hidden", ".Track.mp3")] {
+            conn.execute(
+                "INSERT INTO local_conversion_items (
+                    id, source_path, source_name, source_parent, extension, target_path,
+                    state, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, '/music', 'mp3', ?2, 'pending', ?4, ?4)",
+                params![id, format!("/music/{name}"), name, &now],
+            )
+            .expect("insert local item");
+        }
+
+        assert_eq!(cleanup_appledouble_items(&conn).expect("clean items"), 1);
+        let names = {
+            let mut stmt = conn
+                .prepare("SELECT source_name FROM local_conversion_items ORDER BY source_name")
+                .expect("prepare remaining items");
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .expect("query remaining items")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("map remaining items")
+        };
+        assert_eq!(names, vec![".Track.mp3"]);
+    }
+
+    #[test]
+    fn dropped_batches_mix_files_and_recursive_folders_without_duplicates() {
+        let root = std::env::temp_dir().join(format!("rau-drop-test-{}", Uuid::new_v4()));
+        let nested = root.join("nested");
+        let converted = root.join("converted");
+        fs::create_dir_all(&nested).expect("create nested folder");
+        fs::create_dir_all(&converted).expect("create converted folder");
+        let direct = root.join("direct.mp3");
+        let nested_audio = nested.join("nested.aiff");
+        fs::write(&direct, b"audio").expect("write direct audio");
+        fs::write(&nested_audio, b"audio").expect("write nested audio");
+        fs::write(root.join("._direct.mp3"), b"metadata").expect("write AppleDouble");
+        fs::write(converted.join("skip.aiff"), b"audio").expect("write converted audio");
+
+        let mut skipped_errors = Vec::new();
+        let recursive = collect_dropped_audio_paths(
+            vec![
+                root.to_string_lossy().into_owned(),
+                direct.to_string_lossy().into_owned(),
+            ],
+            true,
+            &mut skipped_errors,
+        );
+        assert_eq!(recursive, vec![direct.clone(), nested_audio]);
+        assert!(skipped_errors.is_empty());
+
+        let direct_only = collect_dropped_audio_paths(
+            vec![root.to_string_lossy().into_owned()],
+            false,
+            &mut Vec::new(),
+        );
+        assert_eq!(direct_only, vec![direct]);
+
+        fs::remove_dir_all(root).expect("remove drop fixture");
+    }
+
+    #[test]
+    fn drop_groups_accumulate_unique_items() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_db(&conn).expect("initialize schema");
+        let now = timestamp();
+        let group = create_drop_group(&conn, 1, false).expect("create drop group");
+        for (id, name) in [("one", "One.mp3"), ("two", "Two.aiff")] {
+            conn.execute(
+                "INSERT INTO local_conversion_items (
+                    id, source_path, source_name, source_parent, extension, target_path,
+                    state, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, '/music', 'audio', ?2, 'pending', ?4, ?4)",
+                params![id, format!("/music/{name}"), name, &now],
+            )
+            .expect("insert local item");
+        }
+        link_group_item(&conn, &group.id, "one").expect("link first item");
+        link_group_item(&conn, &group.id, "one").expect("deduplicate first item");
+        link_group_item(&conn, &group.id, "two").expect("link second item");
+        update_drop_group(&conn, &group.id, true).expect("update drop group");
+
+        let accumulated = list_group_items(&conn, &group.id).expect("list accumulated items");
+        assert_eq!(accumulated.len(), 2);
+        let updated_group = get_group(&conn, &group.id)
+            .expect("load group")
+            .expect("group exists");
+        assert_eq!(updated_group.item_count, 2);
+        assert_eq!(updated_group.name, "Arrastre - 2 archivo(s)");
+        assert!(updated_group.recursive);
+    }
 }

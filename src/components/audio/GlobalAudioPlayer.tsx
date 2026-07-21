@@ -73,6 +73,7 @@ type SidebarAudioPlayerContextValue = GlobalAudioPlayerContextValue & {
   queue: PlaybackQueueState | null;
   queuePosition: number;
   queueTotal: number;
+  seek: (time: number) => void;
   setCollapsed: (collapsed: boolean) => void;
   setVolume: (volume: number) => void;
   togglePlayer: () => Promise<void>;
@@ -133,6 +134,16 @@ export function GlobalAudioPlayerProvider({ children }: { children: ReactNode })
     if (audioElement.current) {
       audioElement.current.volume = clampedVolume;
     }
+  }, []);
+
+  const seek = useCallback((nextTime: number) => {
+    const audio = audioElement.current;
+    if (!audio) return;
+    const audioDuration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    if (audioDuration <= 0 || !Number.isFinite(nextTime)) return;
+    const clampedTime = Math.max(0, Math.min(audioDuration, nextTime));
+    audio.currentTime = clampedTime;
+    setCurrentTime(clampedTime);
   }, []);
 
   useEffect(() => {
@@ -362,6 +373,7 @@ export function GlobalAudioPlayerProvider({ children }: { children: ReactNode })
       queue,
       queuePosition,
       queueTotal,
+      seek,
       setCollapsed,
       setVolume,
       togglePlayer,
@@ -381,6 +393,7 @@ export function GlobalAudioPlayerProvider({ children }: { children: ReactNode })
       queue,
       queuePosition,
       queueTotal,
+      seek,
       setCollapsed,
       setVolume,
       togglePlayer,
@@ -505,8 +518,27 @@ export function SidebarAudioPlayer() {
             ) : null}
           </div>
 
-          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-            <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${player.progress}%` }} />
+          <div className="group relative h-4 rounded-full focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2">
+            <div className="pointer-events-none absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-primary" style={{ width: `${player.progress}%` }} />
+            </div>
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-primary bg-background opacity-70 shadow-sm transition-opacity group-hover:opacity-100"
+              style={{ left: `${player.progress}%` }}
+            />
+            <input
+              type="range"
+              min={0}
+              max={player.duration > 0 ? player.duration : 0}
+              step={0.1}
+              value={Math.min(player.currentTime, player.duration || 0)}
+              disabled={!player.player || player.duration <= 0}
+              aria-label={t("Posicion de reproduccion")}
+              aria-valuetext={`${formatAudioTime(player.currentTime)} / ${formatAudioTime(player.duration)}`}
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+              onChange={(event) => player.seek(Number(event.currentTarget.value))}
+            />
           </div>
 
           <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">

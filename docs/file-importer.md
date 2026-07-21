@@ -14,16 +14,27 @@ File Importer converts local audio files to AIFF without requiring a Rekordbox X
 ## Workflow
 
 1. Open **File Conversion > File Conversion**.
-2. Use **Folder** or **Files**.
+2. Use **Folder**, **Files**, or drag a mixed batch of files and folders onto the import area.
 3. Review the **Current Import** tab.
 4. Select files or use the header checkbox.
 5. Adjust concurrency if needed.
 6. Run **Convert Selected** or convert a single row.
-7. Watch the bottom terminal for events and errors.
-8. Open **Groups** to revisit a previous import.
-9. Open **All** to inspect the global file history.
+7. Use **Add to playlist** to create a playlist or add the checked files to an existing local playlist.
+8. Watch the bottom terminal for events and errors.
+9. Open **Groups** to revisit a previous import.
+10. Open **All** to inspect the global file history.
 
 Choosing a folder or files does not enqueue conversion automatically. Items stay `pending` until the user starts a conversion action.
+
+Consecutive drops accumulate in the active persisted drop batch and select its compatible audio files. Opening a different import group starts a new drop batch. Dropped folders follow the current **Recursive** setting, and one drop can mix multiple files and folders. Duplicate paths are collapsed; `converted/` folders, unsupported files, and macOS `._` sidecars are skipped.
+
+## Local Playlists
+
+The checkboxes also enable **Add to playlist**. Before opening the playlist dialog, Rau Studio indexes the selected files in a local **File Conversion** library. When `ffprobe` is available, it reads title, artist, album, genre, comments, year, duration, sample rate, and bitrate; otherwise the file name and filesystem metadata provide a safe fallback.
+
+If a converted AIFF exists, the playlist points to that file. Otherwise it points to the original. Re-adding the same conversion item refreshes its indexed path and metadata without duplicating the track. Local playlists can also be exported as Rekordbox XML from Playlist Library.
+
+macOS AppleDouble sidecars whose names start with `._` are ignored during scanning and removed from saved File Conversion playlists; they contain filesystem metadata, not playable audio.
 
 ## Output
 

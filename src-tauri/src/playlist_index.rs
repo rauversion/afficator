@@ -7,7 +7,7 @@ use crate::{
     },
     settings, system,
 };
-use aifficator_core::exporter::export_with_new_playlist_xml;
+use aifficator_core::exporter::{export_with_new_playlist_xml, path_to_rekordbox_location};
 use aifficator_core::rekordbox::{parse_rekordbox_xml_file, Track};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
@@ -31,6 +31,7 @@ const COPILOT_PROBE_RESULT_LIMIT: usize = 160;
 const TRACK_COVER_CACHE_VERSION: &str = "v2";
 const TRACK_COVER_FILTER: &str =
     "scale=256:256:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=fast_bilinear";
+const LOCAL_CONVERSION_LIBRARY_ID: &str = "rau-studio-file-conversion";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PlaylistIndexLibrary {
@@ -45,6 +46,31 @@ pub struct PlaylistIndexLibrary {
     missing_file_count: usize,
     indexed_at: String,
     updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreparedPlaylistTracks {
+    library_id: String,
+    track_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LocalPlaylistTrackInput {
+    item_id: String,
+    path: String,
+}
+
+#[derive(Debug, Default)]
+struct LocalTrackMetadata {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    genre: Option<String>,
+    comments: Option<String>,
+    year: Option<String>,
+    total_time: Option<u64>,
+    sample_rate: Option<u32>,
+    bitrate: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -523,6 +549,26 @@ struct EmbeddingData {
 pub fn playlist_index_libraries(app: AppHandle) -> Result<Vec<PlaylistIndexLibrary>, String> {
     let conn = open_db(&app)?;
     list_libraries(&conn)
+}
+
+#[tauri::command]
+pub async fn playlist_index_prepare_local_tracks(
+    app: AppHandle,
+    items: Vec<LocalPlaylistTrackInput>,
+) -> Result<PreparedPlaylistTracks, String> {
+    let app_for_error = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app)?;
+        prepare_local_tracks(&app, &conn, items)
+    })
+    .await
+    .map_err(|error| {
+        settings::localized(
+            &app_for_error,
+            &format!("No se pudieron indexar archivos locales: {error}"),
+            &format!("Local files could not be indexed: {error}"),
+        )
+    })?
 }
 
 #[tauri::command]
@@ -1205,6 +1251,16 @@ pub fn playlist_index_playlist_tracks(
 }
 
 #[tauri::command]
+pub fn playlist_index_track_playlists(
+    app: AppHandle,
+    library_id: String,
+    track_id: String,
+) -> Result<Vec<String>, String> {
+    let conn = open_db(&app)?;
+    indexed_playlist_paths_for_track(&conn, &library_id, &track_id)
+}
+
+#[tauri::command]
 pub fn playlist_index_set_track_rating(
     app: AppHandle,
     library_id: String,
@@ -1672,8 +1728,12 @@ pub fn playlist_index_export_draft_xml(
         return Err("La playlist draft no tiene tracks para exportar.".to_string());
     }
 
-    let xml = fs::read_to_string(&library.source_path)
-        .map_err(|error| format!("No se pudo leer XML original: {error}"))?;
+    let xml = if library.id == LOCAL_CONVERSION_LIBRARY_ID {
+        local_library_rekordbox_xml(&conn, &library.id)?
+    } else {
+        fs::read_to_string(&library.source_path)
+            .map_err(|error| format!("No se pudo leer XML original: {error}"))?
+    };
     let track_ids = tracks
         .iter()
         .map(|track| track.track_id.clone())
@@ -1700,15 +1760,198 @@ pub fn playlist_index_export_draft_xml(
     })
 }
 
+fn local_library_rekordbox_xml(conn: &Connection, library_id: &str) -> Result<String, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT track_id, name, artist, album, kind, location, size_bytes,
+                    total_time, sample_rate, bitrate
+             FROM playlist_index_tracks
+             WHERE library_id = ?1
+             ORDER BY COALESCE(artist, ''), COALESCE(name, ''), track_id",
+        )
+        .map_err(|error| format!("No se pudo preparar el XML de archivos locales: {error}"))?;
+    let rows = stmt
+        .query_map(params![library_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, Option<i64>>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
+            ))
+        })
+        .map_err(|error| format!("No se pudieron leer archivos locales para exportar: {error}"))?;
+    let tracks = rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        format!("No se pudieron mapear archivos locales para exportar: {error}")
+    })?;
+
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<DJ_PLAYLISTS Version=\"1.0.0\">\n",
+    );
+    xml.push_str(&format!("  <COLLECTION Entries=\"{}\">\n", tracks.len()));
+    for (track_id, name, artist, album, kind, location, size, total_time, sample_rate, bitrate) in
+        tracks
+    {
+        xml.push_str("    <TRACK");
+        push_xml_attribute(&mut xml, "TrackID", &track_id);
+        push_optional_xml_attribute(&mut xml, "Name", name.as_deref());
+        push_optional_xml_attribute(&mut xml, "Artist", artist.as_deref());
+        push_optional_xml_attribute(&mut xml, "Album", album.as_deref());
+        push_optional_xml_attribute(&mut xml, "Kind", kind.as_deref());
+        push_optional_xml_attribute(&mut xml, "Location", location.as_deref());
+        push_optional_xml_attribute(
+            &mut xml,
+            "Size",
+            size.as_ref().map(ToString::to_string).as_deref(),
+        );
+        push_optional_xml_attribute(
+            &mut xml,
+            "TotalTime",
+            total_time.as_ref().map(ToString::to_string).as_deref(),
+        );
+        push_optional_xml_attribute(
+            &mut xml,
+            "SampleRate",
+            sample_rate.as_ref().map(ToString::to_string).as_deref(),
+        );
+        push_optional_xml_attribute(
+            &mut xml,
+            "BitRate",
+            bitrate.as_ref().map(ToString::to_string).as_deref(),
+        );
+        xml.push_str("/>\n");
+    }
+    xml.push_str(
+        "  </COLLECTION>\n  <PLAYLISTS>\n    <NODE Type=\"0\" Name=\"ROOT\" Count=\"0\"/>\n  </PLAYLISTS>\n</DJ_PLAYLISTS>\n",
+    );
+    Ok(xml)
+}
+
+fn push_optional_xml_attribute(output: &mut String, name: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        push_xml_attribute(output, name, value);
+    }
+}
+
+fn push_xml_attribute(output: &mut String, name: &str, value: &str) {
+    output.push(' ');
+    output.push_str(name);
+    output.push_str("=\"");
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '\"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&apos;"),
+            _ => output.push(character),
+        }
+    }
+    output.push('\"');
+}
+
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
     let dir = app_data_dir(app)?;
     fs::create_dir_all(&dir).map_err(|error| format!("No se pudo crear app data dir: {error}"))?;
-    let conn = Connection::open(dir.join(DB_FILE))
+    let mut conn = Connection::open(dir.join(DB_FILE))
         .map_err(|error| format!("No se pudo abrir SQLite playlists: {error}"))?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
         .map_err(|error| format!("No se pudo habilitar foreign keys SQLite: {error}"))?;
     init_db(&conn)?;
+    if cleanup_appledouble_local_tracks(&mut conn)? > 0 {
+        sync_local_library_xml(&conn)?;
+    }
     Ok(conn)
+}
+
+fn cleanup_appledouble_local_tracks(conn: &mut Connection) -> Result<usize, String> {
+    let track_ids = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT track_id, source_path
+                 FROM playlist_index_tracks
+                 WHERE library_id = ?1 AND source_path IS NOT NULL",
+            )
+            .map_err(|error| format!("No se pudieron preparar tracks AppleDouble: {error}"))?;
+        let rows = stmt
+            .query_map(params![LOCAL_CONVERSION_LIBRARY_ID], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("No se pudieron leer tracks AppleDouble: {error}"))?;
+        rows.filter_map(|row| match row {
+            Ok((track_id, source_path)) if is_appledouble_path(Path::new(&source_path)) => {
+                Some(Ok(track_id))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("No se pudieron mapear tracks AppleDouble: {error}"))?
+    };
+    if track_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let now = timestamp();
+    let tx = conn
+        .transaction()
+        .map_err(|error| format!("No se pudo iniciar limpieza AppleDouble: {error}"))?;
+    let mut deleted_total = 0;
+    for track_id in &track_ids {
+        tx.execute(
+            "DELETE FROM playlist_draft_tracks
+             WHERE track_id = ?1
+               AND draft_id IN (
+                 SELECT id FROM playlist_drafts WHERE library_id = ?2
+               )",
+            params![track_id, LOCAL_CONVERSION_LIBRARY_ID],
+        )
+        .map_err(|error| format!("No se pudo quitar AppleDouble de playlists: {error}"))?;
+        deleted_total += tx
+            .execute(
+                "DELETE FROM playlist_index_tracks WHERE library_id = ?1 AND track_id = ?2",
+                params![LOCAL_CONVERSION_LIBRARY_ID, track_id],
+            )
+            .map_err(|error| format!("No se pudo quitar track AppleDouble: {error}"))?;
+    }
+    tx.execute(
+        "UPDATE playlist_index_libraries
+         SET track_count = (
+               SELECT COUNT(*) FROM playlist_index_tracks WHERE library_id = ?1
+             ),
+             updated_at = ?2
+         WHERE id = ?1",
+        params![LOCAL_CONVERSION_LIBRARY_ID, &now],
+    )
+    .map_err(|error| format!("No se pudo actualizar la libreria local: {error}"))?;
+    tx.commit()
+        .map_err(|error| format!("No se pudo confirmar limpieza AppleDouble: {error}"))?;
+    if deleted_total > 0 {
+        rebuild_fts(conn)?;
+    }
+    Ok(deleted_total)
+}
+
+fn sync_local_library_xml(conn: &Connection) -> Result<(), String> {
+    let source_path = conn
+        .query_row(
+            "SELECT source_path FROM playlist_index_libraries WHERE id = ?1",
+            params![LOCAL_CONVERSION_LIBRARY_ID],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("No se pudo leer la ruta de la libreria local: {error}"))?;
+    let Some(source_path) = source_path.filter(|path| !path.contains("://")) else {
+        return Ok(());
+    };
+    let xml = local_library_rekordbox_xml(conn, LOCAL_CONVERSION_LIBRARY_ID)?;
+    fs::write(&source_path, xml)
+        .map_err(|error| format!("No se pudo actualizar el XML de archivos locales: {error}"))
 }
 
 fn init_db(conn: &Connection) -> Result<(), String> {
@@ -2164,6 +2407,269 @@ fn list_libraries(conn: &Connection) -> Result<Vec<PlaylistIndexLibrary>, String
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("No se pudieron mapear librerias: {error}"))
+}
+
+fn prepare_local_tracks(
+    app: &AppHandle,
+    conn: &Connection,
+    items: Vec<LocalPlaylistTrackInput>,
+) -> Result<PreparedPlaylistTracks, String> {
+    let mut seen_ids = BTreeSet::new();
+    let local_tracks = items
+        .into_iter()
+        .filter(|item| {
+            valid_local_playlist_item_id(&item.item_id) && seen_ids.insert(item.item_id.clone())
+        })
+        .filter_map(|item| {
+            playlist_path_match_key(&item.path).map(|path| (item.item_id, PathBuf::from(path)))
+        })
+        .filter(|(_, path)| path.is_file() && !is_appledouble_path(path))
+        .collect::<Vec<_>>();
+    if local_tracks.is_empty() {
+        return Err(settings::localized(
+            app,
+            "No hay archivos locales disponibles para agregar a la playlist.",
+            "There are no available local files to add to the playlist.",
+        ));
+    }
+
+    let now = timestamp();
+    let library_path = app_data_dir(app)?.join("file-conversion-library.xml");
+    let library_path_string = library_path.to_string_lossy().into_owned();
+    conn.execute(
+        "INSERT INTO playlist_index_libraries (
+            id, source_path, source_name, product_name, product_version,
+            track_count, playlist_count, indexed_at, updated_at
+         ) VALUES (?1, ?2, 'File Conversion', 'Rau Studio', 'local', 0, 0, ?3, ?3)
+         ON CONFLICT(id) DO UPDATE SET
+            source_path = excluded.source_path,
+            source_name = excluded.source_name,
+            updated_at = excluded.updated_at",
+        params![LOCAL_CONVERSION_LIBRARY_ID, &library_path_string, &now],
+    )
+    .map_err(|error| format!("No se pudo preparar la libreria local: {error}"))?;
+
+    let mut track_ids = Vec::with_capacity(local_tracks.len());
+    for (item_id, path) in local_tracks {
+        let source_path = path.to_string_lossy().into_owned();
+        let track_id = format!("local-{item_id}");
+        let probe = probe_local_track_metadata(app, &path);
+        let fallback_name = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Audio local")
+            .to_string();
+        let name = probe.title.clone().unwrap_or(fallback_name);
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("audio")
+            .to_ascii_uppercase();
+        let kind = format!("{extension} File");
+        let location = path_to_rekordbox_location(&path).map_err(|error| error.to_string())?;
+        let size = path.metadata().ok().map(|metadata| metadata.len());
+        let mut attributes = BTreeMap::new();
+        if let Some(value) = &probe.genre {
+            attributes.insert("Genre".to_string(), value.clone());
+        }
+        if let Some(value) = &probe.comments {
+            attributes.insert("Comments".to_string(), value.clone());
+        }
+        if let Some(value) = &probe.year {
+            attributes.insert("Year".to_string(), value.clone());
+        }
+        attributes.insert("IndexedBy".to_string(), "File Conversion".to_string());
+        let attributes_json = serde_json::to_string(&attributes)
+            .map_err(|error| format!("No se pudo serializar metadata local: {error}"))?;
+        let search_text = [
+            Some(name.as_str()),
+            probe.artist.as_deref(),
+            probe.album.as_deref(),
+            probe.genre.as_deref(),
+            Some(source_path.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+
+        conn.execute(
+            "INSERT INTO playlist_index_tracks (
+                library_id, track_id, name, artist, album, kind, location, source_path,
+                size_bytes, total_time, sample_rate, bitrate, source_exists, search_text,
+                attributes_json, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1, ?13, ?14, ?15, ?15)
+             ON CONFLICT(library_id, track_id) DO UPDATE SET
+                name = excluded.name,
+                artist = excluded.artist,
+                album = excluded.album,
+                kind = excluded.kind,
+                location = excluded.location,
+                source_path = excluded.source_path,
+                size_bytes = excluded.size_bytes,
+                total_time = excluded.total_time,
+                sample_rate = excluded.sample_rate,
+                bitrate = excluded.bitrate,
+                source_exists = 1,
+                search_text = excluded.search_text,
+                attributes_json = excluded.attributes_json,
+                updated_at = excluded.updated_at",
+            params![
+                LOCAL_CONVERSION_LIBRARY_ID,
+                &track_id,
+                &name,
+                &probe.artist,
+                &probe.album,
+                &kind,
+                &location,
+                &source_path,
+                size.map(|value| value as i64),
+                probe.total_time.map(|value| value as i64),
+                probe.sample_rate.map(|value| value as i64),
+                probe.bitrate.map(|value| value as i64),
+                &search_text,
+                &attributes_json,
+                &now,
+            ],
+        )
+        .map_err(|error| format!("No se pudo indexar {}: {error}", path.display()))?;
+        track_ids.push(track_id);
+    }
+
+    conn.execute(
+        "UPDATE playlist_index_libraries
+         SET track_count = (
+               SELECT COUNT(*) FROM playlist_index_tracks WHERE library_id = ?1
+             ),
+             updated_at = ?2
+         WHERE id = ?1",
+        params![LOCAL_CONVERSION_LIBRARY_ID, &now],
+    )
+    .map_err(|error| format!("No se pudo actualizar la libreria local: {error}"))?;
+    rebuild_fts(conn)?;
+    let library_xml = local_library_rekordbox_xml(conn, LOCAL_CONVERSION_LIBRARY_ID)?;
+    fs::write(&library_path, library_xml)
+        .map_err(|error| format!("No se pudo guardar el XML de archivos locales: {error}"))?;
+
+    Ok(PreparedPlaylistTracks {
+        library_id: LOCAL_CONVERSION_LIBRARY_ID.to_string(),
+        track_ids,
+    })
+}
+
+fn valid_local_playlist_item_id(item_id: &str) -> bool {
+    !item_id.is_empty()
+        && item_id.len() <= 128
+        && item_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+fn probe_local_track_metadata(app: &AppHandle, path: &std::path::Path) -> LocalTrackMetadata {
+    let output = match system::ffprobe_command(app)
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration,bit_rate:format_tags=title,artist,album,genre,comment,date,year:stream=codec_type,sample_rate,bit_rate",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return LocalTrackMetadata::default(),
+    };
+    let Ok(parsed) = serde_json::from_slice::<Value>(&output.stdout) else {
+        return LocalTrackMetadata::default();
+    };
+    let format = parsed.get("format");
+    let tags = format.and_then(|value| value.get("tags"));
+    let audio_stream = parsed
+        .get("streams")
+        .and_then(Value::as_array)
+        .and_then(|streams| {
+            streams
+                .iter()
+                .find(|stream| stream.get("codec_type").and_then(Value::as_str) == Some("audio"))
+        });
+
+    LocalTrackMetadata {
+        title: local_metadata_tag(tags, &["title"]),
+        artist: local_metadata_tag(tags, &["artist", "album_artist"]),
+        album: local_metadata_tag(tags, &["album"]),
+        genre: local_metadata_tag(tags, &["genre"]),
+        comments: local_metadata_tag(tags, &["comment", "comments", "description"]),
+        year: local_metadata_tag(tags, &["date", "year"]),
+        total_time: format
+            .and_then(|value| value.get("duration"))
+            .and_then(json_value_to_f64)
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(|value| value.round() as u64),
+        sample_rate: audio_stream
+            .and_then(|stream| stream.get("sample_rate"))
+            .and_then(json_value_to_u32),
+        bitrate: audio_stream
+            .and_then(|stream| stream.get("bit_rate"))
+            .and_then(json_value_to_u32)
+            .or_else(|| {
+                format
+                    .and_then(|value| value.get("bit_rate"))
+                    .and_then(json_value_to_u32)
+            })
+            .map(|value| value / 1000),
+    }
+}
+
+fn local_metadata_tag(tags: Option<&Value>, names: &[&str]) -> Option<String> {
+    let values = tags?.as_object()?;
+    values.iter().find_map(|(key, value)| {
+        names
+            .iter()
+            .any(|name| key.eq_ignore_ascii_case(name))
+            .then(|| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            })
+            .flatten()
+            .map(str::to_string)
+    })
+}
+
+fn json_value_to_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str()?.trim().parse::<f64>().ok())
+}
+
+fn json_value_to_u32(value: &Value) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .or_else(|| value.as_str()?.trim().parse::<u32>().ok())
+}
+
+fn playlist_path_match_key(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(trimmed);
+    Some(
+        path.canonicalize()
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+fn is_appledouble_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.starts_with("._"))
 }
 
 fn get_library(
@@ -7486,7 +7992,7 @@ fn indexed_playlist_paths_for_track(
 ) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT playlist_path
+            "SELECT DISTINCT playlist_path
              FROM playlist_index_memberships
              WHERE library_id = ?1 AND track_id = ?2
              ORDER BY playlist_path COLLATE NOCASE",
@@ -7992,6 +8498,115 @@ mod playlist_index_tests {
     use super::*;
 
     #[test]
+    fn local_library_xml_is_valid_for_draft_export() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_db(&conn).expect("initialize schema");
+        let now = timestamp();
+        conn.execute(
+            "INSERT INTO playlist_index_libraries (
+                id, source_path, source_name, indexed_at, updated_at
+             ) VALUES (?1, ?2, 'File Conversion', ?3, ?3)",
+            params![
+                LOCAL_CONVERSION_LIBRARY_ID,
+                "/tmp/file-conversion-library.xml",
+                &now
+            ],
+        )
+        .expect("insert local library");
+        conn.execute(
+            "INSERT INTO playlist_index_tracks (
+                library_id, track_id, name, artist, kind, location, source_path,
+                source_exists, search_text, attributes_json, created_at, updated_at
+             ) VALUES (?1, 'local-1', 'A & B', 'Artist \"One\"', 'AIFF File',
+                       'file://localhost/tmp/A%20%26%20B.aiff', '/tmp/A & B.aiff',
+                       1, 'A B', '{}', ?2, ?2)",
+            params![LOCAL_CONVERSION_LIBRARY_ID, &now],
+        )
+        .expect("insert local track");
+
+        let base_xml = local_library_rekordbox_xml(&conn, LOCAL_CONVERSION_LIBRARY_ID)
+            .expect("build local XML");
+        let exported =
+            export_with_new_playlist_xml(&base_xml, "Set & Friends", &["local-1".to_string()])
+                .expect("export playlist");
+
+        assert!(exported.contains("Name=\"A &amp; B\""));
+        assert!(exported.contains("Artist=\"Artist &quot;One&quot;\""));
+        assert!(exported.contains("Name=\"Set &amp; Friends\""));
+        assert!(exported.contains("<TRACK Key=\"local-1\"/>"));
+    }
+
+    #[test]
+    fn appledouble_tracks_are_removed_from_local_playlists() {
+        let mut conn = Connection::open_in_memory().expect("open sqlite");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        init_db(&conn).expect("initialize schema");
+        let now = timestamp();
+        conn.execute(
+            "INSERT INTO playlist_index_libraries (
+                id, source_path, source_name, track_count, indexed_at, updated_at
+             ) VALUES (?1, '/tmp/file-conversion-library.xml', 'File Conversion', 2, ?2, ?2)",
+            params![LOCAL_CONVERSION_LIBRARY_ID, &now],
+        )
+        .expect("insert local library");
+        for (track_id, name, source_path) in [
+            ("local-good", "Track", "/Volumes/Music/Track.aiff"),
+            ("local-sidecar", "._Track", "/Volumes/Music/._Track.aiff"),
+        ] {
+            conn.execute(
+                "INSERT INTO playlist_index_tracks (
+                    library_id, track_id, name, source_path, source_exists, search_text,
+                    attributes_json, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, 1, ?3, '{}', ?5, ?5)",
+                params![
+                    LOCAL_CONVERSION_LIBRARY_ID,
+                    track_id,
+                    name,
+                    source_path,
+                    &now
+                ],
+            )
+            .expect("insert track");
+        }
+        conn.execute(
+            "INSERT INTO playlist_drafts (
+                id, library_id, name, created_at, updated_at
+             ) VALUES ('draft-1', ?1, 'External disk', ?2, ?2)",
+            params![LOCAL_CONVERSION_LIBRARY_ID, &now],
+        )
+        .expect("insert draft");
+        for (position, track_id) in ["local-good", "local-sidecar"].into_iter().enumerate() {
+            conn.execute(
+                "INSERT INTO playlist_draft_tracks (draft_id, track_id, position, created_at)
+                 VALUES ('draft-1', ?1, ?2, ?3)",
+                params![track_id, position as i64, &now],
+            )
+            .expect("insert draft track");
+        }
+
+        assert_eq!(
+            cleanup_appledouble_local_tracks(&mut conn).expect("clean AppleDouble tracks"),
+            1
+        );
+        assert_eq!(
+            draft_tracks(&conn, "draft-1")
+                .expect("load draft")
+                .into_iter()
+                .map(|track| track.track_id)
+                .collect::<Vec<_>>(),
+            vec!["local-good"]
+        );
+        assert_eq!(
+            get_library(&conn, LOCAL_CONVERSION_LIBRARY_ID)
+                .expect("load library")
+                .expect("library exists")
+                .track_count,
+            1
+        );
+    }
+
+    #[test]
     fn copilot_follow_up_updates_the_persisted_brief_implicitly() {
         let profile = PlaylistCopilotProfile {
             track_count: 6_000,
@@ -8119,6 +8734,60 @@ mod playlist_index_tests {
                 .unwrap()
                 .user_rating,
             Some(3)
+        );
+    }
+
+    #[test]
+    fn track_playlist_paths_are_unique_and_sorted() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        init_db(&conn).expect("initialize schema");
+        let now = timestamp();
+        conn.execute(
+            "INSERT INTO playlist_index_libraries (
+                id, source_path, source_name, indexed_at, updated_at
+             ) VALUES ('library-1', '/tmp/library.xml', 'library.xml', ?1, ?1)",
+            params![&now],
+        )
+        .expect("insert library");
+        conn.execute(
+            "INSERT INTO playlist_index_tracks (
+                library_id, track_id, name, source_exists, search_text,
+                attributes_json, created_at, updated_at
+             ) VALUES ('library-1', 'track-1', 'Track', 1, 'Track', '{}', ?1, ?1)",
+            params![&now],
+        )
+        .expect("insert track");
+        for (path, name, position) in [
+            ("ROOT/B Set", "B Set", 0_i64),
+            ("ROOT/A Set", "A Set", 1_i64),
+        ] {
+            conn.execute(
+                "INSERT INTO playlist_index_playlists (
+                    library_id, path, name, node_type, position, created_at, updated_at
+                 ) VALUES ('library-1', ?1, ?2, '1', ?3, ?4, ?4)",
+                params![path, name, position, &now],
+            )
+            .expect("insert playlist");
+            conn.execute(
+                "INSERT INTO playlist_index_memberships (
+                    library_id, playlist_path, track_id, position
+                 ) VALUES ('library-1', ?1, 'track-1', ?2)",
+                params![path, position],
+            )
+            .expect("insert membership");
+        }
+        conn.execute(
+            "INSERT INTO playlist_index_memberships (
+                library_id, playlist_path, track_id, position
+             ) VALUES ('library-1', 'ROOT/A Set', 'track-1', 2)",
+            [],
+        )
+        .expect("insert duplicate playlist membership");
+
+        assert_eq!(
+            indexed_playlist_paths_for_track(&conn, "library-1", "track-1")
+                .expect("load playlist paths"),
+            vec!["ROOT/A Set", "ROOT/B Set"]
         );
     }
 

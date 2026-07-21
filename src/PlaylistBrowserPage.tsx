@@ -17,6 +17,7 @@ import { useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
 import { PlaylistAddDialog } from "./components/tracks/PlaylistAddDialog";
 import { BroadcastAddButton } from "./components/tracks/BroadcastAddButton";
 import { TrackCover } from "./components/tracks/TrackCover";
+import { TrackPlaylistMemberships } from "./components/tracks/TrackPlaylistMemberships";
 import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
 
@@ -729,6 +730,8 @@ function BrowseTrackDetailSheet({
               <DetailRow key={label} label={label} value={value} />
             ))}
           </section>
+
+          <TrackPlaylistMemberships track={track} />
 
           {xmlAttributes.length > 0 ? (
             <section className="mt-4 rounded-md border border-border bg-card">

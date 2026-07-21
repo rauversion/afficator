@@ -113,12 +113,27 @@ cargo test -p aifficator-core
 
 GitHub Actions builds downloadable installers for macOS, Windows, and Linux.
 
-Release options:
+Run the interactive release assistant from a terminal:
+
+```sh
+npm run release
+```
+
+It suggests the next patch tag, updates the versions in npm, Cargo, and Tauri,
+runs the frontend build and Rust tests, creates a Conventional Commit plus an
+annotated tag, and atomically pushes both. The tag triggers **Build installers**,
+which publishes the GitHub Release after every platform finishes successfully.
+
+The assistant shows every pending file before staging because the release commit
+includes all current changes. It asks for confirmation before changing versions,
+before committing, and before pushing.
+
+Other release options:
 
 - Run **Build installers** manually from the GitHub **Actions** tab.
 - Push a `v*` tag to publish a GitHub Release with attached artifacts.
 
-Example:
+Manual example:
 
 ```sh
 git tag v0.1.19

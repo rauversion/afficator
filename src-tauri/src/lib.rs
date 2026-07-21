@@ -1395,7 +1395,10 @@ fn collect_audio_files(
             continue;
         }
 
-        if !metadata.is_file() || !is_audio_path(&path) || is_inside_converted_folder(root, &path) {
+        if !metadata.is_file()
+            || !local_conversion::is_audio_path(&path)
+            || is_inside_converted_folder(root, &path)
+        {
             continue;
         }
 
@@ -1426,19 +1429,6 @@ fn collect_audio_files(
             modified_ms,
         });
     }
-}
-
-fn is_audio_path(path: &Path) -> bool {
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    matches!(
-        extension.as_str(),
-        "aif" | "aiff" | "flac" | "mp3" | "wav" | "wave" | "m4a" | "alac" | "aac"
-    )
 }
 
 fn is_converted_subfolder(root: &Path, path: &Path) -> bool {
@@ -1523,6 +1513,7 @@ pub fn run() {
             local_conversion::local_conversion_list_groups,
             local_conversion::local_conversion_group_items,
             local_conversion::local_conversion_add_files,
+            local_conversion::local_conversion_import_paths,
             local_conversion::local_conversion_scan_folder,
             local_conversion::local_conversion_convert_items,
             local_conversion::local_conversion_delete_item,
@@ -1534,6 +1525,7 @@ pub fn run() {
             mastering::mastering_retry_job,
             mastering::mastering_delete_job,
             playlist_index::playlist_index_libraries,
+            playlist_index::playlist_index_prepare_local_tracks,
             playlist_index::playlist_index_preview_xml,
             playlist_index::playlist_index_import_xml,
             playlist_index::playlist_index_library_playlists,
@@ -1542,6 +1534,7 @@ pub fn run() {
             playlist_index::playlist_index_delete_tracks,
             playlist_index::playlist_index_clean_missing_files,
             playlist_index::playlist_index_playlist_tracks,
+            playlist_index::playlist_index_track_playlists,
             playlist_index::playlist_index_set_track_rating,
             playlist_index::playlist_index_search_tracks,
             playlist_index::playlist_index_track_groups,

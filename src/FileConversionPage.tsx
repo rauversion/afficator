@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   CheckCircle2,
   FileAudio2,
   FolderOpen,
+  ListMusic,
   Loader2,
   Play,
   RefreshCw,
@@ -15,6 +17,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
+import {
+  PlaylistAddDialog,
+  type PlaylistDraftOption
+} from "./components/tracks/PlaylistAddDialog";
 import { TerminalDrawer, type TerminalLogEntry } from "./components/terminal-drawer";
 import { translateBackendMessage, useI18n } from "./i18n";
 import { cn } from "./lib/utils";
@@ -94,6 +100,11 @@ type LocalConversionBatchResult = {
   failed_total: number;
 };
 
+type PreparedPlaylistTracks = {
+  library_id: string;
+  track_ids: string[];
+};
+
 const maxConcurrencyLimit = 4;
 
 export function FileConversionPage() {
@@ -105,6 +116,11 @@ export function FileConversionPage() {
   const [activeGroup, setActiveGroup] = useState<LocalConversionGroup | null>(null);
   const [activeTab, setActiveTab] = useState<FileConversionTab>("all");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [playlistDrafts, setPlaylistDrafts] = useState<PlaylistDraftOption[]>([]);
+  const [playlistTrackIds, setPlaylistTrackIds] = useState<string[]>([]);
+  const [playlistLibraryId, setPlaylistLibraryId] = useState("");
+  const [addPlaylistDialogOpen, setAddPlaylistDialogOpen] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [progressById, setProgressById] = useState<Map<string, LocalConversionProgressEvent>>(new Map());
   const [folderPath, setFolderPath] = useState("");
   const [folderRecursive, setFolderRecursive] = useState(true);
@@ -116,6 +132,9 @@ export function FileConversionPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const terminalElement = useRef<HTMLDivElement | null>(null);
   const nextTerminalLogId = useRef(1);
+  const importDroppedPathsRef = useRef<(paths: string[]) => Promise<void>>(async () => {});
+  const dropImportingRef = useRef(false);
+  const dropGroupIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     void loadItems();
@@ -135,6 +154,38 @@ export function FileConversionPage() {
 
     return () => {
       for (const unlisten of unlisteners) unlisten();
+    };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: UnlistenFn | undefined;
+
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === "enter" || event.payload.type === "over") {
+          setDragActive(true);
+          return;
+        }
+        setDragActive(false);
+        if (event.payload.type === "drop") {
+          void importDroppedPathsRef.current(event.payload.paths);
+        }
+      })
+      .then((nextUnlisten) => {
+        if (disposed) {
+          nextUnlisten();
+        } else {
+          unlisten = nextUnlisten;
+        }
+      })
+      .catch(() => {
+        setDragActive(false);
+      });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
   }, []);
 
@@ -226,6 +277,37 @@ export function FileConversionPage() {
     }
   }
 
+  async function importDroppedPaths(paths: string[]) {
+    if (paths.length === 0) return;
+    if (busy || dropImportingRef.current) {
+      setErrorMessage(t("Espera a que termine la operación actual antes de importar otro batch."));
+      return;
+    }
+
+    dropImportingRef.current = true;
+    setBusy(true);
+    setErrorMessage("");
+    setMessage(t("Importando batch arrastrado..."));
+    try {
+      const response = await invoke<LocalConversionImportResponse>("local_conversion_import_paths", {
+        paths,
+        recursive: folderRecursive,
+        groupId: dropGroupIdRef.current
+      });
+      setFolderPath("");
+      handleImportResponse(response, "archivo(s) en el batch arrastrado");
+      if (response.items.length === 0) {
+        setMessage(t("No se encontraron archivos de audio compatibles en el arrastre."));
+      }
+    } catch (error) {
+      setMessage("");
+      setErrorMessage(translateBackendMessage(locale, String(error)));
+    } finally {
+      dropImportingRef.current = false;
+      setBusy(false);
+    }
+  }
+
   async function chooseFolder() {
     setErrorMessage("");
     setMessage("");
@@ -261,6 +343,7 @@ export function FileConversionPage() {
 
   function handleImportResponse(response: LocalConversionImportResponse, label: string) {
     const group = response.group ?? null;
+    dropGroupIdRef.current = group?.kind === "drop" ? group.id : null;
     setAllItems((current) => upsertItems(current, response.items));
     setCurrentItems(response.items);
     setActiveGroup(group);
@@ -286,6 +369,7 @@ export function FileConversionPage() {
       });
       setCurrentItems(rows);
       setActiveGroup(group);
+      dropGroupIdRef.current = group.kind === "drop" ? group.id : null;
       setActiveTab("current");
       setSelectedIds(new Set(rows.map((item) => item.id)));
       if (group.root_path) setFolderPath(group.root_path);
@@ -339,6 +423,79 @@ export function FileConversionPage() {
       );
     } catch (error) {
       setErrorMessage(String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openAddPlaylistDialog() {
+    if (selectedItems.length === 0) return;
+
+    setBusy(true);
+    setErrorMessage("");
+    setMessage(t("Analizando e indexando {count} archivos seleccionados...", { count: selectedItems.length }));
+    try {
+      const items = selectedItems.map((item) => ({
+        item_id: item.id,
+        path: item.target_exists ? item.target_path : item.source_path
+      }));
+      const selection = await invoke<PreparedPlaylistTracks>("playlist_index_prepare_local_tracks", { items });
+      const libraryId = selection.library_id;
+      const drafts = await invoke<PlaylistDraftOption[]>("playlist_index_drafts", { libraryId });
+      setPlaylistTrackIds(selection.track_ids);
+      setPlaylistLibraryId(libraryId);
+      setPlaylistDrafts(drafts);
+      setAddPlaylistDialogOpen(true);
+      setMessage("");
+    } catch (error) {
+      setMessage("");
+      setErrorMessage(translateBackendMessage(locale, String(error)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addSelectedToExistingDraft(draftId: string) {
+    if (!draftId || playlistTrackIds.length === 0) return;
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      const tracks = await invoke<unknown[]>("playlist_index_add_tracks_to_draft", {
+        draftId,
+        trackIds: playlistTrackIds
+      });
+      setSelectedIds(new Set());
+      setAddPlaylistDialogOpen(false);
+      setMessage(t("{count} tracks en la playlist.", { count: tracks.length }));
+    } catch (error) {
+      setErrorMessage(translateBackendMessage(locale, String(error)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createDraftWithSelectedTracks(name: string, description: string) {
+    if (!playlistLibraryId || playlistTrackIds.length === 0 || !name.trim()) return;
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      const draft = await invoke<PlaylistDraftOption>("playlist_index_create_draft", {
+        libraryId: playlistLibraryId,
+        name,
+        description: description || null
+      });
+      await invoke("playlist_index_add_tracks_to_draft", {
+        draftId: draft.id,
+        trackIds: playlistTrackIds
+      });
+      setSelectedIds(new Set());
+      setAddPlaylistDialogOpen(false);
+      setMessage(t("Playlist creada: {name} con {count} tracks.", {
+        name: draft.name,
+        count: playlistTrackIds.length
+      }));
+    } catch (error) {
+      setErrorMessage(translateBackendMessage(locale, String(error)));
     } finally {
       setBusy(false);
     }
@@ -424,6 +581,8 @@ export function FileConversionPage() {
     setTerminalLogs([]);
   }
 
+  importDroppedPathsRef.current = importDroppedPaths;
+
   return (
     <main className={cn("min-w-0 p-4 pb-20", terminalExpanded && "pb-72")}>
       <header className="mb-3 flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
@@ -466,6 +625,18 @@ export function FileConversionPage() {
         </div>
       ) : null}
 
+      {dragActive ? (
+        <div className="pointer-events-none fixed inset-0 z-[90] grid place-items-center bg-background/75 p-6 backdrop-blur-sm">
+          <div className="grid max-w-lg place-items-center gap-3 rounded-xl border-2 border-dashed border-primary bg-card px-8 py-10 text-center shadow-2xl">
+            <Upload className="h-10 w-10 text-primary" />
+            <strong className="text-lg">{t("Suelta para importar este batch")}</strong>
+            <span className="text-sm text-muted-foreground">
+              {t("Puedes mezclar archivos y carpetas.")}
+            </span>
+          </div>
+        </div>
+      ) : null}
+
       <section className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="grid gap-3">
           <Card>
@@ -474,6 +645,20 @@ export function FileConversionPage() {
               <span className="text-xs text-muted-foreground">{t("{count} seleccionados", { count: selectedItems.length })}</span>
             </CardHeader>
             <CardContent className="grid gap-3 p-3">
+              <div
+                className={cn(
+                  "grid min-h-24 place-items-center gap-1 rounded-md border-2 border-dashed border-border bg-secondary/40 px-4 py-4 text-center transition-colors",
+                  dragActive && "border-primary bg-primary/10"
+                )}
+                role="region"
+                aria-label={t("Arrastra archivos o carpetas aquí")}
+              >
+                <Upload className="h-6 w-6 text-muted-foreground" />
+                <strong className="text-sm">{t("Arrastra archivos o carpetas aquí")}</strong>
+                <span className="text-xs text-muted-foreground">
+                  {t("Los arrastres se acumulan en el batch actual. Recursivo también se aplica a las carpetas.")}
+                </span>
+              </div>
               <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
                 <div className="truncate rounded-md border border-border bg-secondary px-3 py-2 text-sm" title={folderPath}>
                   {folderPath || t("Sin carpeta activa")}
@@ -509,6 +694,14 @@ export function FileConversionPage() {
                 <Button disabled={busy || selectedConvertibleIds.length === 0} onClick={() => void convertIds(selectedConvertibleIds)}>
                   {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileAudio2 className="h-4 w-4" />}
                   {t("Convertir seleccionados")}
+                </Button>
+                <Button
+                  variant="secondary"
+                  disabled={busy || selectedItems.length === 0}
+                  onClick={() => void openAddPlaylistDialog()}
+                >
+                  <ListMusic className="h-4 w-4" />
+                  {t("Agregar a playlist")}
                 </Button>
               </div>
             </CardContent>
@@ -682,6 +875,18 @@ export function FileConversionPage() {
         onToggle={() => setTerminalExpanded((current) => !current)}
         onClear={clearTerminal}
       />
+
+      <PlaylistAddDialog
+        open={addPlaylistDialogOpen}
+        busy={busy}
+        contextLabel={activeScopeLabel}
+        defaultName={activeGroup?.name ?? t("Playlist nueva")}
+        drafts={playlistDrafts}
+        trackCount={playlistTrackIds.length}
+        onClose={() => setAddPlaylistDialogOpen(false)}
+        onAddExisting={(draftId) => void addSelectedToExistingDraft(draftId)}
+        onCreate={(name, description) => void createDraftWithSelectedTracks(name, description)}
+      />
     </main>
   );
 }
@@ -789,6 +994,7 @@ function formatBytes(bytes: number) {
 
 function groupKindLabel(group: LocalConversionGroup) {
   if (group.kind === "folder") return group.recursive ? "Carpeta recursiva" : "Carpeta";
+  if (group.kind === "drop") return group.recursive ? "Arrastre recursivo" : "Arrastre";
   return "Selección manual";
 }
 

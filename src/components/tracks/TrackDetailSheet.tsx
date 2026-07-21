@@ -4,6 +4,7 @@ import type * as React from "react";
 import { useI18n } from "../../i18n";
 import { Button } from "../ui/button";
 import { TrackCover } from "./TrackCover";
+import { TrackPlaylistMemberships } from "./TrackPlaylistMemberships";
 import type { TrackListItem } from "./types";
 
 export function TrackDetailSheet({
@@ -75,6 +76,8 @@ export function TrackDetailSheet({
               <DetailRow key={label} label={label} value={value} />
             ))}
           </section>
+
+          <TrackPlaylistMemberships track={track} />
 
           {xmlAttributes.length > 0 ? (
             <section className="mt-4 rounded-md border border-border bg-card">
