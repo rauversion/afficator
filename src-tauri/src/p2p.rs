@@ -18,7 +18,7 @@ use zeroize::Zeroizing;
 pub(crate) mod catalog;
 pub(crate) mod chat;
 pub(crate) mod network;
-
+pub(crate) mod stream;
 const DB_FILE: &str = "aifficator.sqlite3";
 const IDENTITY_ROW_ID: i64 = 1;
 const IDENTITY_CIPHER_VERSION: i64 = 1;
@@ -783,6 +783,13 @@ fn init_db(conn: &Connection) -> Result<(), String> {
           delivery_status TEXT NOT NULL CHECK (delivery_status IN ('pending', 'delivered', 'partial', 'failed')),
           sent_at TEXT NOT NULL,
           received_at TEXT,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS stream_favorites (
+          id TEXT PRIMARY KEY,
+          endpoint_id TEXT NOT NULL,
+          track_id TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
 

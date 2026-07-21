@@ -46,6 +46,8 @@ import { HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useO
 import { Button } from "./components/ui/button";
 import { CatalogPage } from "./CatalogPage";
 import { BroadcastPage } from "./BroadcastPage";
+import { StreamBroadcaster } from "./pages/StreamBroadcaster";
+import { StreamListener } from "./pages/StreamListener";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { GlobalAudioPlayerProvider, SidebarAudioPlayer, useGlobalAudioPlayer } from "./components/audio/GlobalAudioPlayer";
 import {
@@ -311,6 +313,8 @@ export default function App() {
             <Route path="/mastering" element={<MasteringPage />} />
             <Route path="/connect" element={<P2PPage />} />
             <Route path="/broadcast" element={<BroadcastPage />} />
+            <Route path="/stream-broadcaster" element={<StreamBroadcaster />} />
+            <Route path="/stream-listener" element={<StreamListener />} />
             <Route
               path="/settings"
               element={<SettingsPage />}
@@ -2484,6 +2488,12 @@ function AppSidebar({
           </SidebarLink>
           <SidebarLink to="/broadcast" icon={<Radio className="h-4 w-4" />}>
             {t("Broadcast")}
+          </SidebarLink>
+          <SidebarLink to="/stream-broadcaster" icon={<Radio className="h-4 w-4" />}>
+            {t("Stream Broadcaster")}
+          </SidebarLink>
+          <SidebarLink to="/stream-listener" icon={<Radio className="h-4 w-4" />}>
+            {t("Stream Listener")}
           </SidebarLink>
         </SidebarSection>
 

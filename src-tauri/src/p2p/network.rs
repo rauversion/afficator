@@ -1,6 +1,7 @@
 use super::{
-    catalog, chat, mark_peer_seen, open_db, peer_endpoint_ticket, unlocked_network_identity,
+    catalog, chat, stream, mark_peer_seen, open_db, peer_endpoint_ticket, unlocked_network_identity,
 };
+use tauri::Manager;
 use chrono::Utc;
 use iroh::{
     endpoint::{presets, Connection},
@@ -28,6 +29,8 @@ const NETWORK_EVENT: &str = "p2p-network-event";
 struct NetworkRuntime {
     endpoint: Endpoint,
     router: Router,
+    _gossip: iroh_gossip::net::Gossip,
+    pub(crate) store: iroh_blobs::store::fs::FsStore,
     display_name: String,
     started_at: String,
 }
@@ -101,8 +104,27 @@ pub(crate) struct PingResult {
 }
 
 fn network_state() -> &'static Mutex<Option<NetworkRuntime>> {
-    static NETWORK: OnceLock<Mutex<Option<NetworkRuntime>>> = OnceLock::new();
-    NETWORK.get_or_init(|| Mutex::new(None))
+    static STATE: OnceLock<Mutex<Option<NetworkRuntime>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) async fn local_endpoint_async() -> Result<iroh::Endpoint, String> {
+    network_state()
+        .lock()
+        .await
+        .as_ref()
+        .map(|runtime| runtime.endpoint.clone())
+        .ok_or_else(|| "La red P2P no está iniciada.".to_string())
+}
+
+
+pub(crate) async fn local_store_async() -> Result<iroh_blobs::store::fs::FsStore, String> {
+    network_state()
+        .lock()
+        .await
+        .as_ref()
+        .map(|runtime| runtime.store.clone())
+        .ok_or_else(|| "La red P2P no está iniciada.".to_string())
 }
 
 impl ProtocolHandler for DiagnosticProtocol {
@@ -183,9 +205,11 @@ pub(crate) async fn p2p_network_status() -> Result<NetworkStatus, String> {
 #[tauri::command]
 pub(crate) async fn p2p_network_start(app: AppHandle) -> Result<NetworkStatus, String> {
     let identity = unlocked_network_identity()?;
-    let mut state = network_state().lock().await;
-    if let Some(runtime) = state.as_ref() {
-        return Ok(network_status(runtime));
+    {
+        let state = network_state().lock().await;
+        if let Some(runtime) = state.as_ref() {
+            return Ok(network_status(runtime));
+        }
     }
 
     let secret_key = SecretKey::from_bytes(&identity.secret);
@@ -204,6 +228,15 @@ pub(crate) async fn p2p_network_start(app: AppHandle) -> Result<NetworkStatus, S
         display_name: identity.display_name.clone(),
         endpoint_id: endpoint_id.clone(),
     };
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+    
+    let blobs_dir = app.path().app_data_dir()
+        .map_err(|e| format!("Error con app_data_dir: {e}"))?
+        .join("blobs");
+    tokio::fs::create_dir_all(&blobs_dir).await.map_err(|e| format!("Error creando blobs dir: {e}"))?;
+    let store = iroh_blobs::store::fs::FsStore::load(&blobs_dir).await.map_err(|e| format!("Error store: {e}"))?;
+    let blobs_protocol = iroh_blobs::BlobsProtocol::new(&store, None);
+
     let router = Router::builder(endpoint.clone())
         .accept(DIAGNOSTIC_ALPN, protocol)
         .accept(
@@ -215,14 +248,23 @@ pub(crate) async fn p2p_network_start(app: AppHandle) -> Result<NetworkStatus, S
             chat::CHAT_ALPN,
             chat::ChatProtocol::new(app.clone(), endpoint_id.clone()),
         )
+        .accept(
+            stream::STREAM_ALPN,
+            stream::StreamProtocol::new(app.clone(), endpoint_id.clone()),
+        )
+        .accept(iroh_gossip::net::GOSSIP_ALPN, gossip.clone())
+        .accept(iroh_blobs::ALPN, blobs_protocol)
         .spawn();
     let runtime = NetworkRuntime {
         endpoint,
         router,
+        _gossip: gossip,
+        store,
         display_name: identity.display_name,
         started_at: timestamp(),
     };
     let status = network_status(&runtime);
+    let mut state = network_state().lock().await;
     *state = Some(runtime);
     drop(state);
 

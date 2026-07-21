@@ -342,6 +342,111 @@ if [[ "$(rustc --print host-tuple)" != "$target_triple" ]]; then
   configure_flags+=("--enable-cross-compile")
 fi
 
+if ! command -v pkg-config >/dev/null 2>&1; then
+  echo "pkg-config not found on system; creating a local Python fallback wrapper..."
+  local_pkg_config_bin="$cache_dir/bin"
+  local_pkg_config="$local_pkg_config_bin/pkg-config"
+  mkdir -p "$local_pkg_config_bin"
+  cat << 'EOF' > "$local_pkg_config"
+#!/usr/bin/env python3
+import sys
+import os
+import re
+
+def parse_pc_file(filepath):
+    variables = {}
+    fields = {}
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.split('#')[0].strip()
+            if not line:
+                continue
+            var_match = re.match(r'^([a-zA-Z0-9_]+)=(.*)$', line)
+            if var_match:
+                name, val = var_match.groups()
+                def repl(m):
+                    return variables.get(m.group(1), '')
+                prev_val = ""
+                while val != prev_val:
+                    prev_val = val
+                    val = re.sub(r'\$\{([a-zA-Z0-9_]+)\}', repl, val)
+                variables[name] = val
+                continue
+            field_match = re.match(r'^([a-zA-Z0-9_\.-]+):[ \t]*(.*)$', line)
+            if field_match:
+                key, val = field_match.groups()
+                def repl(m):
+                    return variables.get(m.group(1), '')
+                prev_val = ""
+                while val != prev_val:
+                    prev_val = val
+                    val = re.sub(r'\$\{([a-zA-Z0-9_]+)\}', repl, val)
+                fields[key.lower()] = val
+    return variables, fields
+
+def main():
+    args = sys.argv[1:]
+    if '--version' in args:
+        print("0.29.2")
+        sys.exit(0)
+    exists = False
+    cflags = False
+    libs = False
+    static = False
+    modversion = False
+    pkg = None
+    for arg in args:
+        if arg == '--exists':
+            exists = True
+        elif arg == '--cflags':
+            cflags = True
+        elif arg == '--libs':
+            libs = True
+        elif arg == '--static':
+            static = True
+        elif arg == '--modversion':
+            modversion = True
+        elif arg.startswith('-'):
+            pass
+        else:
+            pkg = arg
+    if not pkg:
+        sys.exit(1)
+    pkg_config_path = os.environ.get('PKG_CONFIG_PATH', '')
+    paths = pkg_config_path.split(':')
+    found_pc = None
+    for p in paths:
+        pc_file = os.path.join(p, f"{pkg}.pc")
+        if os.path.isfile(pc_file):
+            found_pc = pc_file
+            break
+    if not found_pc:
+        sys.stderr.write(f"Package {pkg} not found in PKG_CONFIG_PATH\n")
+        sys.exit(1)
+    if exists:
+        sys.exit(0)
+    variables, fields = parse_pc_file(found_pc)
+    outputs = []
+    if modversion:
+        outputs.append(fields.get('version', ''))
+    if cflags:
+        outputs.append(fields.get('cflags', ''))
+    if libs:
+        lib_str = fields.get('libs', '')
+        if static:
+            lib_private = fields.get('libs.private', '')
+            if lib_private:
+                lib_str = f"{lib_str} {lib_private}"
+        outputs.append(lib_str)
+    print(" ".join(outputs).strip())
+
+if __name__ == '__main__':
+    main()
+EOF
+  chmod +x "$local_pkg_config"
+  configure_flags+=("--pkg-config=$local_pkg_config")
+fi
+
 echo "Configuring FFmpeg $FFMPEG_VERSION for $target_triple..."
 configure_log="$build_dir/configure.log"
 if ! (

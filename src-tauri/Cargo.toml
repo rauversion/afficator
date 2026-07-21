@@ -19,6 +19,8 @@ chrono = { version = "0.4.45", features = ["serde"] }
 cpal = "0.18.1"
 base64 = "0.22.1"
 iroh = "1.0.2"
+iroh-gossip = { git = "https://github.com/n0-computer/iroh-gossip", branch = "main" }
+iroh-blobs = { git = "https://github.com/n0-computer/iroh-blobs", branch = "main" }
 iroh-tickets = "1.0.0"
 regex = "1.13.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "query", "rustls"] }
@@ -29,7 +31,7 @@ serde_json = "1"
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time", "process"] }
 uuid = { version = "1.23.4", features = ["v4", "serde"] }
 walkdir = "2.5.0"
 zeroize = "1.8.2"

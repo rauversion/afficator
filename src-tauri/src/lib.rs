@@ -1447,6 +1447,8 @@ fn is_inside_converted_folder(root: &Path, path: &Path) -> bool {
 pub fn run() {
     tauri::Builder::default()
         .manage(broadcast::BroadcastManager::default())
+        .manage(p2p::stream::BroadcasterState { tracks: std::sync::Arc::new(tokio::sync::RwLock::new(Vec::new())) })
+        .manage(p2p::stream::ListenerState { connection: std::sync::Arc::new(tokio::sync::Mutex::new(None)) })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
@@ -1508,6 +1510,10 @@ pub fn run() {
             p2p::p2p_search_shared_files,
             p2p::catalog::p2p_remote_search,
             p2p::catalog::p2p_download_remote_file,
+            p2p::stream::scan_audio_directory,
+            p2p::stream::set_broadcaster_tracks,
+            p2p::stream::get_broadcaster_tracks,
+            p2p::stream::connect_to_broadcaster,
             p2p::chat::p2p_chat_list,
             p2p::chat::p2p_chat_send,
             enrichment::enrichment_providers,

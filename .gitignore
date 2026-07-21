@@ -8,3 +8,7 @@ src-tauri/binaries/
 .env
 .env.*
 *.log
+
+# Local progress tracking
+.beads
+.beads/
