@@ -9,6 +9,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -20,6 +21,13 @@ const DB_FILE: &str = "aifficator.sqlite3";
 const PROFILE_ID: &str = "default";
 const MANUAL_QUEUE_PATH: &str = "__manual__";
 const MANUAL_QUEUE_NAME: &str = "Agregadas manualmente";
+const OUTPUT_KIND_ICECAST: &str = "icecast";
+const OUTPUT_KIND_RTMP: &str = "rtmp";
+const RTMP_PLATFORM_INSTAGRAM: &str = "instagram";
+const RTMP_PLATFORM_CUSTOM: &str = "custom";
+const RTMP_VIDEO_WIDTH: usize = 720;
+const RTMP_VIDEO_HEIGHT: usize = 1280;
+const RTMP_VIDEO_FPS: usize = 30;
 const PCM_SAMPLE_RATE: usize = 44_100;
 const PCM_CHANNELS: usize = 2;
 const PCM_BYTES_PER_SAMPLE: usize = 2;
@@ -38,6 +46,7 @@ const LINE_INPUT_CHUNK_MILLIS: usize = 50;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BroadcastProfileInput {
+    output_kind: String,
     host: String,
     port: u16,
     mount: String,
@@ -58,6 +67,10 @@ pub struct BroadcastProfileInput {
     application_audio_enabled: bool,
     application_audio_bundle_id: String,
     application_audio_gain_percent: u16,
+    rtmp_platform: String,
+    rtmp_server_url: String,
+    rtmp_video_bitrate_kbps: u16,
+    rtmp_audio_bitrate_kbps: u16,
     password: Option<String>,
     clear_password: bool,
 }
@@ -65,6 +78,7 @@ pub struct BroadcastProfileInput {
 #[derive(Debug, Clone, Serialize)]
 pub struct BroadcastProfile {
     id: String,
+    output_kind: String,
     host: String,
     port: u16,
     mount: String,
@@ -85,6 +99,10 @@ pub struct BroadcastProfile {
     application_audio_enabled: bool,
     application_audio_bundle_id: String,
     application_audio_gain_percent: u16,
+    rtmp_platform: String,
+    rtmp_server_url: String,
+    rtmp_video_bitrate_kbps: u16,
+    rtmp_audio_bitrate_kbps: u16,
     password_configured: bool,
     listener_url: String,
     updated_at: String,
@@ -121,6 +139,12 @@ pub struct BroadcastPreflight {
     mp3_encoder_available: bool,
     icecast_protocol_available: bool,
     tls_protocol_available: bool,
+    h264_encoder_available: bool,
+    aac_encoder_available: bool,
+    rtmp_protocol_available: bool,
+    rtmps_protocol_available: bool,
+    flv_muxer_available: bool,
+    visualizer_filter_available: bool,
     microphone_input_available: bool,
     ready: bool,
     message: String,
@@ -487,6 +511,36 @@ impl RuntimeState {
             },
         );
     }
+
+    fn mark_output_ready(&self, app: &AppHandle, message: impl Into<String>) {
+        let message = message.into();
+        let snapshot = if let Ok(mut current) = self.snapshot.lock() {
+            current.status = "live".to_string();
+            current.message = current
+                .now_playing
+                .as_ref()
+                .map(|entry| format!("En vivo: {}", display_title(entry)))
+                .unwrap_or_else(|| message.clone());
+            current.updated_at = timestamp();
+            current.clone()
+        } else {
+            BroadcastStatus {
+                status: "live".to_string(),
+                message: message.clone(),
+                ..BroadcastStatus::default()
+            }
+        };
+        let _ = app.emit(
+            "broadcast-progress",
+            BroadcastProgressEvent {
+                level: "info".to_string(),
+                event: "connected".to_string(),
+                message,
+                status: snapshot,
+                timestamp: timestamp(),
+            },
+        );
+    }
 }
 
 enum WorkerCommand {
@@ -537,7 +591,7 @@ impl BroadcastManager {
         }
     }
 
-    fn start(&self, app: AppHandle) -> Result<BroadcastStatus, String> {
+    fn start(&self, app: AppHandle, stream_key: Option<String>) -> Result<BroadcastStatus, String> {
         self.cleanup_finished_worker();
         let mut worker = self
             .worker
@@ -548,10 +602,14 @@ impl BroadcastManager {
         }
 
         let profile = load_profile(&app)?;
-        let password = settings::load_icecast_source_password(&app)?
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| "Configura la contraseña source de Icecast.".to_string())?;
-        let preflight = ffmpeg_preflight(&app, profile.tls);
+        let credential = if profile.output_kind == OUTPUT_KIND_RTMP {
+            validate_stream_key(stream_key)?
+        } else {
+            settings::load_icecast_source_password(&app)?
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "Configura la contraseña source de Icecast.".to_string())?
+        };
+        let preflight = ffmpeg_preflight(&app, &profile);
         if !preflight.ready {
             return Err(preflight.message);
         }
@@ -569,16 +627,13 @@ impl BroadcastManager {
         runtime.update(
             &app,
             "connecting",
-            format!(
-                "Conectando con {}:{}{}...",
-                profile.host, profile.port, profile.mount
-            ),
+            connecting_message(&profile),
             None,
             Some(started_at.clone()),
             ("info", "connecting"),
         );
         let join = thread::spawn(move || {
-            run_worker(app, profile, password, runtime, receiver, started_at)
+            run_worker(app, profile, credential, runtime, receiver, started_at)
         });
         *worker = Some(WorkerHandle {
             commands: sender,
@@ -692,14 +747,16 @@ pub fn broadcast_save_profile(
     let now = timestamp();
     conn.execute(
         "INSERT INTO broadcast_profiles (
-           id, host, port, mount, username, station_name, description,
+           id, output_kind, host, port, mount, username, station_name, description,
            bitrate_kbps, tls, public, microphone_enabled, microphone_device,
            microphone_gain_percent, line_input_enabled, line_input_device,
            line_input_channel, line_input_stereo, line_input_gain_percent,
            application_audio_enabled, application_audio_bundle_id,
-           application_audio_gain_percent, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+           application_audio_gain_percent, rtmp_platform, rtmp_server_url,
+           rtmp_video_bitrate_kbps, rtmp_audio_bitrate_kbps, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
          ON CONFLICT(id) DO UPDATE SET
+           output_kind = excluded.output_kind,
            host = excluded.host,
            port = excluded.port,
            mount = excluded.mount,
@@ -720,9 +777,14 @@ pub fn broadcast_save_profile(
            application_audio_enabled = excluded.application_audio_enabled,
            application_audio_bundle_id = excluded.application_audio_bundle_id,
            application_audio_gain_percent = excluded.application_audio_gain_percent,
+           rtmp_platform = excluded.rtmp_platform,
+           rtmp_server_url = excluded.rtmp_server_url,
+           rtmp_video_bitrate_kbps = excluded.rtmp_video_bitrate_kbps,
+           rtmp_audio_bitrate_kbps = excluded.rtmp_audio_bitrate_kbps,
            updated_at = excluded.updated_at",
         params![
             PROFILE_ID,
+            input.output_kind,
             input.host,
             input.port,
             input.mount,
@@ -743,10 +805,14 @@ pub fn broadcast_save_profile(
             input.application_audio_enabled,
             input.application_audio_bundle_id,
             input.application_audio_gain_percent,
+            input.rtmp_platform,
+            input.rtmp_server_url,
+            input.rtmp_video_bitrate_kbps,
+            input.rtmp_audio_bitrate_kbps,
             now,
         ],
     )
-    .map_err(|error| format!("No se pudo guardar perfil Icecast: {error}"))?;
+    .map_err(|error| format!("No se pudo guardar perfil de broadcast: {error}"))?;
 
     if input.clear_password {
         settings::save_icecast_source_password(&app, None)?;
@@ -759,10 +825,8 @@ pub fn broadcast_save_profile(
 
 #[tauri::command]
 pub fn broadcast_preflight(app: AppHandle) -> BroadcastPreflight {
-    let tls = load_profile(&app)
-        .map(|profile| profile.tls)
-        .unwrap_or(false);
-    ffmpeg_preflight(&app, tls)
+    let profile = load_profile(&app).unwrap_or_else(|_| default_profile(&app));
+    ffmpeg_preflight(&app, &profile)
 }
 
 #[tauri::command]
@@ -862,8 +926,9 @@ pub fn broadcast_status(manager: State<'_, BroadcastManager>) -> BroadcastStatus
 pub fn broadcast_start(
     app: AppHandle,
     manager: State<'_, BroadcastManager>,
+    stream_key: Option<String>,
 ) -> Result<BroadcastStatus, String> {
-    manager.start(app)
+    manager.start(app, stream_key)
 }
 
 #[tauri::command]
@@ -904,6 +969,7 @@ pub fn broadcast_set_application_audio_live(
 }
 
 fn validate_profile(mut input: BroadcastProfileInput) -> Result<BroadcastProfileInput, String> {
+    input.output_kind = input.output_kind.trim().to_lowercase();
     input.host = input.host.trim().to_string();
     input.mount = input.mount.trim().to_string();
     input.username = input.username.trim().to_string();
@@ -912,40 +978,52 @@ fn validate_profile(mut input: BroadcastProfileInput) -> Result<BroadcastProfile
     input.microphone_device = input.microphone_device.trim().to_string();
     input.line_input_device = input.line_input_device.trim().to_string();
     input.application_audio_bundle_id = input.application_audio_bundle_id.trim().to_string();
+    input.rtmp_platform = input.rtmp_platform.trim().to_lowercase();
+    input.rtmp_server_url = input.rtmp_server_url.trim().to_string();
     input.password = input
         .password
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
 
-    if input.host.is_empty()
-        || input.host.chars().any(char::is_whitespace)
-        || input.host.contains('/')
-        || input.host.contains('@')
-    {
-        return Err("Host Icecast invalido.".to_string());
+    if !matches!(
+        input.output_kind.as_str(),
+        OUTPUT_KIND_ICECAST | OUTPUT_KIND_RTMP
+    ) {
+        return Err("Tipo de destino de broadcast inválido.".to_string());
     }
-    if input.port == 0 {
-        return Err("Puerto Icecast invalido.".to_string());
-    }
-    if !input.mount.starts_with('/')
-        || input.mount.len() < 2
-        || input.mount.chars().any(char::is_whitespace)
-        || input.mount.contains('?')
-        || input.mount.contains('#')
-    {
-        return Err("Mountpoint invalido. Usa un valor como /live.mp3.".to_string());
-    }
-    if input.username.is_empty()
-        || input.username.chars().any(char::is_whitespace)
-        || input.username.contains(['@', ':', '/', '\\'])
-    {
-        return Err("Usuario source de Icecast invalido.".to_string());
+    if input.output_kind == OUTPUT_KIND_ICECAST {
+        if input.host.is_empty()
+            || input.host.chars().any(char::is_whitespace)
+            || input.host.contains('/')
+            || input.host.contains('@')
+        {
+            return Err("Host Icecast invalido.".to_string());
+        }
+        if input.port == 0 {
+            return Err("Puerto Icecast invalido.".to_string());
+        }
+        if !input.mount.starts_with('/')
+            || input.mount.len() < 2
+            || input.mount.chars().any(char::is_whitespace)
+            || input.mount.contains('?')
+            || input.mount.contains('#')
+        {
+            return Err("Mountpoint invalido. Usa un valor como /live.mp3.".to_string());
+        }
+        if input.username.is_empty()
+            || input.username.chars().any(char::is_whitespace)
+            || input.username.contains(['@', ':', '/', '\\'])
+        {
+            return Err("Usuario source de Icecast invalido.".to_string());
+        }
+        if !(64..=320).contains(&input.bitrate_kbps) {
+            return Err("El bitrate MP3 debe estar entre 64 y 320 kbps.".to_string());
+        }
+    } else {
+        validate_rtmp_profile(&input)?;
     }
     if input.station_name.is_empty() || input.station_name.len() > 120 {
         return Err("Nombre de estación invalido.".to_string());
-    }
-    if !(64..=320).contains(&input.bitrate_kbps) {
-        return Err("El bitrate MP3 debe estar entre 64 y 320 kbps.".to_string());
     }
     if input.microphone_device.is_empty()
         || input.microphone_device.len() > 512
@@ -987,50 +1065,117 @@ fn validate_profile(mut input: BroadcastProfileInput) -> Result<BroadcastProfile
     Ok(input)
 }
 
+fn validate_rtmp_profile(input: &BroadcastProfileInput) -> Result<(), String> {
+    if !matches!(
+        input.rtmp_platform.as_str(),
+        RTMP_PLATFORM_INSTAGRAM | RTMP_PLATFORM_CUSTOM
+    ) {
+        return Err("Plataforma RTMP inválida.".to_string());
+    }
+    let secure = input.rtmp_server_url.starts_with("rtmps://");
+    let plain = input.rtmp_server_url.starts_with("rtmp://");
+    if input.rtmp_server_url.len() > 2048
+        || input.rtmp_server_url.chars().any(char::is_whitespace)
+        || input.rtmp_server_url.chars().any(char::is_control)
+        || (!secure && !plain)
+    {
+        return Err("La URL debe comenzar con rtmp:// o rtmps://.".to_string());
+    }
+    let without_scheme = input
+        .rtmp_server_url
+        .split_once("://")
+        .map(|(_, value)| value)
+        .unwrap_or_default();
+    if without_scheme.is_empty() || without_scheme.starts_with('/') || without_scheme.contains('@')
+    {
+        return Err("URL de servidor RTMP inválida.".to_string());
+    }
+    if input.rtmp_platform == RTMP_PLATFORM_INSTAGRAM && !secure {
+        return Err("Instagram requiere una URL RTMPS segura.".to_string());
+    }
+    let video_range = if input.rtmp_platform == RTMP_PLATFORM_INSTAGRAM {
+        2_250..=6_000
+    } else {
+        250..=20_000
+    };
+    if !video_range.contains(&input.rtmp_video_bitrate_kbps) {
+        return Err("Bitrate de video RTMP fuera del rango permitido.".to_string());
+    }
+    if !(32..=256).contains(&input.rtmp_audio_bitrate_kbps) {
+        return Err("El bitrate de audio RTMP debe estar entre 32 y 256 kbps.".to_string());
+    }
+    Ok(())
+}
+
+fn validate_stream_key(stream_key: Option<String>) -> Result<String, String> {
+    let stream_key = stream_key.unwrap_or_default().trim().to_string();
+    let normalized = stream_key.to_ascii_lowercase();
+    if normalized.starts_with("rtmp://") || normalized.starts_with("rtmps://") {
+        return Err(
+            "En Clave de transmisión pega solo la clave, no la URL RTMP completa.".to_string(),
+        );
+    }
+    if stream_key.is_empty()
+        || stream_key.len() > 4096
+        || stream_key.chars().any(char::is_whitespace)
+        || stream_key.chars().any(char::is_control)
+    {
+        return Err("Pega una clave de transmisión RTMP válida para esta sesión.".to_string());
+    }
+    Ok(stream_key)
+}
+
 fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
     let conn = open_db(app)?;
     let stored = conn
         .query_row(
-            "SELECT id, host, port, mount, username, station_name, description,
+            "SELECT id, output_kind, host, port, mount, username, station_name, description,
                     bitrate_kbps, tls, public, microphone_enabled,
                     microphone_device, microphone_gain_percent, line_input_enabled,
                     line_input_device, line_input_channel, line_input_stereo,
                     line_input_gain_percent, application_audio_enabled,
                     application_audio_bundle_id, application_audio_gain_percent,
-                    updated_at
+                    rtmp_platform, rtmp_server_url, rtmp_video_bitrate_kbps,
+                    rtmp_audio_bitrate_kbps, updated_at
              FROM broadcast_profiles WHERE id = ?1",
             params![PROFILE_ID],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, u16>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u16>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                     row.get::<_, String>(6)?,
-                    row.get::<_, u16>(7)?,
-                    row.get::<_, bool>(8)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, u16>(8)?,
                     row.get::<_, bool>(9)?,
                     row.get::<_, bool>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, u16>(12)?,
-                    row.get::<_, bool>(13)?,
-                    row.get::<_, String>(14)?,
-                    row.get::<_, u16>(15)?,
-                    row.get::<_, bool>(16)?,
-                    row.get::<_, u16>(17)?,
-                    row.get::<_, bool>(18)?,
-                    row.get::<_, String>(19)?,
-                    row.get::<_, u16>(20)?,
-                    row.get::<_, String>(21)?,
+                    row.get::<_, bool>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, u16>(13)?,
+                    row.get::<_, bool>(14)?,
+                    row.get::<_, String>(15)?,
+                    row.get::<_, u16>(16)?,
+                    row.get::<_, bool>(17)?,
+                    row.get::<_, u16>(18)?,
+                    row.get::<_, bool>(19)?,
+                    row.get::<_, String>(20)?,
+                    row.get::<_, u16>(21)?,
+                    row.get::<_, String>(22)?,
+                    row.get::<_, String>(23)?,
+                    row.get::<_, u16>(24)?,
+                    row.get::<_, u16>(25)?,
+                    row.get::<_, String>(26)?,
                 ))
             },
         )
         .optional()
-        .map_err(|error| format!("No se pudo leer perfil Icecast: {error}"))?;
+        .map_err(|error| format!("No se pudo leer perfil de broadcast: {error}"))?;
     let (
         id,
+        output_kind,
         host,
         port,
         mount,
@@ -1051,10 +1196,15 @@ fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
         application_audio_enabled,
         application_audio_bundle_id,
         application_audio_gain_percent,
+        rtmp_platform,
+        rtmp_server_url,
+        rtmp_video_bitrate_kbps,
+        rtmp_audio_bitrate_kbps,
         updated_at,
     ) = stored.unwrap_or_else(|| {
         (
             PROFILE_ID.to_string(),
+            OUTPUT_KIND_ICECAST.to_string(),
             "127.0.0.1".to_string(),
             8000,
             "/live.mp3".to_string(),
@@ -1075,6 +1225,10 @@ fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
             false,
             String::new(),
             100,
+            RTMP_PLATFORM_INSTAGRAM.to_string(),
+            String::new(),
+            3_500,
+            128,
             timestamp(),
         )
     });
@@ -1083,6 +1237,7 @@ fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
     let listener_url = format!("{scheme}://{host}:{port}{mount}");
     Ok(BroadcastProfile {
         id,
+        output_kind,
         host,
         port,
         mount,
@@ -1103,20 +1258,68 @@ fn load_profile(app: &AppHandle) -> Result<BroadcastProfile, String> {
         application_audio_enabled,
         application_audio_bundle_id,
         application_audio_gain_percent,
+        rtmp_platform,
+        rtmp_server_url,
+        rtmp_video_bitrate_kbps,
+        rtmp_audio_bitrate_kbps,
         password_configured,
         listener_url,
         updated_at,
     })
 }
 
-fn ffmpeg_preflight(app: &AppHandle, tls_required: bool) -> BroadcastPreflight {
+fn default_profile(app: &AppHandle) -> BroadcastProfile {
+    BroadcastProfile {
+        id: PROFILE_ID.to_string(),
+        output_kind: OUTPUT_KIND_ICECAST.to_string(),
+        host: "127.0.0.1".to_string(),
+        port: 8000,
+        mount: "/live.mp3".to_string(),
+        username: "source".to_string(),
+        station_name: "Rau Studio Radio".to_string(),
+        description: "Broadcast local desde Rau Studio".to_string(),
+        bitrate_kbps: 128,
+        tls: false,
+        public: false,
+        microphone_enabled: false,
+        microphone_device: "default".to_string(),
+        microphone_gain_percent: 100,
+        line_input_enabled: false,
+        line_input_device: "default".to_string(),
+        line_input_channel: 1,
+        line_input_stereo: true,
+        line_input_gain_percent: 100,
+        application_audio_enabled: false,
+        application_audio_bundle_id: String::new(),
+        application_audio_gain_percent: 100,
+        rtmp_platform: RTMP_PLATFORM_INSTAGRAM.to_string(),
+        rtmp_server_url: String::new(),
+        rtmp_video_bitrate_kbps: 3_500,
+        rtmp_audio_bitrate_kbps: 128,
+        password_configured: settings::load_icecast_source_password(app)
+            .ok()
+            .flatten()
+            .is_some(),
+        listener_url: "http://127.0.0.1:8000/live.mp3".to_string(),
+        updated_at: timestamp(),
+    }
+}
+
+fn ffmpeg_preflight(app: &AppHandle, profile: &BroadcastProfile) -> BroadcastPreflight {
     let encoders = system::ffmpeg_command(app)
         .args(["-hide_banner", "-encoders"])
         .output();
     let protocols = system::ffmpeg_command(app)
         .args(["-hide_banner", "-protocols"])
         .output();
-    let ffmpeg_available = encoders.is_ok() && protocols.is_ok();
+    let muxers = system::ffmpeg_command(app)
+        .args(["-hide_banner", "-muxers"])
+        .output();
+    let filters = system::ffmpeg_command(app)
+        .args(["-hide_banner", "-filters"])
+        .output();
+    let ffmpeg_available =
+        encoders.is_ok() && protocols.is_ok() && muxers.is_ok() && filters.is_ok();
     let encoder_text = encoders
         .ok()
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
@@ -1125,18 +1328,61 @@ fn ffmpeg_preflight(app: &AppHandle, tls_required: bool) -> BroadcastPreflight {
         .ok()
         .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
         .unwrap_or_default();
+    let muxer_text = muxers
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    let filter_text = filters
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
     let mp3_encoder_available = encoder_text.lines().any(|line| line.contains("libmp3lame"));
     let icecast_protocol_available = protocol_list_contains(&protocol_text, "icecast");
     let tls_protocol_available = protocol_list_contains(&protocol_text, "tls");
+    let h264_encoder_available = list_contains_token(&encoder_text, "libx264");
+    let aac_encoder_available = list_contains_token(&encoder_text, "aac");
+    let rtmp_protocol_available = protocol_list_contains(&protocol_text, "rtmp");
+    let rtmps_protocol_available = protocol_list_contains(&protocol_text, "rtmps");
+    let flv_muxer_available = list_contains_token(&muxer_text, "flv");
+    let visualizer_filter_available = list_contains_token(&filter_text, "testsrc2");
     let microphone_input_available = cpal::default_host().default_input_device().is_some();
-    let ready = ffmpeg_available
-        && mp3_encoder_available
-        && icecast_protocol_available
-        && (!tls_required || tls_protocol_available);
-    let message = if ready {
-        "FFmpeg esta listo para transmitir MP3 a Icecast.".to_string()
-    } else if !ffmpeg_available {
+    let rtmps_required = profile.rtmp_server_url.starts_with("rtmps://");
+    let ready = if profile.output_kind == OUTPUT_KIND_RTMP {
+        ffmpeg_available
+            && h264_encoder_available
+            && aac_encoder_available
+            && flv_muxer_available
+            && visualizer_filter_available
+            && if rtmps_required {
+                rtmps_protocol_available
+            } else {
+                rtmp_protocol_available
+            }
+    } else {
+        ffmpeg_available
+            && mp3_encoder_available
+            && icecast_protocol_available
+            && (!profile.tls || tls_protocol_available)
+    };
+    let message = if !ffmpeg_available {
         "FFmpeg no esta disponible.".to_string()
+    } else if ready && profile.output_kind == OUTPUT_KIND_RTMP {
+        "FFmpeg está listo para transmitir video H.264 y audio AAC por RTMP.".to_string()
+    } else if ready {
+        "FFmpeg esta listo para transmitir MP3 a Icecast.".to_string()
+    } else if profile.output_kind == OUTPUT_KIND_RTMP && !h264_encoder_available {
+        "FFmpeg no incluye el encoder libx264 requerido para RTMP.".to_string()
+    } else if profile.output_kind == OUTPUT_KIND_RTMP && !aac_encoder_available {
+        "FFmpeg no incluye el encoder AAC requerido para RTMP.".to_string()
+    } else if profile.output_kind == OUTPUT_KIND_RTMP && !flv_muxer_available {
+        "FFmpeg no incluye el muxer FLV requerido para RTMP.".to_string()
+    } else if profile.output_kind == OUTPUT_KIND_RTMP && !visualizer_filter_available {
+        "FFmpeg no incluye el filtro requerido para la carta de prueba RTMP.".to_string()
+    } else if profile.output_kind == OUTPUT_KIND_RTMP && rtmps_required && !rtmps_protocol_available
+    {
+        "FFmpeg no incluye el protocolo RTMPS requerido por este destino.".to_string()
+    } else if profile.output_kind == OUTPUT_KIND_RTMP && !rtmp_protocol_available {
+        "FFmpeg no incluye el protocolo RTMP requerido por este destino.".to_string()
     } else if !mp3_encoder_available {
         "FFmpeg no incluye el encoder libmp3lame requerido para MP3.".to_string()
     } else if !icecast_protocol_available {
@@ -1149,6 +1395,12 @@ fn ffmpeg_preflight(app: &AppHandle, tls_required: bool) -> BroadcastPreflight {
         mp3_encoder_available,
         icecast_protocol_available,
         tls_protocol_available,
+        h264_encoder_available,
+        aac_encoder_available,
+        rtmp_protocol_available,
+        rtmps_protocol_available,
+        flv_muxer_available,
+        visualizer_filter_available,
         microphone_input_available,
         ready,
         message,
@@ -1157,6 +1409,12 @@ fn ffmpeg_preflight(app: &AppHandle, tls_required: bool) -> BroadcastPreflight {
 
 fn protocol_list_contains(output: &str, protocol: &str) -> bool {
     output.lines().any(|line| line.trim() == protocol)
+}
+
+fn list_contains_token(output: &str, capability: &str) -> bool {
+    output
+        .lines()
+        .any(|line| line.split_whitespace().any(|token| token == capability))
 }
 
 fn microphone_devices(_app: &AppHandle) -> Result<Vec<BroadcastMicrophoneDevice>, String> {
@@ -1199,7 +1457,14 @@ fn microphone_devices(_app: &AppHandle) -> Result<Vec<BroadcastMicrophoneDevice>
     Ok(result)
 }
 
-fn publisher_args(profile: &BroadcastProfile, password: &str) -> Vec<String> {
+fn publisher_args(profile: &BroadcastProfile, credential: &str) -> Vec<String> {
+    if profile.output_kind == OUTPUT_KIND_RTMP {
+        return rtmp_publisher_args(profile, credential);
+    }
+    icecast_publisher_args(profile, credential)
+}
+
+fn icecast_publisher_args(profile: &BroadcastProfile, password: &str) -> Vec<String> {
     let destination = format!(
         "icecast://{}@{}:{}{}",
         profile.username, profile.host, profile.port, profile.mount
@@ -1209,13 +1474,14 @@ fn publisher_args(profile: &BroadcastProfile, password: &str) -> Vec<String> {
         "-loglevel".to_string(),
         "warning".to_string(),
         "-nostdin".to_string(),
-        "-re".to_string(),
         "-f".to_string(),
         "s16le".to_string(),
         "-ar".to_string(),
         PCM_SAMPLE_RATE.to_string(),
         "-ac".to_string(),
         PCM_CHANNELS.to_string(),
+        "-channel_layout".to_string(),
+        "stereo".to_string(),
         "-i".to_string(),
         "pipe:0".to_string(),
         "-map".to_string(),
@@ -1246,6 +1512,98 @@ fn publisher_args(profile: &BroadcastProfile, password: &str) -> Vec<String> {
         destination,
     ]);
     args
+}
+
+fn rtmp_publisher_args(profile: &BroadcastProfile, stream_key: &str) -> Vec<String> {
+    let destination = rtmp_destination_url(&profile.rtmp_server_url, stream_key);
+    let video_bitrate = format!("{}k", profile.rtmp_video_bitrate_kbps);
+    let video_buffer = format!("{}k", u32::from(profile.rtmp_video_bitrate_kbps) * 2);
+    vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "debug".to_string(),
+        "-nostdin".to_string(),
+        "-nostats".to_string(),
+        "-progress".to_string(),
+        "pipe:2".to_string(),
+        "-stats_period".to_string(),
+        "1".to_string(),
+        "-f".to_string(),
+        "s16le".to_string(),
+        "-ar".to_string(),
+        PCM_SAMPLE_RATE.to_string(),
+        "-ac".to_string(),
+        PCM_CHANNELS.to_string(),
+        "-channel_layout".to_string(),
+        "stereo".to_string(),
+        "-i".to_string(),
+        "pipe:0".to_string(),
+        "-re".to_string(),
+        "-f".to_string(),
+        "lavfi".to_string(),
+        "-i".to_string(),
+        format!(
+            "testsrc2=size={}x{}:rate={}",
+            RTMP_VIDEO_WIDTH, RTMP_VIDEO_HEIGHT, RTMP_VIDEO_FPS
+        ),
+        "-map".to_string(),
+        "1:v:0".to_string(),
+        "-map".to_string(),
+        "0:a:0".to_string(),
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-preset".to_string(),
+        "veryfast".to_string(),
+        "-tune".to_string(),
+        "zerolatency".to_string(),
+        "-profile:v".to_string(),
+        "main".to_string(),
+        "-level:v".to_string(),
+        "4.1".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        "-r".to_string(),
+        RTMP_VIDEO_FPS.to_string(),
+        "-g".to_string(),
+        (RTMP_VIDEO_FPS * 2).to_string(),
+        "-keyint_min".to_string(),
+        (RTMP_VIDEO_FPS * 2).to_string(),
+        "-sc_threshold".to_string(),
+        "0".to_string(),
+        "-b:v".to_string(),
+        video_bitrate.clone(),
+        "-maxrate".to_string(),
+        video_bitrate,
+        "-bufsize".to_string(),
+        video_buffer,
+        "-c:a".to_string(),
+        "aac".to_string(),
+        "-b:a".to_string(),
+        format!("{}k", profile.rtmp_audio_bitrate_kbps),
+        "-ar".to_string(),
+        PCM_SAMPLE_RATE.to_string(),
+        "-ac".to_string(),
+        PCM_CHANNELS.to_string(),
+        "-flvflags".to_string(),
+        "no_duration_filesize".to_string(),
+        "-flush_packets".to_string(),
+        "1".to_string(),
+        "-rtmp_flush_interval".to_string(),
+        "1".to_string(),
+        "-tcp_nodelay".to_string(),
+        "1".to_string(),
+        "-f".to_string(),
+        "flv".to_string(),
+        destination,
+    ]
+}
+
+fn rtmp_destination_url(server_url: &str, stream_key: &str) -> String {
+    format!(
+        "{}/{}",
+        server_url.trim_end_matches('/'),
+        stream_key.trim_start_matches('/')
+    )
 }
 
 fn decoder_args(path: &str) -> Vec<String> {
@@ -2133,9 +2491,20 @@ impl WorkerAudio {
 struct Publisher {
     child: Child,
     stdin: ChildStdin,
+    destination_label: String,
+    opened: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
 }
 
 impl Publisher {
+    fn is_opened(&self) -> bool {
+        self.opened.load(Ordering::Acquire)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
     fn write(&mut self, bytes: &[u8]) -> Result<(), String> {
         if let Some(status) = self
             .child
@@ -2144,9 +2513,12 @@ impl Publisher {
         {
             return Err(format!("Publisher FFmpeg termino con estado {status}."));
         }
-        self.stdin
-            .write_all(bytes)
-            .map_err(|error| format!("Se perdio la conexión con Icecast: {error}"))
+        self.stdin.write_all(bytes).map_err(|error| {
+            format!(
+                "Se perdió la conexión con {}: {error}",
+                self.destination_label
+            )
+        })
     }
 
     fn terminate(mut self) {
@@ -2161,11 +2533,14 @@ impl Publisher {
 fn spawn_publisher(
     app: &AppHandle,
     profile: &BroadcastProfile,
-    password: &str,
+    credential: &str,
     runtime: &Arc<RuntimeState>,
 ) -> Result<Publisher, String> {
+    let is_rtmp = profile.output_kind == OUTPUT_KIND_RTMP;
+    let opened = Arc::new(AtomicBool::new(!is_rtmp));
+    let ready = Arc::new(AtomicBool::new(!is_rtmp));
     let mut child = system::ffmpeg_command(app)
-        .args(publisher_args(profile, password))
+        .args(publisher_args(profile, credential))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -2178,20 +2553,176 @@ fn spawn_publisher(
     if let Some(stderr) = child.stderr.take() {
         let app = app.clone();
         let runtime = Arc::clone(runtime);
+        let credential = credential.to_string();
+        let opened = Arc::clone(&opened);
+        let ready = Arc::clone(&ready);
+        let connected_message = connected_message(profile);
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if !line.trim().is_empty() {
+                if is_rtmp && is_rtmp_output_open_line(&line) {
+                    opened.store(true, Ordering::Release);
+                    runtime.log(
+                        &app,
+                        "info",
+                        "output_opened",
+                        "Instagram aceptó la publicación · verificando flujo continuo...",
+                    );
+                } else if is_rtmp && is_rtmp_output_ready_line(&line) {
+                    if !ready.swap(true, Ordering::AcqRel) {
+                        runtime.mark_output_ready(&app, connected_message.clone());
+                    }
+                } else if is_publisher_warning_line(&line) {
                     runtime.log(
                         &app,
                         "warning",
                         "ffmpeg_publisher",
-                        format!("FFmpeg: {line}"),
+                        format!("FFmpeg: {}", redact_secret(&line, &credential)),
+                    );
+                } else if is_rtmp && is_rtmp_diagnostic_line(&line) {
+                    runtime.log(
+                        &app,
+                        "info",
+                        "ffmpeg_rtmp",
+                        format!("RTMP: {}", redact_secret(&line, &credential)),
                     );
                 }
             }
         });
     }
-    Ok(Publisher { child, stdin })
+    Ok(Publisher {
+        child,
+        stdin,
+        destination_label: destination_label(profile).to_string(),
+        opened,
+        ready,
+    })
+}
+
+fn is_rtmp_output_ready_line(line: &str) -> bool {
+    line.trim()
+        .strip_prefix("out_time_us=")
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|value| value >= 2_000_000)
+}
+
+fn is_rtmp_output_open_line(line: &str) -> bool {
+    line.contains("Output #0, flv, to ")
+}
+
+fn is_publisher_warning_line(line: &str) -> bool {
+    let normalized = line.trim().to_ascii_lowercase();
+    if normalized.contains("0 decode errors") {
+        return false;
+    }
+    !normalized.is_empty()
+        && [
+            "error",
+            "failed",
+            "invalid",
+            "broken pipe",
+            "end of file",
+            "resumed reading",
+            "connection reset",
+            "cannot",
+            "refused",
+            "denied",
+            "unable",
+            "timed out",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+}
+
+fn is_rtmp_diagnostic_line(line: &str) -> bool {
+    let normalized = line.trim().to_ascii_lowercase();
+    normalized.contains("[rtmps @")
+        && [
+            "handshaking",
+            "server version",
+            "window acknowledgement size",
+            "max sent, unacked",
+            "incoming chunk size",
+            "releasing stream",
+            "fcpublish stream",
+            "creating stream",
+            "sending publish command",
+            "received acknowledgement",
+            "ping request",
+            "ping response",
+            "goaway",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+}
+
+fn fatal_publisher_failure_message(
+    profile: &BroadcastProfile,
+    publisher_opened: bool,
+    publisher_ready: bool,
+) -> Option<String> {
+    if profile.output_kind != OUTPUT_KIND_RTMP || publisher_ready {
+        return None;
+    }
+    if publisher_opened {
+        return Some(if profile.rtmp_platform == RTMP_PLATFORM_INSTAGRAM {
+            "Instagram aceptó la publicación, pero cerró antes de recibir dos segundos continuos de audio y video. Prueba otro motor FFmpeg o crea un Live nuevo."
+                .to_string()
+        } else {
+            "El servidor RTMP aceptó la publicación, pero cerró antes de recibir un flujo multimedia continuo."
+                .to_string()
+        });
+    }
+    Some(if profile.rtmp_platform == RTMP_PLATFORM_INSTAGRAM {
+        "Instagram rechazó la publicación antes de recibir la señal. Crea un Live nuevo y pega por separado la URL del servidor y la clave de esa misma sesión."
+            .to_string()
+    } else {
+        "El servidor RTMP rechazó la publicación antes de recibir la señal. Revisa la URL y la clave de transmisión."
+            .to_string()
+    })
+}
+
+fn redact_secret(message: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        message.to_string()
+    } else {
+        message.replace(secret, "********")
+    }
+}
+
+fn destination_label(profile: &BroadcastProfile) -> &'static str {
+    if profile.output_kind == OUTPUT_KIND_RTMP {
+        if profile.rtmp_platform == RTMP_PLATFORM_INSTAGRAM {
+            "Instagram"
+        } else {
+            "RTMP"
+        }
+    } else {
+        "Icecast"
+    }
+}
+
+fn connecting_message(profile: &BroadcastProfile) -> String {
+    if profile.output_kind == OUTPUT_KIND_RTMP {
+        format!("Conectando la señal con {}...", destination_label(profile))
+    } else {
+        format!(
+            "Conectando con {}:{}{}...",
+            profile.host, profile.port, profile.mount
+        )
+    }
+}
+
+fn connected_message(profile: &BroadcastProfile) -> String {
+    if profile.output_kind == OUTPUT_KIND_RTMP {
+        if profile.rtmp_platform == RTMP_PLATFORM_INSTAGRAM {
+            "Señal enviada a Instagram · revisa la vista previa y pulsa Go live en Live Producer."
+                .to_string()
+        } else {
+            "Señal RTMP conectada · esperando audio.".to_string()
+        }
+    } else {
+        "Radio en vivo · esperando audio.".to_string()
+    }
 }
 
 enum PlayOutcome {
@@ -2209,16 +2740,16 @@ enum DirectInputOutcome {
     PublisherFailed(String),
 }
 
-struct IcecastSession<'a> {
+struct BroadcastSession<'a> {
     profile: &'a BroadcastProfile,
-    password: &'a str,
+    credential: &'a str,
     started_at: &'a str,
 }
 
 fn play_entry(
     app: &AppHandle,
     entry: &BroadcastQueueEntry,
-    session: &IcecastSession<'_>,
+    session: &BroadcastSession<'_>,
     publisher: &mut Publisher,
     runtime: &Arc<RuntimeState>,
     commands: &Receiver<WorkerCommand>,
@@ -2231,17 +2762,26 @@ fn play_entry(
     let mut playing = entry.clone();
     playing.status = "playing".to_string();
     playing.updated_at = timestamp();
+    let publisher_ready = publisher.is_ready();
     runtime.update(
         app,
-        "live",
-        format!("En vivo: {}", display_title(&playing)),
+        if publisher_ready {
+            "live"
+        } else {
+            "connecting"
+        },
+        if publisher_ready {
+            format!("En vivo: {}", display_title(&playing))
+        } else {
+            format!("Preparando señal: {}", display_title(&playing))
+        },
         Some(playing.clone()),
         Some(session.started_at.to_string()),
         ("info", "track_started"),
     );
-    update_icecast_metadata_async(
+    update_output_metadata_async(
         session.profile.clone(),
-        session.password.to_string(),
+        session.credential.to_string(),
         playing.clone(),
         runtime,
         app.clone(),
@@ -2318,9 +2858,9 @@ fn play_entry(
                     )
                 })
                 .unwrap_or_else(|| "Línea directa".to_string());
-            update_icecast_metadata_value_async(
+            update_output_metadata_value_async(
                 session.profile.clone(),
-                session.password.to_string(),
+                session.credential.to_string(),
                 source_title,
                 runtime,
                 app.clone(),
@@ -2335,9 +2875,9 @@ fn play_entry(
                         Some(session.started_at.to_string()),
                         ("info", "track_resumed"),
                     );
-                    update_icecast_metadata_async(
+                    update_output_metadata_async(
                         session.profile.clone(),
-                        session.password.to_string(),
+                        session.credential.to_string(),
                         playing.clone(),
                         runtime,
                         app.clone(),
@@ -2418,13 +2958,14 @@ fn play_entry(
 fn run_worker(
     app: AppHandle,
     profile: BroadcastProfile,
-    password: String,
+    credential: String,
     runtime: Arc<RuntimeState>,
     commands: Receiver<WorkerCommand>,
     started_at: String,
 ) {
     let mut reconnect_attempt = 0u32;
     let mut publisher: Option<Publisher> = None;
+    let mut terminal_error: Option<String> = None;
     let mut worker_audio = WorkerAudio::from_profile(&profile);
     if worker_audio.configured {
         let device = profile.microphone_device.clone();
@@ -2549,18 +3090,27 @@ fn run_worker(
             break;
         }
         if publisher.is_none() {
-            match spawn_publisher(&app, &profile, &password, &runtime) {
+            match spawn_publisher(&app, &profile, &credential, &runtime) {
                 Ok(candidate) => {
                     publisher = Some(candidate);
                     reconnect_attempt = 0;
-                    runtime.update(
-                        &app,
-                        "live",
-                        "Radio en vivo · esperando audio.",
-                        None,
-                        Some(started_at.clone()),
-                        ("info", "connected"),
-                    );
+                    let publisher_ready =
+                        publisher.as_ref().map(Publisher::is_ready).unwrap_or(false);
+                    if publisher_ready {
+                        runtime.mark_output_ready(&app, connected_message(&profile));
+                    } else {
+                        runtime.update(
+                            &app,
+                            "connecting",
+                            format!(
+                                "FFmpeg inició la salida; esperando confirmación de {}...",
+                                destination_label(&profile)
+                            ),
+                            None,
+                            Some(started_at.clone()),
+                            ("info", "publisher_started"),
+                        );
+                    }
                 }
                 Err(error) => {
                     reconnect_attempt = reconnect_attempt.saturating_add(1);
@@ -2590,9 +3140,9 @@ fn run_worker(
                     )
                 })
                 .unwrap_or_else(|| "Línea directa".to_string());
-            update_icecast_metadata_value_async(
+            update_output_metadata_value_async(
                 profile.clone(),
-                password.clone(),
+                credential.clone(),
                 source_title,
                 &runtime,
                 app.clone(),
@@ -2606,8 +3156,19 @@ fn run_worker(
             ) {
                 DirectInputOutcome::Stop => break,
                 DirectInputOutcome::PublisherFailed(error) => {
+                    let fatal_message = publisher.as_ref().and_then(|publisher| {
+                        fatal_publisher_failure_message(
+                            &profile,
+                            publisher.is_opened(),
+                            publisher.is_ready(),
+                        )
+                    });
                     if let Some(publisher) = publisher.take() {
                         publisher.terminate();
+                    }
+                    if let Some(message) = fatal_message {
+                        terminal_error = Some(message);
+                        break;
                     }
                     reconnect_attempt = reconnect_attempt.saturating_add(1);
                     if !wait_before_reconnect(
@@ -2623,9 +3184,9 @@ fn run_worker(
                     }
                 }
                 DirectInputOutcome::ResumePlaylist => {
-                    update_icecast_metadata_value_async(
+                    update_output_metadata_value_async(
                         profile.clone(),
-                        password.clone(),
+                        credential.clone(),
                         "Playlist".to_string(),
                         &runtime,
                         app.clone(),
@@ -2640,9 +3201,9 @@ fn run_worker(
         let next = open_db(&app).and_then(|conn| next_queue_entry(&conn));
         match next {
             Ok(Some(entry)) => {
-                let session = IcecastSession {
+                let session = BroadcastSession {
                     profile: &profile,
-                    password: &password,
+                    credential: &credential,
                     started_at: &started_at,
                 };
                 let outcome = play_entry(
@@ -2657,8 +3218,19 @@ fn run_worker(
                 match outcome {
                     PlayOutcome::Stop => break,
                     PlayOutcome::PublisherFailed(error) => {
+                        let fatal_message = publisher.as_ref().and_then(|publisher| {
+                            fatal_publisher_failure_message(
+                                &profile,
+                                publisher.is_opened(),
+                                publisher.is_ready(),
+                            )
+                        });
                         if let Some(publisher) = publisher.take() {
                             publisher.terminate();
+                        }
+                        if let Some(message) = fatal_message {
+                            terminal_error = Some(message);
+                            break;
                         }
                         reconnect_attempt = reconnect_attempt.saturating_add(1);
                         if !wait_before_reconnect(
@@ -2684,8 +3256,19 @@ fn run_worker(
                     .expect("publisher initialized")
                     .write(&silence);
                 if let Err(error) = result {
+                    let fatal_message = publisher.as_ref().and_then(|publisher| {
+                        fatal_publisher_failure_message(
+                            &profile,
+                            publisher.is_opened(),
+                            publisher.is_ready(),
+                        )
+                    });
                     if let Some(publisher) = publisher.take() {
                         publisher.terminate();
+                    }
+                    if let Some(message) = fatal_message {
+                        terminal_error = Some(message);
+                        break;
                     }
                     reconnect_attempt = reconnect_attempt.saturating_add(1);
                     if !wait_before_reconnect(
@@ -2744,14 +3327,25 @@ fn run_worker(
         "info",
         "application_audio_stopped",
     );
-    runtime.update(
-        &app,
-        "idle",
-        "Radio detenida.",
-        None,
-        None,
-        ("info", "stopped"),
-    );
+    if let Some(message) = terminal_error {
+        runtime.update(
+            &app,
+            "error",
+            message,
+            None,
+            None,
+            ("error", "destination_rejected"),
+        );
+    } else {
+        runtime.update(
+            &app,
+            "idle",
+            "Radio detenida.",
+            None,
+            None,
+            ("info", "stopped"),
+        );
+    }
 }
 
 fn wait_before_reconnect(
@@ -2767,7 +3361,7 @@ fn wait_before_reconnect(
     runtime.update(
         app,
         "reconnecting",
-        format!("Icecast desconectado. Reintentando en {seconds}s: {reason}"),
+        format!("Destino desconectado. Reintentando en {seconds}s: {reason}"),
         None,
         Some(started_at.to_string()),
         ("warning", "reconnecting"),
@@ -2872,14 +3466,26 @@ fn display_title(entry: &BroadcastQueueEntry) -> String {
         .unwrap_or_else(|| entry.title.clone())
 }
 
-fn update_icecast_metadata_async(
+fn update_output_metadata_async(
     profile: BroadcastProfile,
-    password: String,
+    credential: String,
     entry: BroadcastQueueEntry,
     runtime: &Arc<RuntimeState>,
     app: AppHandle,
 ) {
-    update_icecast_metadata_value_async(profile, password, display_title(&entry), runtime, app);
+    update_output_metadata_value_async(profile, credential, display_title(&entry), runtime, app);
+}
+
+fn update_output_metadata_value_async(
+    profile: BroadcastProfile,
+    credential: String,
+    value: String,
+    runtime: &Arc<RuntimeState>,
+    app: AppHandle,
+) {
+    if profile.output_kind == OUTPUT_KIND_ICECAST {
+        update_icecast_metadata_value_async(profile, credential, value, runtime, app);
+    }
 }
 
 fn update_icecast_metadata_value_async(
@@ -3298,6 +3904,7 @@ fn init_db(conn: &Connection) -> Result<(), String> {
         "
         CREATE TABLE IF NOT EXISTS broadcast_profiles (
           id TEXT PRIMARY KEY,
+          output_kind TEXT NOT NULL DEFAULT 'icecast',
           host TEXT NOT NULL,
           port INTEGER NOT NULL,
           mount TEXT NOT NULL,
@@ -3318,6 +3925,10 @@ fn init_db(conn: &Connection) -> Result<(), String> {
           application_audio_enabled INTEGER NOT NULL DEFAULT 0,
           application_audio_bundle_id TEXT NOT NULL DEFAULT '',
           application_audio_gain_percent INTEGER NOT NULL DEFAULT 100,
+          rtmp_platform TEXT NOT NULL DEFAULT 'instagram',
+          rtmp_server_url TEXT NOT NULL DEFAULT '',
+          rtmp_video_bitrate_kbps INTEGER NOT NULL DEFAULT 3500,
+          rtmp_audio_bitrate_kbps INTEGER NOT NULL DEFAULT 128,
           updated_at TEXT NOT NULL
         );
 
@@ -3343,6 +3954,7 @@ fn init_db(conn: &Connection) -> Result<(), String> {
         ",
     )
     .map_err(|error| format!("No se pudo inicializar SQLite broadcast: {error}"))?;
+    ensure_broadcast_profile_column(conn, "output_kind", "TEXT NOT NULL DEFAULT 'icecast'")?;
     ensure_broadcast_profile_column(conn, "microphone_enabled", "INTEGER NOT NULL DEFAULT 0")?;
     ensure_broadcast_profile_column(conn, "microphone_device", "TEXT NOT NULL DEFAULT 'default'")?;
     ensure_broadcast_profile_column(
@@ -3373,6 +3985,18 @@ fn init_db(conn: &Connection) -> Result<(), String> {
         conn,
         "application_audio_gain_percent",
         "INTEGER NOT NULL DEFAULT 100",
+    )?;
+    ensure_broadcast_profile_column(conn, "rtmp_platform", "TEXT NOT NULL DEFAULT 'instagram'")?;
+    ensure_broadcast_profile_column(conn, "rtmp_server_url", "TEXT NOT NULL DEFAULT ''")?;
+    ensure_broadcast_profile_column(
+        conn,
+        "rtmp_video_bitrate_kbps",
+        "INTEGER NOT NULL DEFAULT 3500",
+    )?;
+    ensure_broadcast_profile_column(
+        conn,
+        "rtmp_audio_bitrate_kbps",
+        "INTEGER NOT NULL DEFAULT 128",
     )?;
     Ok(())
 }
@@ -3417,6 +4041,7 @@ mod tests {
 
     fn profile_input() -> BroadcastProfileInput {
         BroadcastProfileInput {
+            output_kind: OUTPUT_KIND_ICECAST.to_string(),
             host: "radio.example.com".to_string(),
             port: 8443,
             mount: "/live.mp3".to_string(),
@@ -3437,6 +4062,10 @@ mod tests {
             application_audio_enabled: true,
             application_audio_bundle_id: application_audio::SYSTEM_AUDIO_TARGET_ID.to_string(),
             application_audio_gain_percent: 100,
+            rtmp_platform: RTMP_PLATFORM_INSTAGRAM.to_string(),
+            rtmp_server_url: "rtmps://live-upload.instagram.com:443/rtmp/".to_string(),
+            rtmp_video_bitrate_kbps: 3_500,
+            rtmp_audio_bitrate_kbps: 128,
             password: Some("secret".to_string()),
             clear_password: false,
         }
@@ -3445,6 +4074,7 @@ mod tests {
     fn profile() -> BroadcastProfile {
         BroadcastProfile {
             id: PROFILE_ID.to_string(),
+            output_kind: OUTPUT_KIND_ICECAST.to_string(),
             host: "radio.example.com".to_string(),
             port: 8443,
             mount: "/live.mp3".to_string(),
@@ -3465,6 +4095,10 @@ mod tests {
             application_audio_enabled: true,
             application_audio_bundle_id: application_audio::SYSTEM_AUDIO_TARGET_ID.to_string(),
             application_audio_gain_percent: 100,
+            rtmp_platform: RTMP_PLATFORM_INSTAGRAM.to_string(),
+            rtmp_server_url: "rtmps://live-upload.instagram.com:443/rtmp/".to_string(),
+            rtmp_video_bitrate_kbps: 3_500,
+            rtmp_audio_bitrate_kbps: 128,
             password_configured: true,
             listener_url: "https://radio.example.com:8443/live.mp3".to_string(),
             updated_at: timestamp(),
@@ -3506,6 +4140,124 @@ mod tests {
             args.last().unwrap(),
             "icecast://source@radio.example.com:8443/live.mp3"
         );
+        assert!(!args.iter().any(|value| value == "-re"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-channel_layout", "stereo"]));
+    }
+
+    #[test]
+    fn validates_instagram_rtmp_profile_boundaries() {
+        let mut input = profile_input();
+        input.output_kind = OUTPUT_KIND_RTMP.to_string();
+        assert!(validate_profile(input.clone()).is_ok());
+
+        input.rtmp_server_url = "rtmp://live-upload.instagram.com/rtmp/".to_string();
+        assert!(validate_profile(input.clone()).is_err());
+
+        input.rtmp_server_url = "rtmps://live-upload.instagram.com/rtmp/".to_string();
+        input.rtmp_video_bitrate_kbps = 6_001;
+        assert!(validate_profile(input).is_err());
+    }
+
+    #[test]
+    fn validates_ephemeral_rtmp_stream_keys() {
+        assert_eq!(
+            validate_stream_key(Some("session-key".to_string())).unwrap(),
+            "session-key"
+        );
+        assert!(validate_stream_key(None).is_err());
+        assert!(validate_stream_key(Some("key with spaces".to_string())).is_err());
+        assert!(validate_stream_key(Some(
+            "rtmps://live-upload.instagram.com/rtmp/session-key".to_string()
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn rtmp_publisher_uses_vertical_h264_aac_flv_output() {
+        let mut profile = profile();
+        profile.output_kind = OUTPUT_KIND_RTMP.to_string();
+        let args = publisher_args(&profile, "session-key");
+
+        assert!(args.windows(2).any(|pair| pair == ["-c:v", "libx264"]));
+        assert!(args.windows(2).any(|pair| pair == ["-c:a", "aac"]));
+        assert!(args.windows(2).any(|pair| pair == ["-f", "flv"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-rtmp_flush_interval", "1"]));
+        assert!(args.windows(2).any(|pair| pair == ["-tcp_nodelay", "1"]));
+        assert!(args.windows(2).any(|pair| pair == ["-loglevel", "debug"]));
+        assert!(args.iter().any(|value| value == "-nostats"));
+        assert!(args.windows(2).any(|pair| pair == ["-progress", "pipe:2"]));
+        assert_eq!(
+            args.iter().filter(|value| value.as_str() == "-re").count(),
+            1
+        );
+        assert!(args
+            .windows(4)
+            .any(|values| values == ["-re", "-f", "lavfi", "-i"]));
+        assert!(!args.iter().any(|value| value == "-minrate"));
+        assert!(!args.iter().any(|value| value == "-x264-params"));
+        assert!(args.iter().any(|value| value.contains("720x1280")));
+        assert!(args.iter().any(|value| value.contains("testsrc2")));
+        assert!(!args.iter().any(|value| value.contains("overlay")));
+        assert!(args.windows(2).any(|pair| pair == ["-map", "1:v:0"]));
+        assert!(args.windows(2).any(|pair| pair == ["-map", "0:a:0"]));
+        assert_eq!(
+            args.last().unwrap(),
+            "rtmps://live-upload.instagram.com:443/rtmp/session-key"
+        );
+    }
+
+    #[test]
+    fn publisher_logs_redact_ephemeral_stream_keys() {
+        assert_eq!(
+            redact_secret(
+                "Failed to open rtmps://example.test/live/private-key",
+                "private-key"
+            ),
+            "Failed to open rtmps://example.test/live/********"
+        );
+    }
+
+    #[test]
+    fn rtmp_readiness_waits_for_sustained_media_progress() {
+        assert!(is_rtmp_output_open_line(
+            "Output #0, flv, to 'rtmps://example.test/rtmp/private-key':"
+        ));
+        assert!(!is_rtmp_output_ready_line("out_time_us=700000"));
+        assert!(is_rtmp_output_ready_line("out_time_us=2000000"));
+        assert!(is_rtmp_output_ready_line("out_time_us=3123456"));
+        assert!(!is_rtmp_output_ready_line(
+            "Input #0, s16le, from 'pipe:0':"
+        ));
+        assert!(is_publisher_warning_line(
+            "Error submitting a packet to the muxer: End of file"
+        ));
+        assert!(!is_publisher_warning_line(
+            "Stream #0:1: Audio: aac (LC), 44100 Hz, stereo"
+        ));
+        assert!(!is_publisher_warning_line(
+            "Input stream #0:0 (audio): 7 frames decoded; 0 decode errors"
+        ));
+        assert!(is_rtmp_diagnostic_line(
+            "[rtmps @ 0x123] Sending publish command for 'private-key'"
+        ));
+        assert!(!is_rtmp_diagnostic_line(
+            "[AVFilterGraph @ 0x123] query_formats: 7 queried"
+        ));
+
+        let mut rtmp_profile = profile();
+        rtmp_profile.output_kind = OUTPUT_KIND_RTMP.to_string();
+        assert!(fatal_publisher_failure_message(&rtmp_profile, false, false)
+            .unwrap()
+            .contains("rechazó la publicación"));
+        assert!(fatal_publisher_failure_message(&rtmp_profile, true, false)
+            .unwrap()
+            .contains("dos segundos continuos"));
+        assert!(fatal_publisher_failure_message(&rtmp_profile, true, true).is_none());
+        assert!(fatal_publisher_failure_message(&profile(), false, false).is_none());
     }
 
     #[test]

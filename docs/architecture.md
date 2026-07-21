@@ -28,7 +28,7 @@ Major domains:
 - Mastering jobs and events.
 - Turn jobs and events.
 - Indexed playlist libraries, memberships, draft playlists, and embeddings.
-- Icecast source profiles and an ordered, durable radio broadcast queue.
+- Icecast/RTMP destination profiles and an ordered, durable broadcast queue.
 - Encrypted settings, including OpenAI and enrichment-provider credentials and audio tool paths.
 - Encrypted P2P device identity, trusted peers, presence observations, shared folders, and virtual file catalogs.
 
@@ -63,7 +63,7 @@ The Rust backend owns:
 - ffmpeg/ffprobe command construction;
 - optional OpenAI requests;
 - encrypted settings persistence.
-- Icecast source lifecycle, MP3 publishing, queue recovery, and reconnect policy.
+- Icecast/RTMP publisher lifecycle, encoding, queue recovery, and reconnect policy.
 - P2P identity locking, share permissions, and filesystem-safe catalog indexing.
 
 ## Media Tool Resolution
@@ -132,11 +132,12 @@ Rau Connect emits `p2p-network-event` for endpoint lifecycle and diagnostics, `p
 
 The app shell listens to these events to report bridge health, while each feature page consumes the relevant stream for progress, row status, and terminal logs.
 
-## Radio Broadcast Pipeline
+## Broadcast Pipeline
 
-The desktop app acts as an Icecast source client; listeners never connect to the
-Mac directly. An outbound connection publishes to a reachable Icecast server,
-which owns the public listener URL and fan-out.
+The desktop app publishes one mixed PCM stream through a destination-specific
+FFmpeg publisher. Icecast owns the public listener URL and audio fan-out. An
+RTMP service such as Instagram receives a vertical live-video signal and owns
+the preview and final go-live step. Both connections are outbound from the Mac.
 
 ```text
 Indexed playlist -> SQLite queue -> per-track FFmpeg decoder ----\
@@ -145,17 +146,23 @@ Mac/system audio (ScreenCaptureKit) -> bounded PCM buffer -------/              
 Native microphone (CPAL/CoreAudio) -> bounded PCM buffer ------------------------------------/
                                                                                                    |
                                                                                                    v
-PCM pipe -> persistent FFmpeg/libmp3lame publisher -> Icecast -> listeners
+                                                      /-> libmp3lame -> Icecast -> listeners
+PCM pipe -> persistent destination publisher --------+
+                                                      \-> AAC + paced testsrc2/libx264 -> RTMP service -> viewers
 ```
 
-1. The user saves one Icecast source profile. Its password is encrypted through
-   the existing settings vault and is never returned to the frontend.
+1. The user saves one Broadcast profile with an `output_kind`. Icecast stores
+   its source password in the existing encrypted settings vault. RTMP stores
+   the server URL and encoding preset, but the stream key is supplied only to
+   the start command and is never persisted.
 2. Adding an indexed playlist snapshots its playable local paths and original
    order into `broadcast_queue_entries`.
 3. A per-track decoder normalizes audio to stereo 44.1 kHz signed 16-bit PCM.
-4. One long-lived publisher encodes that PCM with `libmp3lame` and writes the
-   configured Icecast mount. It emits silence while the queue is empty so the
-   listener URL remains connected.
+4. One long-lived publisher consumes the PCM. Icecast encodes it with
+   `libmp3lame` and writes the configured mount. RTMP encodes the PCM as AAC and
+   combines it with an independently paced animated test source in a 720 × 1280, 30 fps
+   H.264/FLV signal. It emits silence while the queue is empty so the destination
+   remains connected.
 5. The optional microphone is opened by the Rust process through CPAL/CoreAudio,
    so macOS associates capture permission with Rau Studio instead of the FFmpeg
    sidecar. Native samples are resampled into a bounded stereo PCM buffer and
@@ -171,11 +178,13 @@ PCM pipe -> persistent FFmpeg/libmp3lame publisher -> Icecast -> listeners
    application. It is stereo, does not apply ducking or mix the microphone, and
    holds the playlist decoder just as direct line does. The OS Screen & System
    Audio Recording permission gates capture and application discovery.
-8. Track transitions update Icecast metadata through its admin endpoint.
+8. Track transitions update metadata through the Icecast admin endpoint only;
+   RTMP destinations keep the continuous audio/video signal without that call.
 9. Stop, skip, microphone-live, and source-mode commands travel over an in-process channel. Interrupted
    `playing` rows return to `queued` when a new session starts.
 10. A lost publisher is terminated and recreated with bounded reconnect delays;
-   the current track returns to the queue instead of being marked as played.
+    the current track returns to the queue instead of being marked as played.
+    Logs redact the active Icecast password or RTMP stream key.
 
 See [Radio Broadcast](radio-broadcast.md) for setup, operation, and network
 topologies.

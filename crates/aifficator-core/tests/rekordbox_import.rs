@@ -3,8 +3,9 @@ use aifficator_core::rekordbox::parse_rekordbox_xml;
 use aifficator_core::validation::{validate_library, IssueCode};
 use aifficator_core::{conversion::ffmpeg_args, conversion::ConversionSettings};
 use aifficator_core::{
-    exporter::export_replacement_xml, exporter::export_with_new_playlist_xml,
-    exporter::path_to_rekordbox_location, exporter::ExportTrackReplacement,
+    exporter::export_replacement_xml, exporter::export_track_ratings_xml,
+    exporter::export_with_new_playlist_xml, exporter::path_to_rekordbox_location,
+    exporter::ExportTrackReplacement,
 };
 use std::collections::BTreeMap;
 use std::fs;
@@ -146,6 +147,27 @@ fn export_replacement_xml_rewrites_track_location_and_preserves_children() {
 }
 
 #[test]
+fn export_track_ratings_overrides_only_internal_ratings() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <COLLECTION Entries="3">
+    <TRACK TrackID="1" Name="Five Stars" Rating="51"/>
+    <TRACK TrackID="2" Name="Cleared" Rating="204"/>
+    <TRACK TrackID="3" Name="Preserved" Rating="153"/>
+  </COLLECTION>
+</DJ_PLAYLISTS>"#;
+    let ratings = BTreeMap::from([("1".to_string(), 5_u8), ("2".to_string(), 0_u8)]);
+
+    let exported = export_track_ratings_xml(xml, &ratings).expect("export ratings");
+    let parsed = parse_rekordbox_xml(&exported).expect("parse rated XML");
+    let by_id = parsed.track_by_id();
+
+    assert_eq!(by_id["1"].attributes.get("Rating").map(String::as_str), Some("255"));
+    assert_eq!(by_id["2"].attributes.get("Rating").map(String::as_str), Some("0"));
+    assert_eq!(by_id["3"].attributes.get("Rating").map(String::as_str), Some("153"));
+}
+
+#[test]
 fn export_with_new_playlist_xml_appends_rau_studio_playlist() {
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <DJ_PLAYLISTS Version="1.0.0">
@@ -168,4 +190,50 @@ fn export_with_new_playlist_xml_appends_rau_studio_playlist() {
     assert!(exported.contains("<TRACK Key=\"1\"/>"));
     assert!(exported.contains("<TRACK Key=\"2\"/>"));
     assert!(exported.contains("<TRACK TrackID=\"1\" Name=\"One\" Kind=\"AIFF File\"/>"));
+
+    let parsed = parse_rekordbox_xml(&exported).unwrap();
+    assert_eq!(parsed.playlists.len(), 1);
+    let root = &parsed.playlists[0];
+    assert_eq!(root.name, "ROOT");
+    assert_eq!(root.count, Some(1));
+    assert_eq!(root.children.len(), 1);
+    let rau_studio_folder = &root.children[0];
+    assert_eq!(rau_studio_folder.name, "Rau Studio");
+    assert_eq!(rau_studio_folder.children.len(), 1);
+    assert_eq!(rau_studio_folder.children[0].name, "Generated Set");
+    assert_eq!(
+        rau_studio_folder.children[0].track_keys,
+        vec!["1".to_string(), "2".to_string()]
+    );
+}
+
+#[test]
+fn export_with_new_playlist_xml_increments_and_preserves_existing_root() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <PRODUCT Name="rekordbox" Version="7.2.3" Company="AlphaTheta"/>
+  <COLLECTION Entries="1">
+    <TRACK TrackID="1" Name="One" Kind="AIFF File"/>
+  </COLLECTION>
+  <PLAYLISTS>
+    <NODE Type="0" Name="ROOT" Count="1">
+      <NODE Name="Existing Set" Type="1" KeyType="0" Entries="1">
+        <TRACK Key="1"/>
+      </NODE>
+    </NODE>
+  </PLAYLISTS>
+</DJ_PLAYLISTS>"#;
+
+    let exported = export_with_new_playlist_xml(xml, "Generated Set", &["1".to_string()])
+        .expect("export playlist");
+    let parsed = parse_rekordbox_xml(&exported).expect("parse exported XML");
+
+    assert_eq!(parsed.playlists.len(), 1);
+    let root = &parsed.playlists[0];
+    assert_eq!(root.name, "ROOT");
+    assert_eq!(root.count, Some(2));
+    assert_eq!(root.children.len(), 2);
+    assert_eq!(root.children[0].name, "Existing Set");
+    assert_eq!(root.children[1].name, "Rau Studio");
+    assert_eq!(root.children[1].children[0].name, "Generated Set");
 }

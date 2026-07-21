@@ -100,9 +100,10 @@ validate_native_features() {
     echo "Running $target_triple feature checks through the local compatibility layer."
   fi
 
-  local encoders filters protocols devices smoke_dir
+  local encoders filters muxers protocols devices smoke_dir
   encoders="$($ffmpeg_output -hide_banner -encoders 2>/dev/null)"
   filters="$($ffmpeg_output -hide_banner -filters 2>/dev/null)"
+  muxers="$($ffmpeg_output -hide_banner -muxers 2>/dev/null)"
   protocols="$($ffmpeg_output -hide_banner -protocols 2>/dev/null)"
   devices="$($ffmpeg_output -hide_banner -devices 2>/dev/null)"
 
@@ -113,14 +114,19 @@ validate_native_features() {
     fi
   done
 
-  for filter in ebur128 astats acompressor alimiter equalizer highpass lowpass; do
+  for filter in ebur128 astats acompressor alimiter equalizer highpass lowpass testsrc2; do
     if [[ "$filters" != *"$filter"* ]]; then
       echo "Bundled FFmpeg is missing required filter: $filter" >&2
       exit 1
     fi
   done
 
-  for protocol in icecast http https tcp tls; do
+  if ! grep -Eq "^[[:space:]]*E[[:space:]]+flv([[:space:]]|$)" <<< "$muxers"; then
+    echo "Bundled FFmpeg is missing required muxer: flv" >&2
+    exit 1
+  fi
+
+  for protocol in icecast http https tcp tls rtmp rtmps; do
     if ! grep -Eq "^[[:space:]]*$protocol$" <<< "$protocols"; then
       echo "Bundled FFmpeg is missing required protocol: $protocol" >&2
       exit 1
@@ -150,6 +156,21 @@ validate_native_features() {
   "$ffprobe_output" \
     -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \
     "$smoke_dir/smoke.mp4" | grep -q "h264"
+
+  "$ffmpeg_output" \
+    -hide_banner -loglevel error \
+    -f lavfi -i "sine=frequency=440:duration=0.25" \
+    -f lavfi -i "testsrc2=size=72x128:rate=30:duration=0.25" \
+    -map 1:v:0 -map 0:a:0 -c:v libx264 \
+    -b:v 500k -maxrate 500k -bufsize 1000k \
+    -c:a aac -ar 44100 -ac 2 -f flv \
+    "$smoke_dir/smoke.flv"
+  "$ffprobe_output" \
+    -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 \
+    "$smoke_dir/smoke.flv" | grep -q "h264"
+  "$ffprobe_output" \
+    -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of csv=p=0 \
+    "$smoke_dir/smoke.flv" | grep -Eq "aac,44100,(2|stereo)"
 
   "$ffmpeg_output" \
     -hide_banner -loglevel error -f lavfi -i "sine=frequency=440:duration=0.25" \

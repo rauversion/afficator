@@ -39,6 +39,7 @@ const SYSTEM_AUDIO_TARGET_ID = "__system_audio__";
 
 type BroadcastProfile = {
   id: string;
+  output_kind: "icecast" | "rtmp" | string;
   host: string;
   port: number;
   mount: string;
@@ -59,6 +60,10 @@ type BroadcastProfile = {
   application_audio_enabled: boolean;
   application_audio_bundle_id: string;
   application_audio_gain_percent: number;
+  rtmp_platform: "instagram" | "custom" | string;
+  rtmp_server_url: string;
+  rtmp_video_bitrate_kbps: number;
+  rtmp_audio_bitrate_kbps: number;
   password_configured: boolean;
   listener_url: string;
   updated_at: string;
@@ -69,6 +74,12 @@ type BroadcastPreflight = {
   mp3_encoder_available: boolean;
   icecast_protocol_available: boolean;
   tls_protocol_available: boolean;
+  h264_encoder_available: boolean;
+  aac_encoder_available: boolean;
+  rtmp_protocol_available: boolean;
+  rtmps_protocol_available: boolean;
+  flv_muxer_available: boolean;
+  visualizer_filter_available: boolean;
   microphone_input_available: boolean;
   ready: boolean;
   message: string;
@@ -201,6 +212,8 @@ type QueueAppendResult = {
 
 type BusyAction = "loading" | "saving" | "starting" | "stopping" | "skipping" | "appending" | "clearing" | string | null;
 type BroadcastSourceTab = "microphone" | "line_input" | "system_audio";
+type BroadcastOutputKind = "icecast" | "rtmp";
+type RtmpPlatform = "instagram" | "custom";
 
 const fieldClass =
   "h-10 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-foreground/35 focus:ring-2 focus:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-60";
@@ -258,6 +271,7 @@ export function BroadcastPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const [outputKind, setOutputKind] = useState<BroadcastOutputKind>("icecast");
   const [host, setHost] = useState("");
   const [port, setPort] = useState("8000");
   const [mount, setMount] = useState("/live.mp3");
@@ -269,6 +283,11 @@ export function BroadcastPage() {
   const [isPublic, setIsPublic] = useState(false);
   const [password, setPassword] = useState("");
   const [clearPassword, setClearPassword] = useState(false);
+  const [rtmpPlatform, setRtmpPlatform] = useState<RtmpPlatform>("instagram");
+  const [rtmpServerUrl, setRtmpServerUrl] = useState("");
+  const [rtmpVideoBitrate, setRtmpVideoBitrate] = useState("3500");
+  const [rtmpAudioBitrate, setRtmpAudioBitrate] = useState("128");
+  const [streamKey, setStreamKey] = useState("");
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [microphoneDevice, setMicrophoneDevice] = useState("default");
   const [microphoneGain, setMicrophoneGain] = useState("100");
@@ -285,6 +304,14 @@ export function BroadcastPage() {
   const nextTerminalLogId = useRef(1);
 
   const running = status ? ["connecting", "live", "reconnecting", "stopping"].includes(status.status) : false;
+  const destinationNeedsSave = !profile
+    || outputKind !== (profile.output_kind === "rtmp" ? "rtmp" : "icecast")
+    || (outputKind === "rtmp" && (
+      rtmpPlatform !== (profile.rtmp_platform === "custom" ? "custom" : "instagram")
+      || rtmpServerUrl.trim() !== profile.rtmp_server_url
+      || Number(rtmpVideoBitrate) !== profile.rtmp_video_bitrate_kbps
+      || Number(rtmpAudioBitrate) !== profile.rtmp_audio_bitrate_kbps
+    ));
   const queuedTotal = queue.filter((entry) => entry.status === "queued").length;
   const completedTotal = queue.filter((entry) => entry.status === "played").length;
   const failedTotal = queue.filter((entry) => entry.status === "failed").length;
@@ -304,6 +331,7 @@ export function BroadcastPage() {
 
   const hydrateProfile = useCallback((next: BroadcastProfile) => {
     setProfile(next);
+    setOutputKind(next.output_kind === "rtmp" ? "rtmp" : "icecast");
     setHost(next.host);
     setPort(String(next.port));
     setMount(next.mount);
@@ -324,6 +352,10 @@ export function BroadcastPage() {
     setApplicationAudioEnabled(next.application_audio_enabled);
     setApplicationAudioBundleId(next.application_audio_bundle_id || SYSTEM_AUDIO_TARGET_ID);
     setApplicationAudioGain(String(next.application_audio_gain_percent));
+    setRtmpPlatform(next.rtmp_platform === "custom" ? "custom" : "instagram");
+    setRtmpServerUrl(next.rtmp_server_url);
+    setRtmpVideoBitrate(String(next.rtmp_video_bitrate_kbps));
+    setRtmpAudioBitrate(String(next.rtmp_audio_bitrate_kbps));
     setSourceTab(next.application_audio_enabled ? "system_audio" : next.line_input_enabled ? "line_input" : "microphone");
     setPassword("");
     setClearPassword(false);
@@ -454,6 +486,7 @@ export function BroadcastPage() {
     try {
       const saved = await invoke<BroadcastProfile>("broadcast_save_profile", {
         profile: {
+          outputKind,
           host,
           port: Number(port),
           mount,
@@ -474,6 +507,10 @@ export function BroadcastPage() {
           applicationAudioEnabled,
           applicationAudioBundleId,
           applicationAudioGainPercent: Number(applicationAudioGain),
+          rtmpPlatform,
+          rtmpServerUrl,
+          rtmpVideoBitrateKbps: Number(rtmpVideoBitrate),
+          rtmpAudioBitrateKbps: Number(rtmpAudioBitrate),
           password: password || null,
           clearPassword
         }
@@ -481,7 +518,7 @@ export function BroadcastPage() {
       hydrateProfile(saved);
       const nextPreflight = await invoke<BroadcastPreflight>("broadcast_preflight");
       setPreflight(nextPreflight);
-      setNotice(t("Perfil Icecast guardado."));
+      setNotice(t("Perfil de broadcast guardado."));
     } catch (cause) {
       setError(errorMessage(cause, locale));
     } finally {
@@ -517,14 +554,19 @@ export function BroadcastPage() {
 
   async function startBroadcast() {
     await runAction("starting", async () => {
-      setStatus(await invoke<BroadcastStatus>("broadcast_start"));
-      setNotice(t("Iniciando transmisión a Icecast."));
+      setStatus(await invoke<BroadcastStatus>("broadcast_start", {
+        streamKey: outputKind === "rtmp" ? streamKey : null
+      }));
+      setNotice(outputKind === "rtmp"
+        ? t("Enviando señal RTMP. Revisa la vista previa antes de salir al aire.")
+        : t("Iniciando transmisión a Icecast."));
     });
   }
 
   async function stopBroadcast() {
     await runAction("stopping", async () => {
       setStatus(await invoke<BroadcastStatus>("broadcast_stop"));
+      if (outputKind === "rtmp") setStreamKey("");
     });
   }
 
@@ -706,9 +748,9 @@ export function BroadcastPage() {
               <Radio className="h-4 w-4" />
               <span className="text-xs font-semibold uppercase tracking-[0.18em]">{t("Broadcast")}</span>
             </div>
-            <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("Radio desde casa")}</h1>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">{t("Broadcast desde casa")}</h1>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              {t("Rau Studio reproduce tu cola local y mantiene un stream MP3 persistente hacia Icecast.")}
+              {t("Rau Studio mezcla tu cola y entradas locales para transmitir por Icecast o RTMP.")}
             </p>
           </div>
           <StatusBadge status={status?.status ?? "idle"} label={status?.message ?? t("Radio detenida.")} />
@@ -735,7 +777,7 @@ export function BroadcastPage() {
         <section className="grid gap-4 xl:grid-cols-[minmax(360px,0.8fr)_minmax(520px,1.2fr)]">
           <Card>
             <CardHeader>
-              <CardTitle>{t("Destino Icecast")}</CardTitle>
+              <CardTitle>{t("Destino de salida")}</CardTitle>
               <span className={cn(
                 "rounded-full px-2 py-1 text-[11px] font-semibold",
                 preflight?.ready
@@ -747,60 +789,122 @@ export function BroadcastPage() {
             </CardHeader>
             <CardContent className="p-3">
               <form className="grid gap-3" onSubmit={saveProfile}>
-                <div className="grid gap-3 sm:grid-cols-[1fr_110px]">
-                  <Field label={t("Host")}>
-                    <input className={fieldClass} value={host} required disabled={running} onChange={(event) => setHost(event.target.value)} />
-                  </Field>
-                  <Field label={t("Puerto")}>
-                    <input className={fieldClass} type="number" min={1} max={65535} value={port} required disabled={running} onChange={(event) => setPort(event.target.value)} />
-                  </Field>
-                </div>
-                <Field label={t("Mountpoint MP3")}>
-                  <input className={fieldClass} value={mount} required disabled={running} placeholder="/live.mp3" onChange={(event) => setMount(event.target.value)} />
+                <Field label={t("Tipo de destino")}>
+                  <select className={fieldClass} value={outputKind} disabled={running} onChange={(event) => setOutputKind(event.target.value as BroadcastOutputKind)}>
+                    <option value="icecast">Icecast · MP3</option>
+                    <option value="rtmp">RTMP / RTMPS · {t("Video en vivo")}</option>
+                  </select>
                 </Field>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <Field label={t("Usuario source")}>
-                    <input className={fieldClass} value={username} required disabled={running} onChange={(event) => setUsername(event.target.value)} />
-                  </Field>
-                  <Field label={t("Bitrate MP3")}>
-                    <select className={fieldClass} value={bitrate} disabled={running} onChange={(event) => setBitrate(event.target.value)}>
-                      {[96, 128, 160, 192, 256, 320].map((value) => <option key={value} value={value}>{value} kbps</option>)}
-                    </select>
-                  </Field>
-                </div>
+                {outputKind === "icecast" ? (
+                  <>
+                    <div className="grid gap-3 sm:grid-cols-[1fr_110px]">
+                      <Field label={t("Host")}>
+                        <input className={fieldClass} value={host} required disabled={running} onChange={(event) => setHost(event.target.value)} />
+                      </Field>
+                      <Field label={t("Puerto")}>
+                        <input className={fieldClass} type="number" min={1} max={65535} value={port} required disabled={running} onChange={(event) => setPort(event.target.value)} />
+                      </Field>
+                    </div>
+                    <Field label={t("Mountpoint MP3")}>
+                      <input className={fieldClass} value={mount} required disabled={running} placeholder="/live.mp3" onChange={(event) => setMount(event.target.value)} />
+                    </Field>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label={t("Usuario source")}>
+                        <input className={fieldClass} value={username} required disabled={running} onChange={(event) => setUsername(event.target.value)} />
+                      </Field>
+                      <Field label={t("Bitrate MP3")}>
+                        <select className={fieldClass} value={bitrate} disabled={running} onChange={(event) => setBitrate(event.target.value)}>
+                          {[96, 128, 160, 192, 256, 320].map((value) => <option key={value} value={value}>{value} kbps</option>)}
+                        </select>
+                      </Field>
+                    </div>
+                    <Field label={profile?.password_configured ? t("Nueva contraseña source (opcional)") : t("Contraseña source")}>
+                      <input
+                        className={fieldClass}
+                        type="password"
+                        value={password}
+                        required={!profile?.password_configured && !clearPassword}
+                        disabled={running || clearPassword}
+                        autoComplete="new-password"
+                        onChange={(event) => setPassword(event.target.value)}
+                      />
+                    </Field>
+                    <div className="grid gap-2 text-sm sm:grid-cols-2">
+                      <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
+                        <input type="checkbox" checked={tls} disabled={running} onChange={(event) => setTls(event.target.checked)} />
+                        {t("Usar TLS")}
+                      </label>
+                      <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
+                        <input type="checkbox" checked={isPublic} disabled={running} onChange={(event) => setIsPublic(event.target.checked)} />
+                        {t("Listar públicamente")}
+                      </label>
+                      {profile?.password_configured ? (
+                        <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2 sm:col-span-2">
+                          <input type="checkbox" checked={clearPassword} disabled={running} onChange={(event) => setClearPassword(event.target.checked)} />
+                          {t("Eliminar contraseña guardada")}
+                        </label>
+                      ) : null}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Field label={t("Plataforma")}>
+                      <select className={fieldClass} value={rtmpPlatform} disabled={running} onChange={(event) => setRtmpPlatform(event.target.value as RtmpPlatform)}>
+                        <option value="instagram">Instagram Live</option>
+                        <option value="custom">{t("RTMP personalizado")}</option>
+                      </select>
+                    </Field>
+                    <Field label={t("URL del servidor RTMP")}>
+                      <input
+                        className={fieldClass}
+                        type="url"
+                        value={rtmpServerUrl}
+                        required
+                        disabled={running}
+                        placeholder="rtmps://live-upload.instagram.com:443/rtmp/"
+                        onChange={(event) => setRtmpServerUrl(event.target.value)}
+                      />
+                    </Field>
+                    <Field label={t("Clave de transmisión · solo esta sesión")}>
+                      <input
+                        className={fieldClass}
+                        type="password"
+                        value={streamKey}
+                        disabled={running}
+                        autoComplete="off"
+                        placeholder={t("Pégala antes de enviar la señal")}
+                        onChange={(event) => setStreamKey(event.target.value)}
+                      />
+                    </Field>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <Field label={t("Bitrate de video")}>
+                        <select className={fieldClass} value={rtmpVideoBitrate} disabled={running} onChange={(event) => setRtmpVideoBitrate(event.target.value)}>
+                          {[2250, 3000, 3500, 4500, 6000].map((value) => <option key={value} value={value}>{value} kbps</option>)}
+                        </select>
+                      </Field>
+                      <Field label={t("Bitrate AAC")}>
+                        <select className={fieldClass} value={rtmpAudioBitrate} disabled={running} onChange={(event) => setRtmpAudioBitrate(event.target.value)}>
+                          {[96, 128, 160, 192, 256].map((value) => <option key={value} value={value}>{value} kbps</option>)}
+                        </select>
+                      </Field>
+                    </div>
+                    <div className="rounded-md border border-violet-500/25 bg-violet-500/5 px-3 py-2 text-xs text-muted-foreground">
+                      <strong className="block text-foreground">720 × 1280 · 30 fps · H.264/AAC</strong>
+                      <span>{t("Rau genera una carta de televisión animada a 30 fps, separada del audio.")}</span>
+                    </div>
+                    {rtmpPlatform === "instagram" ? (
+                      <div className="rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
+                        {t("Crea el Live en Instagram.com, copia su URL y clave, envía la señal desde Rau y confirma la vista previa en Live Producer. Para terminar, finaliza primero en Instagram.")}
+                      </div>
+                    ) : null}
+                  </>
+                )}
                 <Field label={t("Nombre de estación")}>
                   <input className={fieldClass} value={stationName} required maxLength={120} disabled={running} onChange={(event) => setStationName(event.target.value)} />
                 </Field>
                 <Field label={t("Descripción")}>
                   <input className={fieldClass} value={description} maxLength={240} disabled={running} onChange={(event) => setDescription(event.target.value)} />
                 </Field>
-                <Field label={profile?.password_configured ? t("Nueva contraseña source (opcional)") : t("Contraseña source")}>
-                  <input
-                    className={fieldClass}
-                    type="password"
-                    value={password}
-                    required={!profile?.password_configured && !clearPassword}
-                    disabled={running || clearPassword}
-                    autoComplete="new-password"
-                    onChange={(event) => setPassword(event.target.value)}
-                  />
-                </Field>
-                <div className="grid gap-2 text-sm sm:grid-cols-2">
-                  <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
-                    <input type="checkbox" checked={tls} disabled={running} onChange={(event) => setTls(event.target.checked)} />
-                    {t("Usar TLS")}
-                  </label>
-                  <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
-                    <input type="checkbox" checked={isPublic} disabled={running} onChange={(event) => setIsPublic(event.target.checked)} />
-                    {t("Listar públicamente")}
-                  </label>
-                  {profile?.password_configured ? (
-                    <label className="flex items-center gap-2 rounded-md border border-border px-3 py-2 sm:col-span-2">
-                      <input type="checkbox" checked={clearPassword} disabled={running} onChange={(event) => setClearPassword(event.target.checked)} />
-                      {t("Eliminar contraseña guardada")}
-                    </label>
-                  ) : null}
-                </div>
                 <div className="overflow-hidden rounded-lg border border-border bg-muted/15">
                   <div className="grid grid-cols-3 gap-1 border-b border-border bg-secondary/70 p-1" role="tablist" aria-label={t("Fuentes de audio")}>
                     <SourceTabButton
@@ -961,7 +1065,7 @@ export function BroadcastPage() {
                         />
                       </Field>
                       <p className="text-xs text-muted-foreground">
-                        {t("La línea reemplaza temporalmente la playlist y pasa directo a Icecast, sin ducking.")}
+                        {t("La línea reemplaza temporalmente la playlist y pasa directo al destino, sin ducking.")}
                       </p>
                     </>
                   ) : (
@@ -1054,8 +1158,13 @@ export function BroadcastPage() {
                   </div>
                 </div>
                 <div className="rounded-md bg-secondary/60 px-3 py-2 text-xs text-muted-foreground">
-                  <strong className="block text-foreground">{profile?.listener_url ?? "—"}</strong>
+                  <strong className="block break-all text-foreground">
+                    {outputKind === "rtmp" ? (rtmpServerUrl || t("Configura la URL RTMP")) : (profile?.listener_url ?? "—")}
+                  </strong>
                   <span>{translateBackendMessage(locale, preflight?.message ?? t("Revisando motor FFmpeg..."))}</span>
+                  {destinationNeedsSave ? (
+                    <span className="mt-1 block font-medium text-amber-700 dark:text-amber-300">{t("Guarda los cambios del destino antes de iniciar.")}</span>
+                  ) : null}
                 </div>
                 <Button type="submit" disabled={busy === "saving" || running}>
                   {busy === "saving" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
@@ -1071,7 +1180,7 @@ export function BroadcastPage() {
                 <CardTitle>{t("Control de transmisión")}</CardTitle>
                 <div className="flex flex-wrap gap-2">
                   {!running ? (
-                    <Button size="sm" disabled={!preflight?.ready || ((microphoneEnabled || lineInputEnabled) && !preflight?.microphone_input_available) || busy !== null} onClick={() => void startBroadcast()}>
+                    <Button size="sm" disabled={destinationNeedsSave || !preflight?.ready || (outputKind === "rtmp" && !streamKey.trim()) || ((microphoneEnabled || lineInputEnabled) && !preflight?.microphone_input_available) || busy !== null} onClick={() => void startBroadcast()}>
                       {busy === "starting" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                       {t("Salir al aire")}
                     </Button>
@@ -1148,7 +1257,7 @@ export function BroadcastPage() {
                   </div>
                 ) : (
                   <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
-                    {running ? t("La conexión sigue viva transmitiendo silencio hasta que haya una pista.") : t("Configura Icecast, agrega una playlist y sal al aire.")}
+                    {running ? t("La conexión sigue viva transmitiendo silencio hasta que haya una pista.") : t("Configura un destino, agrega una playlist y sal al aire.")}
                   </div>
                 )}
                 {profile?.microphone_enabled ? (
@@ -1395,7 +1504,7 @@ export function BroadcastPage() {
         logs={terminalLogs}
         expanded={terminalExpanded}
         terminalRef={terminalElement}
-        subtitle={t("ffmpeg / icecast / entradas de audio")}
+        subtitle={t("ffmpeg / destinos / entradas de audio")}
         emptyMessage="Sin eventos todavía."
         onToggle={() => setTerminalExpanded((current) => !current)}
         onClear={clearTerminal}
