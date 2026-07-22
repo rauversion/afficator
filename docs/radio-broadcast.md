@@ -43,7 +43,7 @@ server; do not expose an unprotected Icecast admin interface.
 - Upload bandwidth above the selected bitrate. Leave headroom for reconnects
   and other traffic. A 128 kbps station uses roughly 58 MB per hour; a 3.5 Mbps
   video signal uses roughly 1.6 GB per hour.
-- macOS 13 or newer. Capturing the Mac's complete output or one application's
+- macOS 13 or newer for Mac audio capture. Capturing the Mac's complete output or one application's
   output uses ScreenCaptureKit and the system's Screen & System Audio Recording
   permission.
 
@@ -110,9 +110,10 @@ visible until cleared. The active row cannot be removed or reordered.
 4. Paste the stream key into **Clave de transmisión · solo esta sesión**. It is
    kept only in the current frontend session and cleared when the broadcast is
    stopped.
-5. Optional: open **Video Studio**, enable a camera, and choose **Card**, **Full width**, or **Background**.
-   Fit/crop framing, orientation, effect, mirror, opacity, and AUTO duration remain available in every mode.
-   Card also enables position and size. The camera stays out of Program when the broadcast starts.
+5. Optional: open **Video Studio** and enable **Camera**, **Screen / window**, or both. The system picker lets you choose
+   an entire display or one application window. Select either layer to edit its Card, Full width, or Background layout;
+   fit/crop framing, orientation, effect, mirror, opacity, position, and size are independent. The combined visual stays
+   out of Program when the broadcast starts.
 6. Add tracks to the queue, configure any local inputs, confirm the FFmpeg
    preflight is ready, and choose **Salir al aire**.
 7. Rau Studio sends a 720 × 1280, 30 fps H.264 video with AAC audio and an
@@ -120,10 +121,10 @@ visible until cleared. The active row cannot be removed or reordered.
    station name, encoding information, and the current artist/title. Wait for
    the image to appear in Live Producer.
 8. Open **Video Studio** while the signal is running. **PREVIEW** and **PROGRAM**
-   show the live camera while the modal is open; **PROGRAM** represents the composition being sent. Use the
+   show the live camera and selected display/window layers; **PROGRAM** represents the combined composition being sent. Use the
    fader for an immediate manual mix, or **AUTO** for the saved timed dissolve.
-   Returning the fader to zero makes the camera layer transparent while the
-   branded RTMP video and warmed camera capture continue uninterrupted.
+   Returning the fader to zero makes the visual layer transparent while the
+   branded RTMP video and selected capture continue uninterrupted.
 9. Review the preview, title, and audience in Instagram, then click **Go live**
    there. Starting the signal in Rau Studio does not publish the Live by itself.
 10. To finish, end the Live in Instagram first and then stop Broadcast in Rau
@@ -149,17 +150,19 @@ service's bitrate, resolution, and keyframe requirements before going live.
   text file. FFmpeg reloads it while the publisher remains open, so track
   transitions, direct line input, Mac audio, and the idle state update on screen
   without interrupting the Live.
-- When the camera compositor is enabled, the persistent publisher receives a
-  paced BGRA camera layer through a local named pipe. At zero mix the layer is
-  transparent, while the selected AVFoundation camera remains warm for a clean
+- When the visual compositor is enabled, the webview keeps the camera and the OS-selected display/window streams alive
+  independently. It draws both sources into a transparent 360 × 640 canvas and submits paced WebP snapshots through local
+  Tauri IPC. A persistent FFmpeg `image2pipe` decoder converts the latest composition to BGRA for the publisher's named pipe.
+  At zero mix the combined layer is
+  transparent, while each active source remains warm for a clean
   take. Moving the fader changes the layer alpha frame by frame without
   replacing the publisher. Rau detects missing or repeated frames and restarts
-  only camera capture when it freezes.
-- Camera composition, position, size, fit/crop framing, orientation, mirror, effect, maximum opacity, and AUTO
+  only visual capture when it freezes.
+- Camera and screen/window activation, device, composition, position, size, fit/crop framing, orientation, mirror, effect, maximum opacity, and AUTO
   duration are persisted with the Broadcast profile and can be changed while live. Full width spans the 9:16
-  canvas; Background places the camera beneath the compact Rau identity and track information. Composition,
-  device, framing, orientation, mirror, and effect changes rebuild only the transparent camera layer; opacity and
-  Preview/Program mix update directly.
+  canvas; Background places the source beneath the compact Rau identity and track information. The display/window layer is
+  drawn first and the camera layer above it. Layer changes redraw the transparent canvas; opacity and Preview/Program mix
+  update directly without reconnecting RTMP. Browser media capture keeps this path common across macOS, Windows, and Linux.
 - The destination receives one continuous connection across track transitions.
   When the queue runs out, Rau Studio transmits silence rather than closing the
   connection. New playlists can be appended while it is live.

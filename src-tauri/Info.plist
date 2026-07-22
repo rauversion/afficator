@@ -5,7 +5,7 @@
   <key>NSMicrophoneUsageDescription</key>
   <string>Rau Studio usa el micrófono que selecciones para mezclar tu voz con la transmisión de radio.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>Rau Studio captura el audio de la aplicación que selecciones para enviarlo a tu transmisión de radio.</string>
+  <string>Rau Studio captura la pantalla o el audio de la aplicación que selecciones para incorporarlos a tu transmisión.</string>
   <key>NSCameraUsageDescription</key>
   <string>Rau Studio usa la cámara seleccionada para componer el video de Broadcast cuando la envías a Program.</string>
   <key>NSCameraUseContinuityCameraDeviceType</key>

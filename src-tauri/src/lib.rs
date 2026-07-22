@@ -1475,6 +1475,7 @@ pub fn run() {
             broadcast::broadcast_set_application_audio_live,
             broadcast::broadcast_set_camera_mix,
             broadcast::broadcast_update_camera_settings,
+            broadcast::broadcast_push_visual_frame,
             import_rekordbox_xml,
             plan_conversion,
             export_rekordbox_xml,
