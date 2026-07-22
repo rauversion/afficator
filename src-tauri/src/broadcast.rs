@@ -732,7 +732,6 @@ struct WorkerVisualState {
 }
 
 struct BrowserVisualFrame {
-    sequence: u64,
     pixels: Vec<u8>,
 }
 
@@ -1017,7 +1016,7 @@ impl BroadcastManager {
         Ok(self.runtime.snapshot())
     }
 
-    fn push_visual_frame(&self, sequence: u64, mut pixels: Vec<u8>) -> Result<(), String> {
+    fn push_visual_frame(&self, mut pixels: Vec<u8>) -> Result<(), String> {
         if pixels.len() != CAMERA_FRAME_BYTES {
             return Err(format!(
                 "Cuadro visual inválido: se esperaban {CAMERA_FRAME_BYTES} bytes RGBA y llegaron {}.",
@@ -1034,12 +1033,7 @@ impl BroadcastManager {
             return Ok(());
         };
         if let Ok(mut latest) = worker.visual.frame.lock() {
-            if latest
-                .as_ref()
-                .is_none_or(|current| sequence > current.sequence)
-            {
-                *latest = Some(BrowserVisualFrame { sequence, pixels });
-            }
+            *latest = Some(BrowserVisualFrame { pixels });
         }
         Ok(())
     }
@@ -1371,13 +1365,12 @@ pub fn broadcast_update_camera_settings(
 #[tauri::command]
 pub fn broadcast_push_visual_frame(
     manager: State<'_, BroadcastManager>,
-    sequence: u64,
     frame_base64: String,
 ) -> Result<(), String> {
     let pixels = base64::engine::general_purpose::STANDARD
         .decode(frame_base64)
         .map_err(|error| format!("Cuadro visual inválido: {error}"))?;
-    manager.push_visual_frame(sequence, pixels)
+    manager.push_visual_frame(pixels)
 }
 
 fn validate_profile(mut input: BroadcastProfileInput) -> Result<BroadcastProfileInput, String> {
@@ -2313,7 +2306,6 @@ fn run_camera_feeder(
         spawn_camera_capture(&app, &config, &runtime).ok()
     };
     let mut browser_ready = false;
-    let mut pushed_visual_sequence = 0u64;
     let mut capture_started_at = capture.as_ref().map(|_| Instant::now());
     let mut last_capture_frame_at: Option<Instant> = None;
     let mut next_capture_retry_at = (config.capture_mode != "browser" && capture.is_none())
@@ -2449,7 +2441,6 @@ fn run_camera_feeder(
                         last_capture_frame_at = None;
                         if config.capture_mode == "browser" {
                             browser_ready = false;
-                            pushed_visual_sequence = 0;
                             next_capture_retry_at = None;
                         } else {
                             match spawn_camera_capture(&app, &config, &runtime) {
@@ -2498,15 +2489,12 @@ fn run_camera_feeder(
         }
 
         if config.capture_mode == "browser" {
-            let next_frame = visual_frame.lock().ok().and_then(|latest| {
-                latest.as_ref().and_then(|frame| {
-                    (frame.sequence > pushed_visual_sequence)
-                        .then(|| (frame.sequence, frame.pixels.clone()))
-                })
-            });
-            if let Some((sequence, pixels)) = next_frame {
-                raw_frame = pixels;
-                pushed_visual_sequence = sequence;
+            let next_frame = visual_frame
+                .lock()
+                .ok()
+                .and_then(|mut latest| latest.take());
+            if let Some(next_frame) = next_frame {
+                raw_frame = next_frame.pixels;
                 last_capture_frame_at = Some(Instant::now());
                 if !browser_ready {
                     browser_ready = true;
@@ -2558,6 +2546,28 @@ fn run_camera_feeder(
                     "camera_restarting",
                 );
             }
+        }
+
+        let browser_stalled = config.capture_mode == "browser"
+            && browser_ready
+            && target_alpha > 0
+            && last_capture_frame_at.is_some_and(|received| {
+                received.elapsed() >= Duration::from_millis(CAMERA_CAPTURE_STALL_MILLIS)
+            });
+        if browser_stalled {
+            browser_ready = false;
+            runtime.update_camera(
+                &app,
+                camera_status(
+                    &config,
+                    false,
+                    true,
+                    requested_mix_percent,
+                    "El estudio dejó de enviar cuadros; se conserva el último frame en Program. Revisa la cámara, pantalla o ventana seleccionada.",
+                ),
+                "warning",
+                "camera_waiting_frame",
+            );
         }
 
         let camera_stalled = config.capture_mode != "browser"
@@ -5331,6 +5341,8 @@ fn stream_direct_input(
     worker_audio: &mut WorkerAudio,
 ) -> DirectInputOutcome {
     let started_as_application = worker_audio.application_live;
+    let chunk_duration = Duration::from_millis(LINE_INPUT_CHUNK_MILLIS as u64);
+    let mut next_chunk_deadline = Instant::now();
     while worker_audio.direct_source_live() {
         match poll_worker_commands(commands, app, runtime, worker_audio, Some(&mut *publisher)) {
             WorkerAction::Stop => return DirectInputOutcome::Stop,
@@ -5351,9 +5363,29 @@ fn stream_direct_input(
         if let Err(error) = publisher.write(&output) {
             return DirectInputOutcome::PublisherFailed(error);
         }
-        thread::sleep(Duration::from_millis(LINE_INPUT_CHUNK_MILLIS as u64));
+        if let Some(wait) =
+            advance_audio_deadline(&mut next_chunk_deadline, Instant::now(), chunk_duration)
+        {
+            thread::sleep(wait);
+        }
     }
     DirectInputOutcome::ResumePlaylist
+}
+
+fn advance_audio_deadline(
+    next_deadline: &mut Instant,
+    now: Instant,
+    chunk_duration: Duration,
+) -> Option<Duration> {
+    *next_deadline += chunk_duration;
+    let wait = next_deadline.checked_duration_since(now);
+    if wait.is_none() && now.duration_since(*next_deadline) >= chunk_duration.saturating_mul(4) {
+        // A long scheduler pause should not trigger an unbounded burst, but
+        // normal processing time must be deducted from the cadence or the
+        // capture buffer grows until it drops audio.
+        *next_deadline = now;
+    }
+    wait
 }
 
 fn silence_chunk() -> Vec<u8> {
@@ -6553,6 +6585,26 @@ mod tests {
     fn decoder_is_paced_in_real_time_before_mixing() {
         let args = decoder_args("track.wav");
         assert!(args.windows(2).any(|pair| pair == ["-re", "-i"]));
+    }
+
+    #[test]
+    fn direct_input_deadline_deducts_processing_time_and_catches_up() {
+        let start = Instant::now();
+        let chunk = Duration::from_millis(50);
+        let mut deadline = start;
+
+        assert_eq!(
+            advance_audio_deadline(&mut deadline, start + Duration::from_millis(7), chunk),
+            Some(Duration::from_millis(43))
+        );
+        assert_eq!(
+            advance_audio_deadline(&mut deadline, start + Duration::from_millis(60), chunk),
+            Some(Duration::from_millis(40))
+        );
+
+        let late = start + Duration::from_millis(400);
+        assert_eq!(advance_audio_deadline(&mut deadline, late, chunk), None);
+        assert_eq!(deadline, late);
     }
 
     #[test]

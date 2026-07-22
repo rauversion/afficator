@@ -169,8 +169,8 @@ PCM pipe -> persistent destination publisher --------+
 5. The optional cross-platform visual compositor captures a camera with `getUserMedia` and a display or application window
    with the operating system's `getDisplayMedia` picker. Both streams can remain enabled simultaneously. The webview draws
    both sources in persisted Z order on a transparent 360 × 640 canvas. Each layer owns its layout,
-   position, size, fit/crop, orientation, mirror, effect, and opacity. Paced WebP frames cross local Tauri IPC into a persistent
-   FFmpeg `image2pipe` decoder, which emits BGRA into the publisher's named pipe. Preview/Program fader commands then change
+   position, size, fit/crop, orientation, mirror, effect, and opacity. Paced RGBA frames cross local Tauri IPC and Rust converts
+   them directly to BGRA for the publisher's named pipe, preserving transparency without a browser-dependent image codec. Preview/Program fader commands then change
    the combined layer alpha frame by frame. The same path works on macOS, Windows, and Linux and leaves RTMP connected while
    sources or composition controls change. A native AVFoundation camera path remains available for legacy profiles.
    The Preview monitor overlays pointer-only editing bounds: dragging or resizing writes bounded integer canvas geometry,
@@ -184,7 +184,8 @@ PCM pipe -> persistent destination publisher --------+
    mono-channel or stereo-pair routing. It replaces the playlist as the primary
    source without ducking. The active track decoder is held while line is live,
    so the queue does not advance, and resumes when the operator returns to the
-   Playlist source.
+   Playlist source. Its PCM writer uses a monotonic 50 ms deadline so processing
+   time is deducted from the wait instead of accumulating capture latency.
 8. The optional Mac-output source uses ScreenCaptureKit on macOS 13+ to capture
    the complete system output by default, excluding Rau Studio itself to avoid
    feedback. It can alternatively filter capture to one selected running

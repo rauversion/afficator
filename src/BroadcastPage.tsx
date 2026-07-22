@@ -1876,7 +1876,6 @@ function VideoStudioModal({
   const screenStream = useRef<MediaStream | null>(null);
   const offscreenCanvas = useRef<HTMLCanvasElement | null>(null);
   const uploadPending = useRef(false);
-  const visualSequence = useRef(0);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [draftMix, setDraftMix] = useState(mixPercent);
   const [handoffPending, setHandoffPending] = useState(false);
@@ -2017,41 +2016,50 @@ function VideoStudioModal({
     }
     let frameRequest = 0;
     let lastUploadAt = 0;
+    let renderErrorReported = false;
     const render = (now: number) => {
-      const canvas = offscreenCanvas.current;
-      const context = canvas?.getContext("2d");
-      if (canvas && context) {
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        const currentConfig = studioConfigRef.current;
-        const layers = [
-          currentConfig.screenEnabled && screenAvailable && screenVideo.current
-            ? { key: "screen" as const, video: screenVideo.current, config: visualLayerConfig(currentConfig, "screen") }
-            : null,
-          currentConfig.cameraEnabled && cameraAvailable && cameraVideo.current
-            ? { key: "camera" as const, video: cameraVideo.current, config: visualLayerConfig(currentConfig, "camera") }
-            : null
-        ].filter((layer): layer is NonNullable<typeof layer> => Boolean(layer))
-          .sort((left, right) => left.config.zIndex - right.config.zIndex);
-        for (const layer of layers) drawVisualLayer(context, layer.video, layer.config);
-        for (const monitor of [previewCanvas.current, programCanvas.current]) {
-          const monitorContext = monitor?.getContext("2d");
-          if (!monitor || !monitorContext) continue;
-          monitorContext.clearRect(0, 0, monitor.width, monitor.height);
-          monitorContext.drawImage(canvas, 0, 0);
+      try {
+        const canvas = offscreenCanvas.current;
+        const context = canvas?.getContext("2d");
+        if (canvas && context) {
+          context.clearRect(0, 0, canvas.width, canvas.height);
+          const currentConfig = studioConfigRef.current;
+          const layers = [
+            currentConfig.screenEnabled && screenAvailable && screenVideo.current
+              ? { key: "screen" as const, video: screenVideo.current, config: visualLayerConfig(currentConfig, "screen") }
+              : null,
+            currentConfig.cameraEnabled && cameraAvailable && cameraVideo.current
+              ? { key: "camera" as const, video: cameraVideo.current, config: visualLayerConfig(currentConfig, "camera") }
+              : null
+          ].filter((layer): layer is NonNullable<typeof layer> => Boolean(layer))
+            .sort((left, right) => left.config.zIndex - right.config.zIndex);
+          for (const layer of layers) drawVisualLayer(context, layer.video, layer.config);
+          for (const monitor of [previewCanvas.current, programCanvas.current]) {
+            const monitorContext = monitor?.getContext("2d");
+            if (!monitor || !monitorContext) continue;
+            monitorContext.clearRect(0, 0, monitor.width, monitor.height);
+            monitorContext.drawImage(canvas, 0, 0);
+          }
+          if (running && currentConfig.enabled && layers.length > 0 && now - lastUploadAt >= 1000 / 24 && !uploadPending.current) {
+            lastUploadAt = now;
+            uploadPending.current = true;
+            const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+            void invoke("broadcast_push_visual_frame", {
+              frameBase64: bytesToBase64(pixels)
+            })
+              .catch((cause) => setPreviewError(errorMessage(cause, locale)))
+              .finally(() => { uploadPending.current = false; });
+          }
         }
-        if (running && currentConfig.enabled && layers.length > 0 && now - lastUploadAt >= 1000 / 24 && !uploadPending.current) {
-          lastUploadAt = now;
-          uploadPending.current = true;
-          const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-          void invoke("broadcast_push_visual_frame", {
-            sequence: ++visualSequence.current,
-            frameBase64: bytesToBase64(pixels)
-          })
-            .catch((cause) => setPreviewError(errorMessage(cause, locale)))
-            .finally(() => { uploadPending.current = false; });
+      } catch (cause) {
+        uploadPending.current = false;
+        if (!renderErrorReported) {
+          renderErrorReported = true;
+          setPreviewError(errorMessage(cause, locale));
         }
+      } finally {
+        frameRequest = requestAnimationFrame(render);
       }
-      frameRequest = requestAnimationFrame(render);
     };
     frameRequest = requestAnimationFrame(render);
     return () => cancelAnimationFrame(frameRequest);

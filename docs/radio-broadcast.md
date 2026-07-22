@@ -153,8 +153,8 @@ service's bitrate, resolution, and keyframe requirements before going live.
   transitions, direct line input, Mac audio, and the idle state update on screen
   without interrupting the Live.
 - When the visual compositor is enabled, the webview keeps the camera and the OS-selected display/window streams alive
-  independently. It draws both sources into a transparent 360 × 640 canvas and submits paced WebP snapshots through local
-  Tauri IPC. A persistent FFmpeg `image2pipe` decoder converts the latest composition to BGRA for the publisher's named pipe.
+  independently. It draws both sources into a transparent 360 × 640 canvas and submits paced RGBA frames through local
+  Tauri IPC. Rust converts the latest composition directly to BGRA for the publisher's named pipe, avoiding image-codec differences between WebView engines.
   At zero mix the combined layer is
   transparent, while each active source remains warm for a clean
   take. Moving the fader changes the layer alpha frame by frame without
@@ -187,7 +187,9 @@ service's bitrate, resolution, and keyframe requirements before going live.
 - Direct line is a separate primary-source mode. It selects one mono channel
   (duplicated to both output channels) or an adjacent stereo pair from any
   CoreAudio input device, normalizes it to stereo 44.1 kHz PCM, and sends it to
-  the persistent publisher without voice detection or ducking. While
+  the persistent publisher without voice detection or ducking. Its 50 ms PCM
+  chunks follow a monotonic deadline, preventing processing time from slowly
+  filling the capture buffer and forcing periodic sample drops. While
   direct line is live, the current playlist decoder is held by backpressure and
   the queue does not advance. Returning to Playlist resumes that decoder. The
   microphone is muted and unavailable while direct line is the active source.
