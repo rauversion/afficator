@@ -29,8 +29,24 @@ const RTMP_PLATFORM_CUSTOM: &str = "custom";
 const RTMP_VIDEO_WIDTH: usize = 720;
 const RTMP_VIDEO_HEIGHT: usize = 1280;
 const RTMP_VIDEO_FPS: usize = 30;
-const RTMP_DISPLAY_FONT: &str = "/System/Library/Fonts/SFNS.ttf";
+#[cfg(target_os = "macos")]
+const RTMP_DISPLAY_FONT: &str = "/System/Library/Fonts/Supplemental/Arial Bold.ttf";
+#[cfg(target_os = "macos")]
+const RTMP_HEAVY_FONT: &str = "/System/Library/Fonts/Supplemental/Arial Black.ttf";
+#[cfg(target_os = "macos")]
 const RTMP_MONO_FONT: &str = "/System/Library/Fonts/SFNSMono.ttf";
+#[cfg(target_os = "windows")]
+const RTMP_DISPLAY_FONT: &str = "C\\:/Windows/Fonts/arialbd.ttf";
+#[cfg(target_os = "windows")]
+const RTMP_HEAVY_FONT: &str = "C\\:/Windows/Fonts/ariblk.ttf";
+#[cfg(target_os = "windows")]
+const RTMP_MONO_FONT: &str = "C\\:/Windows/Fonts/consola.ttf";
+#[cfg(target_os = "linux")]
+const RTMP_DISPLAY_FONT: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+#[cfg(target_os = "linux")]
+const RTMP_HEAVY_FONT: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
+#[cfg(target_os = "linux")]
+const RTMP_MONO_FONT: &str = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
 const RTMP_OVERLAY_LINE_CHARS: usize = 26;
 const RTMP_OVERLAY_MAX_LINES: usize = 4;
 // A half-resolution transparent program canvas keeps the FIFO bandwidth equal
@@ -128,6 +144,7 @@ pub struct BroadcastProfile {
 #[serde(default, rename_all = "camelCase")]
 pub struct BroadcastVideoCompositor {
     enabled: bool,
+    graphic_template: String,
     capture_mode: String,
     camera_enabled: bool,
     camera_device: String,
@@ -166,6 +183,7 @@ impl Default for BroadcastVideoCompositor {
     fn default() -> Self {
         Self {
             enabled: false,
+            graphic_template: "signal_grid".to_string(),
             capture_mode: "native".to_string(),
             camera_enabled: true,
             camera_device: "default".to_string(),
@@ -1359,6 +1377,7 @@ pub fn broadcast_save_video_compositor(
 fn normalize_video_compositor(
     mut config: BroadcastVideoCompositor,
 ) -> Result<BroadcastVideoCompositor, String> {
+    config.graphic_template = config.graphic_template.trim().to_lowercase();
     config.camera_device = config.camera_device.trim().to_string();
     config.capture_mode = config.capture_mode.trim().to_lowercase();
     config.screen_label = config.screen_label.trim().to_string();
@@ -1499,6 +1518,12 @@ fn validate_profile(mut input: BroadcastProfileInput) -> Result<BroadcastProfile
 }
 
 fn validate_video_compositor(config: &BroadcastVideoCompositor) -> Result<(), String> {
+    if !matches!(
+        config.graphic_template.as_str(),
+        "signal_grid" | "transmission" | "mono_paper"
+    ) {
+        return Err("Plantilla gráfica de broadcast inválida.".to_string());
+    }
     if !matches!(config.capture_mode.as_str(), "native" | "browser") {
         return Err("Modo de captura visual inválido.".to_string());
     }
@@ -3111,7 +3136,7 @@ fn rtmp_publisher_args(
     ]);
     let base_filter = overlay
         .map(|overlay| overlay.video_filter(profile))
-        .unwrap_or_else(rtmp_fallback_video_filter);
+        .unwrap_or_else(|| rtmp_fallback_video_filter(profile));
     if camera_pipe.is_some() {
         args.extend([
             "-filter_complex".to_string(),
@@ -3197,6 +3222,14 @@ fn rtmp_video_filter(profile: &BroadcastProfile, station_path: &Path, track_path
         "H264 {}K / AAC {}K / {} FPS",
         profile.rtmp_video_bitrate_kbps, profile.rtmp_audio_bitrate_kbps, RTMP_VIDEO_FPS
     );
+    match profile.video_compositor.graphic_template.as_str() {
+        "transmission" => transmission_video_filter(&station_path, &track_path, &technical),
+        "mono_paper" => mono_paper_video_filter(&station_path, &track_path, &technical),
+        _ => signal_grid_video_filter(&station_path, &track_path, &technical),
+    }
+}
+
+fn signal_grid_video_filter(station_path: &str, track_path: &str, technical: &str) -> String {
     format!(
         concat!(
             "scale=180:320:flags=neighbor,",
@@ -3235,24 +3268,141 @@ fn rtmp_video_filter(profile: &BroadcastProfile, station_path: &Path, track_path
     )
 }
 
-fn rtmp_fallback_video_filter() -> String {
+fn transmission_video_filter(station_path: &str, track_path: &str, technical: &str) -> String {
     format!(
         concat!(
-            "scale=180:320:flags=neighbor,",
             "scale={width}:{height}:flags=neighbor,",
-            "eq=contrast=1.85:brightness=-0.18:saturation=0,",
-            "drawgrid=w=90:h=90:t=1:c=white@0.13,",
-            "drawbox=x=0:y=0:w=iw:h=220:c=black@0.90:t=fill,",
-            "drawbox=x=0:y=900:w=iw:h=380:c=black@0.92:t=fill,",
-            "drawbox=x=0:y=0:w=iw:h=22:c=white@0.95:t=fill,",
-            "drawbox=x=36:y=40:w=648:h=142:c=white@0.70:t=2,",
-            "drawbox=x=36:y=260:w=8:h=450:c=white@0.92:t=fill,",
-            "drawbox=x=68:y=260:w=616:h=450:c=white@0.46:t=2,",
-            "drawbox=x=36:y=900:w=648:h=2:c=white@0.72:t=fill"
+            "drawbox=x=0:y=0:w=iw:h=ih:c=0xF1EFE6:t=fill,",
+            "drawgrid=w=90:h=90:t=1:c=black@0.08,",
+            "drawbox=x=0:y=0:w=iw:h=8:c=black:t=fill,",
+            "drawbox=x=0:y=142:w=iw:h=5:c=black:t=fill,",
+            "drawbox=x=0:y=150:w=iw:h=70:c=0xD7FF00:t=fill,",
+            "drawbox=x=0:y=220:w=iw:h=520:c=0xFF4B2B:t=fill,",
+            "drawgrid=w=120:h=120:t=2:c=black@0.22,",
+            "drawbox=x=0:y=740:w=iw:h=420:c=0x0B0B0B:t=fill,",
+            "drawbox=x=0:y=1160:w=iw:h=120:c=0xF1EFE6:t=fill,",
+            "drawbox=x=0:y=1156:w=iw:h=4:c=black:t=fill,",
+            "drawbox=x=650:y=48:w=28:h=28:c=0xFF4B2B:t=fill,",
+            "drawbox=x=40:y=1105:w=38:h=30:c=0xF1EFE6:t=fill,",
+            "drawbox=x=90:y=1092:w=38:h=43:c=0xF1EFE6:t=fill,",
+            "drawbox=x=140:y=1078:w=38:h=57:c=0xF1EFE6:t=fill,",
+            "drawbox=x=190:y=1065:w=38:h=70:c=0xF1EFE6:t=fill,",
+            "drawbox=x=240:y=1098:w=38:h=37:c=0xF1EFE6:t=fill,",
+            "drawbox=x=290:y=1085:w=38:h=50:c=0xF1EFE6:t=fill,",
+            "drawbox=x=340:y=1070:w=38:h=65:c=0xF1EFE6:t=fill,",
+            "drawbox=x=390:y=1100:w=38:h=35:c=0xF1EFE6:t=fill,",
+            "drawbox=x=440:y=1087:w=38:h=48:c=0xF1EFE6:t=fill,",
+            "drawbox=x=490:y=1062:w=38:h=73:c=0xF1EFE6:t=fill,",
+            "drawbox=x=540:y=1094:w=38:h=41:c=0xF1EFE6:t=fill,",
+            "drawbox=x=590:y=1075:w=38:h=60:c=0xF1EFE6:t=fill,",
+            "drawbox=x=40:y=1138:w=588:h=2:c=white@0.30:t=fill,",
+            "drawtext=fontfile='{heavy_font}':text='RAU':",
+            "expansion=none:fontcolor=black:fontsize=35:x=36:y=31,",
+            "drawtext=fontfile='{heavy_font}':text='/':",
+            "expansion=none:fontcolor=0xFF4B2B:fontsize=35:x=106:y=31,",
+            "drawtext=fontfile='{heavy_font}':text='RADIO':",
+            "expansion=none:fontcolor=black:fontsize=35:x=121:y=31,",
+            "drawtext=fontfile='{mono_font}':textfile='{station_path}':",
+            "expansion=none:fontcolor=black@0.70:fontsize=17:x=36:y=98:fix_bounds=1,",
+            "drawtext=fontfile='{mono_font}':text='INDEPENDENT SIGNAL / LIVE':",
+            "expansion=none:fontcolor=black@0.72:fontsize=14:x=w-tw-42:y=42,",
+            "drawtext=fontfile='{mono_font}':text='01 / LIVE SOURCE':",
+            "expansion=none:fontcolor=black:fontsize=14:x=36:y=177,",
+            "drawtext=fontfile='{heavy_font}':text='LIVE':",
+            "expansion=none:fontcolor=black:fontsize=76:x=36:y=250,",
+            "drawtext=fontfile='{heavy_font}':text='TRANS':",
+            "expansion=none:fontcolor=black:fontsize=76:x=36:y=312,",
+            "drawtext=fontfile='{heavy_font}':text='MISSION':",
+            "expansion=none:fontcolor=black:fontsize=76:x=36:y=374,",
+            "drawtext=fontfile='{mono_font}':text='NOW TRANSMITTING':",
+            "expansion=none:fontcolor=0xD7FF00:fontsize=15:x=40:y=780,",
+            "drawtext=fontfile='{mono_font}':textfile='{station_path}':",
+            "expansion=none:fontcolor=white@0.62:fontsize=17:x=40:y=824:fix_bounds=1,",
+            "drawtext=fontfile='{display_font}':textfile='{track_path}':reload=1:",
+            "expansion=none:fontcolor=white:fontsize=44:line_spacing=7:x=40:y=862:fix_bounds=1,",
+            "drawtext=fontfile='{mono_font}':text='{technical}':",
+            "expansion=none:fontcolor=black@0.78:fontsize=14:x=40:y=1194,",
+            "drawtext=fontfile='{mono_font}':text='RAW STREAM / RAU BROADCAST NETWORK':",
+            "expansion=none:fontcolor=black@0.48:fontsize=13:x=40:y=1230"
         ),
         width = RTMP_VIDEO_WIDTH,
         height = RTMP_VIDEO_HEIGHT,
+        display_font = RTMP_DISPLAY_FONT,
+        heavy_font = RTMP_HEAVY_FONT,
+        mono_font = RTMP_MONO_FONT,
+        station_path = station_path,
+        track_path = track_path,
+        technical = technical,
     )
+}
+
+fn mono_paper_video_filter(station_path: &str, track_path: &str, technical: &str) -> String {
+    format!(
+        concat!(
+            "scale={width}:{height}:flags=neighbor,",
+            "drawbox=x=0:y=0:w=iw:h=ih:c=0xEEECE3:t=fill,",
+            "drawgrid=w=90:h=90:t=1:c=black@0.07,",
+            "drawbox=x=0:y=0:w=iw:h=185:c=black:t=fill,",
+            "drawbox=x=36:y=235:w=648:h=510:c=0x151515:t=fill,",
+            "drawbox=x=36:y=235:w=10:h=510:c=0xFF4B2B:t=fill,",
+            "drawbox=x=36:y=820:w=648:h=3:c=black:t=fill,",
+            "drawbox=x=610:y=52:w=74:h=74:c=0xFF4B2B:t=fill,",
+            "drawbox=x=36:y=1160:w=648:h=3:c=black:t=fill,",
+            "drawtext=fontfile='{display_font}':text='RAU STUDIO RADIO':",
+            "expansion=none:fontcolor=white:fontsize=38:x=36:y=40,",
+            "drawtext=fontfile='{mono_font}':textfile='{station_path}':",
+            "expansion=none:fontcolor=white@0.58:fontsize=16:x=36:y=118:fix_bounds=1,",
+            "drawtext=fontfile='{mono_font}':text='LIVE VISUAL / 01':",
+            "expansion=none:fontcolor=white@0.72:fontsize=14:x=500:y=148,",
+            "drawtext=fontfile='{mono_font}':text='CURRENT AUDIO / NOW PLAYING':",
+            "expansion=none:fontcolor=black@0.58:fontsize=15:x=40:y=858,",
+            "drawtext=fontfile='{display_font}':textfile='{track_path}':reload=1:",
+            "expansion=none:fontcolor=black:fontsize=46:line_spacing=8:x=40:y=900:fix_bounds=1,",
+            "drawtext=fontfile='{mono_font}':text='{technical}':",
+            "expansion=none:fontcolor=black@0.72:fontsize=14:x=40:y=1194,",
+            "drawtext=fontfile='{mono_font}':text='VERTICAL SIGNAL / INDEPENDENT RADIO':",
+            "expansion=none:fontcolor=black@0.42:fontsize=13:x=40:y=1230"
+        ),
+        width = RTMP_VIDEO_WIDTH,
+        height = RTMP_VIDEO_HEIGHT,
+        display_font = RTMP_DISPLAY_FONT,
+        mono_font = RTMP_MONO_FONT,
+        station_path = station_path,
+        track_path = track_path,
+        technical = technical,
+    )
+}
+
+fn rtmp_fallback_video_filter(profile: &BroadcastProfile) -> String {
+    match profile.video_compositor.graphic_template.as_str() {
+        "transmission" => format!(
+            "scale={width}:{height}:flags=neighbor,drawbox=x=0:y=0:w=iw:h=ih:c=0xF1EFE6:t=fill,drawgrid=w=90:h=90:t=1:c=black@0.08,drawbox=x=0:y=150:w=iw:h=70:c=0xD7FF00:t=fill,drawbox=x=0:y=220:w=iw:h=520:c=0xFF4B2B:t=fill,drawbox=x=0:y=740:w=iw:h=420:c=black:t=fill,drawbox=x=40:y=1105:w=38:h=30:c=0xF1EFE6:t=fill,drawbox=x=90:y=1092:w=38:h=43:c=0xF1EFE6:t=fill,drawbox=x=140:y=1078:w=38:h=57:c=0xF1EFE6:t=fill,drawbox=x=190:y=1065:w=38:h=70:c=0xF1EFE6:t=fill,drawbox=x=240:y=1098:w=38:h=37:c=0xF1EFE6:t=fill,drawbox=x=290:y=1085:w=38:h=50:c=0xF1EFE6:t=fill,drawbox=x=340:y=1070:w=38:h=65:c=0xF1EFE6:t=fill,drawbox=x=390:y=1100:w=38:h=35:c=0xF1EFE6:t=fill,drawbox=x=440:y=1087:w=38:h=48:c=0xF1EFE6:t=fill,drawbox=x=490:y=1062:w=38:h=73:c=0xF1EFE6:t=fill,drawbox=x=540:y=1094:w=38:h=41:c=0xF1EFE6:t=fill,drawbox=x=590:y=1075:w=38:h=60:c=0xF1EFE6:t=fill",
+            width = RTMP_VIDEO_WIDTH,
+            height = RTMP_VIDEO_HEIGHT,
+        ),
+        "mono_paper" => format!(
+            "scale={width}:{height}:flags=neighbor,drawbox=x=0:y=0:w=iw:h=ih:c=0xEEECE3:t=fill,drawgrid=w=90:h=90:t=1:c=black@0.07,drawbox=x=0:y=0:w=iw:h=185:c=black:t=fill,drawbox=x=36:y=235:w=648:h=510:c=0x151515:t=fill,drawbox=x=36:y=235:w=10:h=510:c=0xFF4B2B:t=fill",
+            width = RTMP_VIDEO_WIDTH,
+            height = RTMP_VIDEO_HEIGHT,
+        ),
+        _ => format!(
+            concat!(
+                "scale=180:320:flags=neighbor,",
+                "scale={width}:{height}:flags=neighbor,",
+                "eq=contrast=1.85:brightness=-0.18:saturation=0,",
+                "drawgrid=w=90:h=90:t=1:c=white@0.13,",
+                "drawbox=x=0:y=0:w=iw:h=220:c=black@0.90:t=fill,",
+                "drawbox=x=0:y=900:w=iw:h=380:c=black@0.92:t=fill,",
+                "drawbox=x=0:y=0:w=iw:h=22:c=white@0.95:t=fill,",
+                "drawbox=x=36:y=40:w=648:h=142:c=white@0.70:t=2,",
+                "drawbox=x=36:y=260:w=8:h=450:c=white@0.92:t=fill,",
+                "drawbox=x=68:y=260:w=616:h=450:c=white@0.46:t=2,",
+                "drawbox=x=36:y=900:w=648:h=2:c=white@0.72:t=fill"
+            ),
+            width = RTMP_VIDEO_WIDTH,
+            height = RTMP_VIDEO_HEIGHT,
+        ),
+    }
 }
 
 fn quote_filter_path(path: &Path) -> String {
@@ -6294,6 +6444,11 @@ mod tests {
         input.video_compositor.camera_x = 300;
         input.video_compositor.camera_width = 100;
         assert!(validate_profile(input).is_err());
+
+        let mut input = profile_input();
+        input.output_kind = OUTPUT_KIND_RTMP.to_string();
+        input.video_compositor.graphic_template = "unknown".to_string();
+        assert!(validate_profile(input).is_err());
     }
 
     #[test]
@@ -6317,6 +6472,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.capture_mode, "native");
+        assert_eq!(config.graphic_template, "signal_grid");
         assert!(config.camera_enabled);
         assert!(!config.screen_enabled);
         assert_eq!(config.camera_rotation_degrees, 180);
@@ -6403,6 +6559,104 @@ mod tests {
                 x: 42,
                 y: 210,
             }
+        );
+    }
+
+    #[test]
+    fn graphic_templates_produce_distinct_ffmpeg_scenes() {
+        let mut profile = profile();
+        profile.output_kind = OUTPUT_KIND_RTMP.to_string();
+        let station = Path::new("/tmp/station.txt");
+        let track = Path::new("/tmp/track.txt");
+
+        profile.video_compositor.graphic_template = "transmission".to_string();
+        let transmission = rtmp_video_filter(&profile, station, track);
+        assert!(transmission.contains("c=0xD7FF00"));
+        assert!(transmission.contains("c=0xFF4B2B"));
+        assert!(transmission.contains("NOW TRANSMITTING"));
+
+        profile.video_compositor.graphic_template = "mono_paper".to_string();
+        let paper = rtmp_video_filter(&profile, station, track);
+        assert!(paper.contains("c=0xEEECE3"));
+        assert!(paper.contains("CURRENT AUDIO / NOW PLAYING"));
+
+        profile.video_compositor.graphic_template = "signal_grid".to_string();
+        let grid = rtmp_video_filter(&profile, station, track);
+        assert!(grid.contains("LIVE / RAU BROADCAST SYSTEM"));
+        assert_ne!(transmission, paper);
+        assert_ne!(paper, grid);
+    }
+
+    #[test]
+    fn bundled_ffmpeg_renders_every_graphic_template_fallback() {
+        let binary_name = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            "ffmpeg-aarch64-apple-darwin"
+        } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+            "ffmpeg-x86_64-apple-darwin"
+        } else {
+            return;
+        };
+        let ffmpeg = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(binary_name);
+        if !ffmpeg.exists() {
+            return;
+        }
+
+        for template in ["signal_grid", "transmission", "mono_paper"] {
+            let mut profile = profile();
+            profile.video_compositor.graphic_template = template.to_string();
+            assert_ffmpeg_filter_renders(&ffmpeg, &rtmp_fallback_video_filter(&profile));
+        }
+    }
+
+    #[test]
+    fn drawtext_ffmpeg_renders_every_complete_graphic_template_when_available() {
+        let filter_listing = match std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-filters"])
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => return,
+        };
+        let listing = String::from_utf8_lossy(&filter_listing.stdout);
+        if !listing.contains("drawtext") {
+            return;
+        }
+
+        for template in ["signal_grid", "transmission", "mono_paper"] {
+            let mut profile = profile();
+            profile.video_compositor.graphic_template = template.to_string();
+            let overlay = RtmpOverlay::create(&profile).expect("template text files");
+            assert_ffmpeg_filter_renders(Path::new("ffmpeg"), &overlay.video_filter(&profile));
+        }
+    }
+
+    fn assert_ffmpeg_filter_renders(ffmpeg: &Path, filter: &str) {
+        let output = std::process::Command::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=720x1280:rate=1",
+                "-vf",
+                filter,
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ])
+            .output()
+            .expect("run FFmpeg template smoke test");
+        assert!(
+            output.status.success(),
+            "FFmpeg rejected template filter:\n{}\n{}",
+            filter,
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 

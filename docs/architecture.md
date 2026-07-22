@@ -160,10 +160,14 @@ PCM pipe -> persistent destination publisher --------+
 3. A per-track decoder normalizes audio to stereo 44.1 kHz signed 16-bit PCM.
 4. One long-lived publisher consumes the PCM. Icecast encodes it with
    `libmp3lame` and writes the configured mount. RTMP encodes the PCM as AAC and
-   combines it with an independently paced monochrome source in a 720 × 1280,
-   30 fps H.264/FLV signal. A `drawtext` overlay reloads atomically written
+   combines it with an independently paced presentation source in a 720 × 1280,
+   30 fps H.264/FLV signal. The persisted presentation template selects Signal Grid,
+   Transmission, or Mono Paper before the publisher starts; Preview uses the same scene structure and palette as FFmpeg.
+   A `drawtext` overlay reloads atomically written
    station and current-track text without restarting the publisher. Builds
-   without `drawtext` retain the animated visual as a compatibility fallback.
+   without `drawtext` retain each template's structural colors and grid as a compatibility fallback.
+   The template selector is held while live because the base filter graph is part of the long-lived publisher;
+   changing it applies to the next RTMP session without risking the active connection.
    RTMP emits silence while the queue is empty so the destination remains
    connected.
 5. The optional cross-platform visual compositor captures a camera with `getUserMedia` and a display or application window

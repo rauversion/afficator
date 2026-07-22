@@ -110,7 +110,11 @@ visible until cleared. The active row cannot be removed or reordered.
 4. Paste the stream key into **Clave de transmisión · solo esta sesión**. It is
    kept only in the current frontend session and cleared when the broadcast is
    stopped.
-5. Optional: open **Video Studio** and enable **Camera**, **Screen / window**, or both. The system picker lets you choose
+5. Optional: open **Video Studio** and choose a presentation template: **Signal Grid**, **Transmission**, or **Mono Paper**.
+   Transmission uses an ivory, acid-lime, signal-red, and black editorial system inspired by independent radio graphics.
+   The selected template is persisted and appears in Preview and in the next RTMP signal. It remains fixed while live so
+   the long-lived FFmpeg filter graph and destination connection stay stable.
+   Enable **Camera**, **Screen / window**, or both. The system picker lets you choose
    an entire display or one application window. Select either layer to edit its Card, Full width, or Background layout;
    fit/crop framing, orientation, effect, mirror, opacity, position, and size are independent. The combined visual stays
    out of Program when the broadcast starts.
@@ -119,7 +123,7 @@ visible until cleared. The active row cannot be removed or reordered.
 6. Add tracks to the queue, configure any local inputs, confirm the FFmpeg
    preflight is ready, and choose **Salir al aire**.
 7. Rau Studio sends a 720 × 1280, 30 fps H.264 video with AAC audio and an
-   independently paced monochrome broadcast graphic. It shows the configured
+   independently paced selected broadcast presentation. It shows the configured
    station name, encoding information, and the current artist/title. Wait for
    the image to appear in Live Producer.
 8. Open **Video Studio** while the signal is running. **PREVIEW** and **PROGRAM**
@@ -152,6 +156,10 @@ service's bitrate, resolution, and keyframe requirements before going live.
   text file. FFmpeg reloads it while the publisher remains open, so track
   transitions, direct line input, Mac audio, and the idle state update on screen
   without interrupting the Live.
+- Presentation template choice is stored with the video compositor. Signal Grid keeps the original monochrome technical
+  scene; Transmission adds the ivory/lime/red editorial identity; Mono Paper is a quieter print-inspired alternative.
+  Preview mirrors the selected scene, while FFmpeg supplies the encoded background. FFmpeg builds without `drawtext`
+  keep the chosen palette and structure but omit dynamic typography.
 - When the visual compositor is enabled, the webview keeps the camera and the OS-selected display/window streams alive
   independently. It draws both sources into a transparent 360 × 640 canvas and submits paced RGBA frames through local
   Tauri IPC. Rust converts the latest composition directly to BGRA for the publisher's named pipe, avoiding image-codec differences between WebView engines.

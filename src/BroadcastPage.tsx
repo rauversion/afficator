@@ -78,6 +78,7 @@ type BroadcastProfile = {
 
 type BroadcastVideoCompositor = {
   enabled: boolean;
+  graphicTemplate: "signal_grid" | "transmission" | "mono_paper" | string;
   captureMode: "native" | "browser" | string;
   cameraEnabled: boolean;
   cameraDevice: string;
@@ -279,6 +280,7 @@ type RtmpPlatform = "instagram" | "custom";
 
 const defaultVideoCompositor: BroadcastVideoCompositor = {
   enabled: false,
+  graphicTemplate: "signal_grid",
   captureMode: "browser",
   cameraEnabled: true,
   cameraDevice: "default",
@@ -312,6 +314,27 @@ const defaultVideoCompositor: BroadcastVideoCompositor = {
   screenOpacityPercent: 100,
   transitionMillis: 800
 };
+
+const broadcastGraphicTemplates = [
+  {
+    id: "signal_grid",
+    name: "Signal Grid",
+    description: "Monocromo técnico",
+    swatch: "linear-gradient(135deg,#060807 0 46%,#737773 46% 60%,#f4f4ef 60%)"
+  },
+  {
+    id: "transmission",
+    name: "Transmission",
+    description: "Marfil · acid · rojo",
+    swatch: "linear-gradient(180deg,#f1efe6 0 26%,#d7ff00 26% 38%,#ff4b2b 38% 67%,#0b0b0b 67%)"
+  },
+  {
+    id: "mono_paper",
+    name: "Mono Paper",
+    description: "Editorial mínimo",
+    swatch: "linear-gradient(135deg,#0b0b0b 0 38%,#eeece3 38% 76%,#ff4b2b 76%)"
+  }
+] as const;
 
 const fieldClass =
   "h-10 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition focus:border-foreground/35 focus:ring-2 focus:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-60";
@@ -2229,6 +2252,40 @@ function VideoStudioModal({
           </div>
 
           <aside className="grid content-start gap-4 border-t border-white/10 bg-black/20 p-4 lg:border-l lg:border-t-0">
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <strong className="text-sm">{t("Plantilla de presentación")}</strong>
+                <span className="font-mono text-[9px] uppercase tracking-[0.18em] text-white/35">PROGRAM</span>
+              </div>
+              <div className="grid gap-2">
+                {broadcastGraphicTemplates.map((template) => {
+                  const selected = config.graphicTemplate === template.id;
+                  return (
+                    <button
+                      key={template.id}
+                      type="button"
+                      disabled={running}
+                      className={cn(
+                        "flex items-center gap-3 rounded-md border p-2 text-left transition disabled:cursor-not-allowed disabled:opacity-55",
+                        selected ? "border-lime-300/70 bg-lime-300/10" : "border-white/10 bg-white/[.025] hover:border-white/25"
+                      )}
+                      onClick={() => update({ graphicTemplate: template.id })}
+                    >
+                      <span className="h-10 w-14 shrink-0 border border-black/40" style={{ background: template.swatch }} />
+                      <span className="min-w-0">
+                        <span className="block text-xs font-semibold">{template.name}</span>
+                        <span className="block truncate text-[10px] text-white/40">{t(template.description)}</span>
+                      </span>
+                      {selected ? <Check className="ml-auto h-4 w-4 shrink-0 text-lime-300" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="mt-2 block text-[10px] leading-relaxed text-white/35">
+                {running ? t("La plantilla queda fija durante el Live para mantener estable RTMP.") : t("La plantilla cambia Preview y la próxima señal RTMP.")}
+              </span>
+            </div>
+
             <div className="flex items-center justify-between gap-3">
               <div>
                 <strong className="text-sm">{t("Fuente visual")}</strong>
@@ -2537,6 +2594,74 @@ function bytesToBase64(bytes: Uint8Array | Uint8ClampedArray) {
   return btoa(binary);
 }
 
+function BroadcastTemplateChrome({
+  template,
+  stationName,
+  trackTitle
+}: {
+  template: string;
+  stationName: string;
+  trackTitle: string;
+}) {
+  if (template === "transmission") {
+    return <>
+      <div className="absolute inset-x-0 top-0 z-10 h-[11.5%] border-b-2 border-black bg-[#f1efe6] px-[5%] py-[4%] text-black">
+        <strong className="block text-[clamp(9px,1.9vw,18px)] font-black tracking-[-0.07em]">RAU <span className="text-[#ff4b2b]">/</span> RADIO</strong>
+        <span className="absolute bottom-[11%] left-[5%] max-w-[58%] truncate font-mono text-[clamp(4px,.65vw,7px)] uppercase tracking-[0.16em] text-black/55">{stationName}</span>
+        <span className="absolute right-[5%] top-[25%] font-mono text-[clamp(4px,.58vw,6px)] tracking-[0.12em]">INDEPENDENT SIGNAL&nbsp; ○</span>
+      </div>
+      <div className="absolute inset-x-0 top-[11.5%] z-0 h-[5.5%] border-b border-black/60 bg-[#d7ff00]" />
+      <div className="absolute inset-x-0 top-[17%] z-0 h-[41%] bg-[#ff4b2b]" style={{ backgroundImage: "linear-gradient(rgba(0,0,0,.18) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,.18) 1px,transparent 1px)", backgroundSize: "20% 18%" }}>
+        <span className="absolute left-[5%] top-[6%] font-mono text-[6px] font-semibold tracking-[0.16em] text-black/75">01 / LIVE SOURCE</span>
+        <strong className="absolute left-[5%] top-[14%] text-[clamp(14px,3vw,28px)] font-black uppercase leading-[.78] tracking-[-0.08em] text-black/85">LIVE<br />TRANS<br />MISSION</strong>
+      </div>
+      <div className="absolute inset-x-0 top-[58%] z-10 h-[33%] bg-[#0b0b0b] px-[5.5%] pt-[8%] text-white">
+        <span className="font-mono text-[clamp(4px,.68vw,7px)] font-semibold tracking-[0.16em] text-[#d7ff00]">NOW TRANSMITTING</span>
+        <span className="mt-[5%] block truncate font-mono text-[clamp(5px,.8vw,8px)] uppercase tracking-[0.1em] text-white/45">{stationName}</span>
+        <strong className="mt-[3%] block line-clamp-3 text-[clamp(10px,2vw,20px)] font-semibold uppercase leading-[1.02] tracking-[-0.04em]">{trackTitle}</strong>
+        <div className="absolute inset-x-[5.5%] bottom-[9%] flex h-[10%] items-end gap-[1.5%] border-b border-white/25">
+          {[35, 55, 72, 92, 48, 65, 85, 42, 68, 95, 52, 76].map((height, index) => <span key={index} className="flex-1 bg-[#f1efe6]" style={{ height: `${height}%` }} />)}
+        </div>
+      </div>
+      <div className="absolute inset-x-0 bottom-0 z-10 h-[9%] border-t-2 border-black bg-[#f1efe6] px-[5%] py-[4%] font-mono text-[clamp(4px,.65vw,7px)] tracking-[0.12em] text-black/55">
+        H264 / AAC / 720X1280 / 30FPS <span className="float-right text-black">RAW STREAM ↗</span>
+      </div>
+    </>;
+  }
+
+  if (template === "mono_paper") {
+    return <>
+      <div className="absolute inset-x-0 top-0 z-10 h-[14.5%] bg-black px-[5%] py-[5%] text-white">
+        <strong className="block truncate text-[clamp(9px,1.8vw,17px)] font-semibold uppercase">{stationName}</strong>
+        <span className="absolute bottom-[12%] left-[5%] font-mono text-[clamp(4px,.65vw,7px)] tracking-[0.16em] text-white/50">RAU STUDIO / LIVE VISUAL 01</span>
+        <span className="absolute right-[5%] top-[23%] h-8 w-8 bg-[#ff4b2b]" />
+      </div>
+      <div className="absolute left-[5%] right-[5%] top-[18.5%] z-0 h-[40%] bg-[#151515]" />
+      <div className="absolute left-[5%] top-[18.5%] z-10 h-[40%] w-[1.4%] bg-[#ff4b2b]" />
+      <div className="absolute inset-x-[5%] top-[65%] z-10 border-t-2 border-black pt-[5%] text-black">
+        <span className="font-mono text-[clamp(4px,.7vw,7px)] tracking-[0.14em] text-black/50">CURRENT AUDIO / NOW PLAYING</span>
+        <strong className="mt-[4%] block line-clamp-4 text-[clamp(11px,2.2vw,22px)] font-black uppercase leading-[.98] tracking-[-0.055em]">{trackTitle}</strong>
+      </div>
+      <span className="absolute bottom-[3%] left-[5%] z-10 font-mono text-[clamp(4px,.65vw,7px)] tracking-[0.12em] text-black/45">VERTICAL SIGNAL / INDEPENDENT RADIO</span>
+    </>;
+  }
+
+  return <>
+    <div className="absolute inset-x-0 top-0 z-30 h-[1.6%] bg-white" />
+    <div className="absolute left-[5%] right-[5%] top-[3%] z-30 h-[11%] border border-white/40 bg-black/70 px-[2.5%] py-[1.5%] text-white">
+      <strong className="block truncate text-[clamp(8px,1.8vw,17px)] font-medium uppercase">{stationName}</strong>
+      <span className="absolute bottom-[10%] left-[2.5%] font-mono text-[clamp(4px,.65vw,7px)] tracking-[0.16em] text-white/55">LIVE / RAU BROADCAST SYSTEM</span>
+    </div>
+    <div className="absolute left-[5%] top-[20%] z-10 h-[35%] w-[1.2%] bg-white/85" />
+    <div className="absolute left-[9.5%] right-[5%] top-[20%] z-10 h-[35%] border border-white/30 bg-gradient-to-br from-white/55 via-white/5 to-transparent" />
+    <div className="absolute inset-x-[5%] top-[70%] z-30 border-t border-white/55 bg-black/90 pt-[4%] text-white">
+      <span className="font-mono text-[clamp(5px,.8vw,9px)] tracking-[0.13em] text-white/50">NOW PLAYING / CURRENT AUDIO</span>
+      <strong className="mt-[3%] block line-clamp-3 text-[clamp(9px,1.8vw,18px)] font-medium uppercase leading-tight">{trackTitle}</strong>
+    </div>
+    <span className="absolute bottom-[3%] left-[5%] z-30 font-mono text-[clamp(5px,.7vw,8px)] tracking-[0.12em] text-white/35">H264 / AAC / 720X1280 / 30FPS</span>
+  </>;
+}
+
 function StudioMonitor({
   label,
   stationName,
@@ -2618,6 +2743,7 @@ function StudioMonitor({
     { key: "screen" as const, enabled: visualConfig.screenEnabled, config: visualLayerConfig(visualConfig, "screen") },
     { key: "camera" as const, enabled: visualConfig.cameraEnabled, config: visualLayerConfig(visualConfig, "camera") }
   ]).filter((layer) => layer.enabled);
+  const graphicTemplate = visualConfig.graphicTemplate || "signal_grid";
 
   return (
     <div>
@@ -2627,23 +2753,18 @@ function StudioMonitor({
       </div>
       <div
         ref={stageRef}
-        className="relative mx-auto aspect-[9/16] max-h-[58vh] overflow-hidden border border-white/15 bg-[#080b09] shadow-inner"
+        className={cn(
+          "relative mx-auto aspect-[9/16] max-h-[58vh] overflow-hidden border shadow-inner",
+          graphicTemplate === "signal_grid" ? "border-white/15 bg-[#080b09]" : "border-black/30 bg-[#f1efe6]"
+        )}
         style={{
-          backgroundImage: "linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px)",
+          backgroundImage: graphicTemplate === "signal_grid"
+            ? "linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px)"
+            : "linear-gradient(rgba(0,0,0,.065) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,.065) 1px, transparent 1px)",
           backgroundSize: "12.5% 7.03%"
         }}
       >
-        <div className="absolute inset-x-0 top-0 z-30 h-[1.6%] bg-white" />
-        <div className="absolute left-[5%] right-[5%] top-[3%] z-30 h-[11%] border border-white/40 bg-black/70 px-[2.5%] py-[1.5%]">
-          <strong className="block truncate text-[clamp(8px,1.8vw,17px)] font-medium uppercase">{stationName}</strong>
-          <span className="absolute bottom-[10%] left-[2.5%] font-mono text-[clamp(4px,.65vw,7px)] tracking-[0.16em] text-white/55">LIVE / RAU BROADCAST SYSTEM</span>
-        </div>
-        <div className="absolute left-[5%] top-[20%] z-10 h-[35%] w-[1.2%] bg-white/85" />
-        <div className="absolute left-[9.5%] right-[5%] top-[20%] z-10 h-[35%] border border-white/30 bg-gradient-to-br from-white/55 via-white/5 to-transparent" />
-        <div className="absolute inset-x-[5%] top-[70%] z-30 border-t border-white/55 bg-black/90 pt-[4%]">
-          <span className="font-mono text-[clamp(5px,.8vw,9px)] tracking-[0.13em] text-white/50">NOW PLAYING / CURRENT AUDIO</span>
-          <strong className="mt-[3%] block line-clamp-3 text-[clamp(9px,1.8vw,18px)] font-medium uppercase leading-tight">{trackTitle}</strong>
-        </div>
+        <BroadcastTemplateChrome template={graphicTemplate} stationName={stationName} trackTitle={trackTitle} />
         {visualVisible ? <canvas ref={canvasRef} width={360} height={640} className={cn("absolute inset-0 z-20 h-full w-full", interactive && "pointer-events-none")} style={{ opacity: visualOpacity, transition: `opacity ${transitionMillis}ms linear` }} /> : null}
         {interactive && visualVisible ? editableLayers.map((layer) => {
           const rect = visualLayerRect(layer.config);
@@ -2681,7 +2802,6 @@ function StudioMonitor({
             <div><Monitor className="mx-auto h-5 w-5 text-white/70" /><span className="mt-1 block text-[8px] uppercase tracking-wider text-white/55">{visualPlaceholder}</span></div>
           </div>
         ) : null}
-        <span className="absolute bottom-[3%] left-[5%] z-30 font-mono text-[clamp(5px,.7vw,8px)] tracking-[0.12em] text-white/35">H264 / AAC / 720X1280 / 30FPS</span>
       </div>
     </div>
   );

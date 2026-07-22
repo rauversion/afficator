@@ -88,6 +88,14 @@ const translations: Record<Locale, Record<string, string>> = {
     "Fuente de cámara": "Camera source",
     "Usar cámara": "Use camera",
     "Fuente visual": "Visual source",
+    "Plantilla de presentación": "Presentation template",
+    "Monocromo técnico": "Technical monochrome",
+    "Marfil · acid · rojo": "Ivory · acid · red",
+    "Editorial mínimo": "Minimal editorial",
+    "La plantilla queda fija durante el Live para mantener estable RTMP.":
+      "The template stays fixed during the Live to keep RTMP stable.",
+    "La plantilla cambia Preview y la próxima señal RTMP.":
+      "The template changes Preview and the next RTMP signal.",
     "Usar fuente": "Use source",
     "Tipo de fuente": "Source type",
     "Pantalla": "Screen",
