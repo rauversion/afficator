@@ -105,6 +105,13 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Restore Tauri bundler tools cache
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/tauri
+          key: tauri-bundler-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+
       - name: Restore bundled FFmpeg cache
         if: runner.os == 'macOS'
         uses: actions/cache@v4
@@ -174,10 +181,34 @@ jobs:
           rm -f "$certificate_path"
           echo "APPLE_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
 
-      - name: Build non-macOS installers
-        if: runner.os != 'macOS'
+      - name: Build Windows installers
+        if: runner.os == 'Windows'
         shell: bash
         run: npm run tauri:build -- ${{ matrix.build_target_arg }} ${{ matrix.tauri_args }}
+
+      - name: Build Linux installers
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          max_attempts=3
+
+          for attempt in $(seq 1 "$max_attempts"); do
+            if npm run tauri:build -- \
+              ${{ matrix.build_target_arg }} \
+              ${{ matrix.tauri_args }}
+            then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq "$max_attempts" ]; then
+              echo "Tauri bundling failed after $max_attempts attempts."
+              exit 1
+            fi
+
+            delay=$((attempt * 10))
+            echo "::warning::Tauri bundling attempt $attempt failed; retrying in ${delay}s."
+            sleep "$delay"
+          done
 
       - name: Build signed and notarized macOS app
         if: runner.os == 'macOS'
