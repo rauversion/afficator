@@ -55,6 +55,9 @@ const RTMP_OVERLAY_MAX_LINES: usize = 4;
 const CAMERA_FRAME_WIDTH: usize = 360;
 const CAMERA_FRAME_HEIGHT: usize = 640;
 const CAMERA_FRAME_BYTES: usize = CAMERA_FRAME_WIDTH * CAMERA_FRAME_HEIGHT * 4;
+const VISUAL_LAYER_MIN_SIZE: usize = 40;
+const VISUAL_LAYER_MIN_VISIBLE: i32 = 24;
+const VISUAL_LAYER_MAX_SCALE: usize = 4;
 const CAMERA_CAPTURE_STALL_MILLIS: u64 = 2_500;
 const CAMERA_CAPTURE_RETRY_MILLIS: u64 = 1_000;
 const PCM_SAMPLE_RATE: usize = 44_100;
@@ -155,8 +158,8 @@ pub struct BroadcastVideoCompositor {
     camera_rotation_degrees: u16,
     camera_framing: String,
     camera_layout: String,
-    camera_x: u16,
-    camera_y: u16,
+    camera_x: i16,
+    camera_y: i16,
     camera_width: u16,
     camera_height: u16,
     camera_z_index: u16,
@@ -170,8 +173,8 @@ pub struct BroadcastVideoCompositor {
     screen_rotation_degrees: u16,
     screen_framing: String,
     screen_layout: String,
-    screen_x: u16,
-    screen_y: u16,
+    screen_x: i16,
+    screen_y: i16,
     screen_width: u16,
     screen_height: u16,
     screen_z_index: u16,
@@ -1567,6 +1570,7 @@ fn validate_video_compositor(config: &BroadcastVideoCompositor) -> Result<(), St
         config.camera_width,
         config.camera_height,
         config.camera_z_index,
+        config.capture_mode == "browser",
     )?;
     if config.camera_opacity_percent > 100 {
         return Err("La opacidad de cámara debe estar entre 0% y 100%.".to_string());
@@ -1605,6 +1609,7 @@ fn validate_video_compositor(config: &BroadcastVideoCompositor) -> Result<(), St
         config.screen_width,
         config.screen_height,
         config.screen_z_index,
+        config.capture_mode == "browser",
     )?;
     if config.screen_opacity_percent > 100 {
         return Err("La opacidad de pantalla debe estar entre 0% y 100%.".to_string());
@@ -1617,17 +1622,39 @@ fn validate_video_compositor(config: &BroadcastVideoCompositor) -> Result<(), St
 
 fn validate_visual_layer_geometry(
     label: &str,
-    x: u16,
-    y: u16,
+    x: i16,
+    y: i16,
     width: u16,
     height: u16,
     z_index: u16,
+    allow_overflow: bool,
 ) -> Result<(), String> {
-    if width < 40
-        || height < 40
-        || usize::from(x) + usize::from(width) > CAMERA_FRAME_WIDTH
-        || usize::from(y) + usize::from(height) > CAMERA_FRAME_HEIGHT
+    let width = usize::from(width);
+    let height = usize::from(height);
+    let x = i32::from(x);
+    let y = i32::from(y);
+    let right = x + width as i32;
+    let bottom = y + height as i32;
+    let visible_width = right.min(CAMERA_FRAME_WIDTH as i32) - x.max(0);
+    let visible_height = bottom.min(CAMERA_FRAME_HEIGHT as i32) - y.max(0);
+    let fits_native_canvas = x >= 0
+        && y >= 0
+        && right <= CAMERA_FRAME_WIDTH as i32
+        && bottom <= CAMERA_FRAME_HEIGHT as i32;
+    let valid_browser_overflow = width <= CAMERA_FRAME_WIDTH * VISUAL_LAYER_MAX_SCALE
+        && height <= CAMERA_FRAME_HEIGHT * VISUAL_LAYER_MAX_SCALE
+        && visible_width >= VISUAL_LAYER_MIN_VISIBLE
+        && visible_height >= VISUAL_LAYER_MIN_VISIBLE;
+    let valid_geometry = if allow_overflow {
+        valid_browser_overflow
+    } else {
+        fits_native_canvas
+    };
+
+    if width < VISUAL_LAYER_MIN_SIZE
+        || height < VISUAL_LAYER_MIN_SIZE
         || z_index > 100
+        || !valid_geometry
     {
         return Err(format!("Geometría libre de {label} inválida."));
     }
@@ -2960,8 +2987,10 @@ fn camera_canvas_layout(config: &BroadcastVideoCompositor) -> CameraCanvasLayout
             return CameraCanvasLayout {
                 width: usize::from(config.camera_width),
                 height: usize::from(config.camera_height),
-                x: usize::from(config.camera_x),
-                y: usize::from(config.camera_y),
+                // Free native layouts are validated to fit the canvas. Browser
+                // layouts may overflow, but never pass through this FFmpeg path.
+                x: usize::try_from(config.camera_x).unwrap_or_default(),
+                y: usize::try_from(config.camera_y).unwrap_or_default(),
             };
         }
         "background" => {
@@ -6443,6 +6472,32 @@ mod tests {
         input.video_compositor.camera_layout = "free".to_string();
         input.video_compositor.camera_x = 300;
         input.video_compositor.camera_width = 100;
+        assert!(validate_profile(input).is_err());
+
+        let mut input = profile_input();
+        input.output_kind = OUTPUT_KIND_RTMP.to_string();
+        input.video_compositor.capture_mode = "browser".to_string();
+        input.video_compositor.camera_layout = "free".to_string();
+        input.video_compositor.camera_x = -240;
+        input.video_compositor.camera_y = -80;
+        input.video_compositor.camera_width = 720;
+        input.video_compositor.camera_height = 720;
+        assert!(validate_profile(input).is_ok());
+
+        let mut input = profile_input();
+        input.output_kind = OUTPUT_KIND_RTMP.to_string();
+        input.video_compositor.capture_mode = "browser".to_string();
+        input.video_compositor.screen_layout = "free".to_string();
+        input.video_compositor.screen_x = -400;
+        input.video_compositor.screen_width = 420;
+        assert!(validate_profile(input).is_err());
+
+        let mut input = profile_input();
+        input.output_kind = OUTPUT_KIND_RTMP.to_string();
+        input.video_compositor.capture_mode = "browser".to_string();
+        input.video_compositor.screen_layout = "free".to_string();
+        input.video_compositor.screen_width =
+            (CAMERA_FRAME_WIDTH * VISUAL_LAYER_MAX_SCALE + 1) as u16;
         assert!(validate_profile(input).is_err());
 
         let mut input = profile_input();

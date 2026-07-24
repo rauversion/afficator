@@ -2477,6 +2477,14 @@ type VisualLayerConfig = {
 
 type VisualLayerRect = { x: number; y: number; width: number; height: number };
 
+const VISUAL_CANVAS_WIDTH = 360;
+const VISUAL_CANVAS_HEIGHT = 640;
+const VISUAL_LAYER_MIN_SIZE = 40;
+const VISUAL_LAYER_MIN_VISIBLE = 24;
+const VISUAL_LAYER_MAX_SCALE = 4;
+const VISUAL_LAYER_MAX_WIDTH = VISUAL_CANVAS_WIDTH * VISUAL_LAYER_MAX_SCALE;
+const VISUAL_LAYER_MAX_HEIGHT = VISUAL_CANVAS_HEIGHT * VISUAL_LAYER_MAX_SCALE;
+
 function applyVisualLayerRect(
   config: BroadcastVideoCompositor,
   layer: "camera" | "screen",
@@ -2539,18 +2547,32 @@ function visualLayerConfig(config: BroadcastVideoCompositor, layer: "camera" | "
 
 function visualLayerRect(config: VisualLayerConfig) {
   if (config.layout === "free") return { x: config.x, y: config.y, width: config.width, height: config.height };
-  if (config.layout === "background") return { x: 0, y: 110, width: 360, height: 340 };
-  if (config.layout === "wide") return { x: 0, y: 120, width: 360, height: 225 };
+  if (config.layout === "background") return { x: 0, y: 110, width: VISUAL_CANVAS_WIDTH, height: 340 };
+  if (config.layout === "wide") return { x: 0, y: 120, width: VISUAL_CANVAS_WIDTH, height: 225 };
   const size = config.size === "small" ? 105 : config.size === "large" ? 205 : 150;
   const margin = 24;
   const positions: Record<string, { x: number; y: number }> = {
     top_left: { x: margin, y: 120 },
-    top_right: { x: 360 - size - margin, y: 120 },
-    center: { x: (360 - size) / 2, y: (640 - size) / 2 },
-    bottom_left: { x: margin, y: 640 - size - margin },
-    bottom_right: { x: 360 - size - margin, y: 640 - size - margin }
+    top_right: { x: VISUAL_CANVAS_WIDTH - size - margin, y: 120 },
+    center: { x: (VISUAL_CANVAS_WIDTH - size) / 2, y: (VISUAL_CANVAS_HEIGHT - size) / 2 },
+    bottom_left: { x: margin, y: VISUAL_CANVAS_HEIGHT - size - margin },
+    bottom_right: {
+      x: VISUAL_CANVAS_WIDTH - size - margin,
+      y: VISUAL_CANVAS_HEIGHT - size - margin
+    }
   };
   return { ...(positions[config.position] ?? positions.top_right), width: size, height: size };
+}
+
+function visibleVisualLayerRect(rect: VisualLayerRect): VisualLayerRect {
+  const x = Math.max(0, rect.x);
+  const y = Math.max(0, rect.y);
+  return {
+    x,
+    y,
+    width: Math.max(0, Math.min(VISUAL_CANVAS_WIDTH, rect.x + rect.width) - x),
+    height: Math.max(0, Math.min(VISUAL_CANVAS_HEIGHT, rect.y + rect.height) - y)
+  };
 }
 
 function drawVisualLayer(context: CanvasRenderingContext2D, video: HTMLVideoElement, config: VisualLayerConfig) {
@@ -2711,19 +2733,33 @@ function StudioMonitor({
     let latest = start;
     let changed = false;
     const move = (pointer: PointerEvent) => {
-      const deltaX = (pointer.clientX - startPointer.x) * 360 / bounds.width;
-      const deltaY = (pointer.clientY - startPointer.y) * 640 / bounds.height;
+      const deltaX = (pointer.clientX - startPointer.x) * VISUAL_CANVAS_WIDTH / bounds.width;
+      const deltaY = (pointer.clientY - startPointer.y) * VISUAL_CANVAS_HEIGHT / bounds.height;
       if (mode === "move") {
         latest = {
           ...start,
-          x: Math.max(0, Math.min(360 - start.width, start.x + deltaX)),
-          y: Math.max(0, Math.min(640 - start.height, start.y + deltaY))
+          x: Math.max(
+            VISUAL_LAYER_MIN_VISIBLE - start.width,
+            Math.min(VISUAL_CANVAS_WIDTH - VISUAL_LAYER_MIN_VISIBLE, start.x + deltaX)
+          ),
+          y: Math.max(
+            VISUAL_LAYER_MIN_VISIBLE - start.height,
+            Math.min(VISUAL_CANVAS_HEIGHT - VISUAL_LAYER_MIN_VISIBLE, start.y + deltaY)
+          )
         };
       } else {
+        const minimumWidth = Math.max(VISUAL_LAYER_MIN_SIZE, VISUAL_LAYER_MIN_VISIBLE - start.x);
+        const minimumHeight = Math.max(VISUAL_LAYER_MIN_SIZE, VISUAL_LAYER_MIN_VISIBLE - start.y);
         latest = {
           ...start,
-          width: Math.max(40, Math.min(360 - start.x, start.width + deltaX)),
-          height: Math.max(40, Math.min(640 - start.y, start.height + deltaY))
+          width: Math.max(
+            minimumWidth,
+            Math.min(VISUAL_LAYER_MAX_WIDTH, start.width + deltaX)
+          ),
+          height: Math.max(
+            minimumHeight,
+            Math.min(VISUAL_LAYER_MAX_HEIGHT, start.height + deltaY)
+          )
         };
       }
       changed = true;
@@ -2754,54 +2790,90 @@ function StudioMonitor({
       <div
         ref={stageRef}
         className={cn(
-          "relative mx-auto aspect-[9/16] max-h-[58vh] overflow-hidden border shadow-inner",
-          graphicTemplate === "signal_grid" ? "border-white/15 bg-[#080b09]" : "border-black/30 bg-[#f1efe6]"
+          "relative mx-auto aspect-[9/16] max-h-[58vh] overflow-visible",
+          interactive ? "z-30" : "z-0"
         )}
-        style={{
-          backgroundImage: graphicTemplate === "signal_grid"
-            ? "linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px)"
-            : "linear-gradient(rgba(0,0,0,.065) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,.065) 1px, transparent 1px)",
-          backgroundSize: "12.5% 7.03%"
-        }}
       >
-        <BroadcastTemplateChrome template={graphicTemplate} stationName={stationName} trackTitle={trackTitle} />
-        {visualVisible ? <canvas ref={canvasRef} width={360} height={640} className={cn("absolute inset-0 z-20 h-full w-full", interactive && "pointer-events-none")} style={{ opacity: visualOpacity, transition: `opacity ${transitionMillis}ms linear` }} /> : null}
+        <div
+          className={cn(
+            "absolute inset-0 overflow-hidden border shadow-inner",
+            graphicTemplate === "signal_grid" ? "border-white/15 bg-[#080b09]" : "border-black/30 bg-[#f1efe6]"
+          )}
+          style={{
+            backgroundImage: graphicTemplate === "signal_grid"
+              ? "linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.055) 1px, transparent 1px)"
+              : "linear-gradient(rgba(0,0,0,.065) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,.065) 1px, transparent 1px)",
+            backgroundSize: "12.5% 7.03%"
+          }}
+        >
+          <BroadcastTemplateChrome template={graphicTemplate} stationName={stationName} trackTitle={trackTitle} />
+          {visualVisible ? <canvas ref={canvasRef} width={VISUAL_CANVAS_WIDTH} height={VISUAL_CANVAS_HEIGHT} className={cn("absolute inset-0 z-20 h-full w-full", interactive && "pointer-events-none")} style={{ opacity: visualOpacity, transition: `opacity ${transitionMillis}ms linear` }} /> : null}
+          {visualVisible && !visualAvailable ? (
+            <div className="absolute inset-x-[15%] top-[30%] z-20 grid h-[18%] place-items-center border border-white/20 bg-black/70 p-2 text-center">
+              <div><Monitor className="mx-auto h-5 w-5 text-white/70" /><span className="mt-1 block text-[8px] uppercase tracking-wider text-white/55">{visualPlaceholder}</span></div>
+            </div>
+          ) : null}
+        </div>
         {interactive && visualVisible ? editableLayers.map((layer) => {
           const rect = visualLayerRect(layer.config);
+          const visibleRect = visibleVisualLayerRect(rect);
           const selected = selectedLayer === layer.key;
+          const layerZIndex = selected ? 70 : 40 + layer.config.zIndex;
           return (
-            <div
-              key={layer.key}
-              className={cn("absolute touch-none border", selected ? "border-emerald-300 shadow-[0_0_0_1px_rgba(16,185,129,.45)]" : "border-white/35 hover:border-white/70")}
-              style={{
-                left: `${rect.x / 3.6}%`,
-                top: `${rect.y / 6.4}%`,
-                width: `${rect.width / 3.6}%`,
-                height: `${rect.height / 6.4}%`,
-                zIndex: selected ? 70 : 40 + layer.config.zIndex,
-                cursor: "move"
-              }}
-              onPointerDown={(event) => beginLayerGesture(event, layer.key, "move")}
-            >
-              <span className={cn("absolute -top-5 left-0 rounded-sm px-1.5 py-0.5 font-mono text-[7px] font-semibold uppercase tracking-wider", selected ? "bg-emerald-300 text-black" : "bg-black/80 text-white/70")}>
-                {layer.key === "camera" ? "CAMERA" : "SCREEN / WINDOW"} · Z{layer.config.zIndex}
-              </span>
-              {selected ? (
-                <button
-                  type="button"
-                  aria-label="Resize layer"
-                  className="absolute -bottom-2 -right-2 h-4 w-4 cursor-nwse-resize rounded-sm border border-black bg-emerald-300 shadow"
-                  onPointerDown={(event) => beginLayerGesture(event, layer.key, "resize")}
-                />
-              ) : null}
+            <div key={layer.key}>
+              <div
+                className={cn(
+                  "pointer-events-none absolute touch-none border",
+                  selected
+                    ? "border-emerald-300 shadow-[0_0_0_1px_rgba(16,185,129,.45)]"
+                    : "border-white/35"
+                )}
+                style={{
+                  left: `${rect.x / 3.6}%`,
+                  top: `${rect.y / 6.4}%`,
+                  width: `${rect.width / 3.6}%`,
+                  height: `${rect.height / 6.4}%`,
+                  zIndex: layerZIndex
+                }}
+              >
+                {selected ? (
+                  <button
+                    type="button"
+                    aria-label="Resize layer"
+                    className="pointer-events-auto absolute -bottom-2 -right-2 h-4 w-4 cursor-nwse-resize rounded-sm border border-black bg-emerald-300 shadow"
+                    onPointerDown={(event) => beginLayerGesture(event, layer.key, "resize")}
+                  />
+                ) : null}
+              </div>
+              <div
+                className="absolute touch-none"
+                style={{
+                  left: `${visibleRect.x / 3.6}%`,
+                  top: `${visibleRect.y / 6.4}%`,
+                  width: `${visibleRect.width / 3.6}%`,
+                  height: `${visibleRect.height / 6.4}%`,
+                  zIndex: layerZIndex,
+                  cursor: "move"
+                }}
+                onPointerDown={(event) => beginLayerGesture(event, layer.key, "move")}
+              >
+                <span className={cn("pointer-events-none absolute -top-5 left-0 rounded-sm px-1.5 py-0.5 font-mono text-[7px] font-semibold uppercase tracking-wider", selected ? "bg-emerald-300 text-black" : "bg-black/80 text-white/70")}>
+                  {layer.key === "camera" ? "CAMERA" : "SCREEN / WINDOW"} · Z{layer.config.zIndex}
+                </span>
+                {selected && (
+                  rect.x < 0
+                  || rect.y < 0
+                  || rect.x + rect.width > VISUAL_CANVAS_WIDTH
+                  || rect.y + rect.height > VISUAL_CANVAS_HEIGHT
+                ) ? (
+                  <span className="pointer-events-none absolute bottom-1 left-1 rounded-sm bg-black/80 px-1 py-0.5 font-mono text-[7px] text-emerald-200">
+                    CROPPED
+                  </span>
+                ) : null}
+              </div>
             </div>
           );
         }) : null}
-        {visualVisible && !visualAvailable ? (
-          <div className="absolute inset-x-[15%] top-[30%] z-20 grid h-[18%] place-items-center border border-white/20 bg-black/70 p-2 text-center">
-            <div><Monitor className="mx-auto h-5 w-5 text-white/70" /><span className="mt-1 block text-[8px] uppercase tracking-wider text-white/55">{visualPlaceholder}</span></div>
-          </div>
-        ) : null}
       </div>
     </div>
   );
